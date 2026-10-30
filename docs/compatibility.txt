@@ -218,7 +218,11 @@ round-trip. Затем Default DSN принял synthetic event с sensitive ext
 user.ip_address=127.0.0.1 при localhost=true. Для browser-extensions и web-crawlers
 matching control events были читаемы при active=false, а после настройки active=true до
 первой ingestion в отдельном одноразовом project точные event IDs оставались 404 в
-контрольном окне. Historical reprocessing и rolling SaaS behavior этим не доказаны.
+контрольном окне. Full controller acceptance на real envtest API затем создал managed project,
+внёс через public API drift во все три filters и пять PII fields и одним reconcile восстановил
+desired state: TLS proxy зафиксировал три filter PUT и один narrow project PUT. Повторный
+reconcile не сделал settings mutations, Conditions SettingsReady/Ready остались True,
+guarded deletion завершился. Historical reprocessing и rolling SaaS behavior этим не доказаны.
 
 fingerprintingRules в обеих версиях остаётся одной raw newline-delimited DSL string.
 Одинаковая простая grammar подтверждается source tests, однако 26.10.1 parser уже имеет
@@ -421,9 +425,8 @@ modern workflow read/write       alerts:read / alerts:write согласно cur
 
 11. Обязательные следующие проверки
 
-1) 24.7.1/26.10.1: controller-level filter/settings drift repair с live Sentry.
-2) 24.7.1: public non-destructive disable для issue/metric rule остаётся опровергнут source.
-3) 26.10.1: feature flags и detector families кроме проверенного metric detector.
-4) SaaS: те же calls с зафиксированной датой и очищенными fixtures.
-5) Slack/PagerDuty: duplicate readable names, pagination, revoked integration и delivery.
-6) Service hook/Sentry App: signed raw-body positive/negative/replay tests и TLS verification.
+1) 24.7.1: public non-destructive disable для issue/metric rule остаётся опровергнут source.
+2) 26.10.1: feature flags и detector families кроме проверенного metric detector.
+3) SaaS: те же calls с зафиксированной датой и очищенными fixtures.
+4) Slack/PagerDuty: duplicate readable names, pagination, revoked integration и delivery.
+5) Service hook/Sentry App: signed raw-body positive/negative/replay tests и TLS verification.

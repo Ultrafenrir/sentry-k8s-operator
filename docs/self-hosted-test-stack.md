@@ -99,8 +99,12 @@ all three projects. The following controller acceptance passes the create throug
 fault proxy and closes the connection after Sentry accepts it. A real envtest Kubernetes API
 stores the Submitted operation in a protected Secret; a newly constructed store, API client,
 and engine then recover the exact marker by GET without a second POST, clear the journal, and
-complete guarded deletion of the Sentry project and binding. The matrix runs both acceptance
-layers after bootstrap and before removing the entire stack.
+complete guarded deletion of the Sentry project and binding. A second full-controller case
+creates a managed project and Kubernetes binding/claim/DSN Secret, introduces external drift
+into all three filters and five PII fields, and requires one reconcile to restore them with
+exactly three filter PUTs and one narrow project PUT. A following reconcile must perform no
+settings mutation, both SettingsReady and Ready must remain true, and guarded deletion must
+complete. The matrix runs both acceptance layers after bootstrap and before removing the stack.
 
 `make sentry-clean` additionally removes the selected managed upstream checkout.
 `make sentry-matrix` performs the clean start/smoke/removal cycle for both versions in
@@ -149,7 +153,9 @@ by exact slug/marker without a second POST. Controller/journal recovery also pas
 versions through the TLS fault proxy and a real Kubernetes Secret journal, including a fresh
 store/client/engine recovery, no duplicate POST, and guarded deletion. Detector families beyond
 the verified metric detector, external actions, integrations, delivery and SaaS remain
-unverified. Legacy issue/metric CRUD and attached modern metric detector/workflow
+unverified. Full-controller filter/PII drift repair also passed on both versions with real
+envtest resources, exact mutation counts, idempotent follow-up, true readiness conditions, and
+guarded deletion. Legacy issue/metric CRUD and attached modern metric detector/workflow
 toggle/lifecycle are verified.
 
 Allocate at least 14 GB to Docker Desktop before running the full matrix. CI runners need

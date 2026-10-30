@@ -91,7 +91,10 @@ project-create response был намеренно отброшен, после �
 не выполнялись. Controller-level вариант этого сбоя также Verified на обеих версиях: TLS
 fault proxy закрыл connection после успешного upstream POST, real Kubernetes Secret сохранил
 Submitted journal, а новый store/client/engine восстановил marker без второго POST и выполнил
-guarded delete. 24.7.1 legacy issue/metric CRUD и 26.10.1 workflow плюс
+guarded delete. Full SentryProjectReconciler на real envtest API также восстановил внешний
+drift всех трёх filters и пяти PII fields на обеих версиях ровно тремя filter PUT и одним
+narrow project PUT; повторный reconcile был идемпотентным, SettingsReady/Ready=True, guarded
+delete завершён. 24.7.1 legacy issue/metric CRUD и 26.10.1 workflow плюс
 attached events/count() metric detector CRUD/toggle проверены live; external actions нет.
 Kubernetes: постоянный dev smoke работает на v1.35.5; exact v1.35.9/v1.36.5 release
 matrix выполнена на локально построенных arm64 kind images. Тот же probe set ранее

@@ -83,7 +83,7 @@ sentry-bootstrap: ## Create and verify an ephemeral local API user/token without
 sentry-live-api: ## Run destructive live API acceptance against the selected disposable local stack.
 	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" sh hack/verify-sentry-live-api.sh
 
-sentry-controller-live: ## Verify controller journal recovery against the selected disposable local stack.
+sentry-controller-live: ## Verify controller recovery and settings drift repair against the disposable local stack.
 	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" sh hack/verify-sentry-controller-live.sh
 
 sentry-smoke: ## Check the selected local Sentry health endpoint.

@@ -35,14 +35,21 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	sentryv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/audit"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
+	connectionruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/connection"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/dsn"
 	projectruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/project"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
+	settingsruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/settings"
 )
 
 var _ = Describe("Live Sentry project recovery", Label("live-sentry"), func() {
@@ -139,14 +146,148 @@ var _ = Describe("Live Sentry project recovery", Label("live-sentry"), func() {
 		_, err = restartedStore.GetClaim(context.Background(), proxy.URL, organization, slug)
 		Expect(errors.Is(err, binding.ErrNotFound)).To(BeTrue())
 	})
+
+	It("repairs filter and PII drift through the full controller and remains idempotent", func() {
+		baseURL, token, organization, team, version := liveSentryEnvironment()
+		upstream, err := url.Parse(baseURL)
+		Expect(err).NotTo(HaveOccurred())
+
+		versionSlug := strings.ReplaceAll(version, ".", "-")
+		slug := "sko-controller-settings-" + versionSlug
+		proxy := newLostCreateResponseProxy(upstream, slug)
+		proxy.dropped.Store(true)
+		defer proxy.Close()
+		defer deleteLiveProject(upstream, token, organization, slug)
+
+		connectionName := "live-settings-" + versionSlug
+		resourceName := "live-settings-" + versionSlug
+		key := types.NamespacedName{Name: resourceName, Namespace: "default"}
+		connection := &sentryv1alpha1.SentryConnection{
+			ObjectMeta: metav1.ObjectMeta{Name: connectionName},
+			Spec: sentryv1alpha1.SentryConnectionSpec{
+				URL:          proxy.URL,
+				Organization: organization,
+				Credentials: sentryv1alpha1.ConnectionCredentials{TokenSecretRef: sentryv1alpha1.SecretKeyReference{
+					Name: "live-token", Key: "token",
+				}},
+				Access: []sentryv1alpha1.AccessRule{{
+					Owner: "live", Namespaces: sentryv1alpha1.NamespaceAccess{MatchNames: []string{"default"}},
+					Teams: []string{team}, AllowCreate: true,
+				}},
+			},
+		}
+		Expect(k8sClient.Create(context.Background(), connection)).To(Succeed())
+		defer deleteLiveControllerFixtures(key, connectionName)
+		connection.Status.Capabilities = []string{
+			projectruntime.CapabilityAtomicDefaultRules,
+			projectruntime.CapabilityAutomaticActiveKey,
+		}
+		Expect(k8sClient.Status().Update(context.Background(), connection)).To(Succeed())
+
+		trueValue := true
+		falseValue := false
+		desiredSensitive := []string{"authorization", "password"}
+		desiredSafe := []string{"public-control"}
+		resource := &sentryv1alpha1.SentryProject{
+			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+			Spec: sentryv1alpha1.SentryProjectSpec{
+				Connection: connectionName,
+				Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{
+					Team: team, Slug: slug, DisplayName: "Settings",
+				}},
+				Settings: &sentryv1alpha1.ProjectSettings{
+					Filters: &sentryv1alpha1.FilterSettings{
+						BrowserExtensions: &trueValue, Localhost: &trueValue, WebCrawlers: &trueValue,
+					},
+					PII: &sentryv1alpha1.PIISettings{
+						ScrubData: &trueValue, ScrubDefaults: &trueValue, ScrubIPAddresses: &trueValue,
+						SensitiveFields: &desiredSensitive, SafeFields: &desiredSafe,
+					},
+				},
+				Lifecycle: sentryv1alpha1.LifecycleSpec{OnDelete: sentryv1alpha1.OnDeleteDeleteProject},
+			},
+		}
+		Expect(k8sClient.Create(context.Background(), resource)).To(Succeed())
+
+		registry := connectionruntime.NewRegistry()
+		apiClient, _, err := registry.Apply(connectionName, proxy.URL, connectionruntime.SecretInputs{
+			Token: []byte(token), CABundle: certificatePEM(proxy.Certificate()),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		auditSink := &liveAuditSink{}
+		reconciler := &SentryProjectReconciler{
+			Client: k8sClient, Scheme: k8sClient.Scheme(), Registry: registry,
+			Bindings: &binding.Store{Client: k8sClient, Namespace: "default"}, ManagedBy: "sko",
+			ListKeys: func(context.Context, *sentryapi.Client, string, string) ([]dsn.ClientKey, error) {
+				key := dsn.ClientKey{ID: "live-key", Name: "Default", IsActive: true}
+				key.DSN.Public = "https://public@example.invalid/42"
+				return []dsn.ClientKey{key}, nil
+			},
+			Audit: auditSink,
+		}
+
+		result, err := reconciler.Reconcile(context.Background(), reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.Requeue).To(BeTrue())
+		_, err = reconciler.Reconcile(context.Background(), reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		adapter := &settingsruntime.HTTPAdapter{Client: apiClient}
+		assertLiveSettings(adapter, organization, slug, trueValue, desiredSensitive, desiredSafe)
+		for _, filterID := range []string{"browser-extensions", "localhost", "web-crawlers"} {
+			Expect(adapter.UpdateFilter(context.Background(), organization, slug, filterID, falseValue)).To(Succeed())
+		}
+		state, err := adapter.GetProjectState(context.Background(), organization, slug)
+		Expect(err).NotTo(HaveOccurred())
+		driftSensitive := []string{"drifted"}
+		driftSafe := []string{"drift-control"}
+		Expect(adapter.UpdateProjectState(context.Background(), organization, slug, settingsruntime.ProjectPatch{
+			ScrubData: &falseValue, ScrubDefaults: &falseValue, ScrubIPAddresses: &falseValue,
+			SensitiveFields: &driftSensitive, SafeFields: &driftSafe,
+		}, state.ETag)).To(Succeed())
+		filterUpdatesBefore := proxy.filterUpdateCalls.Load()
+		projectUpdatesBefore := proxy.projectUpdateCalls.Load()
+
+		_, err = reconciler.Reconcile(context.Background(), reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(proxy.filterUpdateCalls.Load() - filterUpdatesBefore).To(Equal(int32(3)))
+		Expect(proxy.projectUpdateCalls.Load() - projectUpdatesBefore).To(Equal(int32(1)))
+		assertLiveSettings(adapter, organization, slug, trueValue, desiredSensitive, desiredSafe)
+
+		Expect(k8sClient.Get(context.Background(), key, resource)).To(Succeed())
+		Expect(meta.FindStatusCondition(resource.Status.Conditions, "SettingsReady")).To(And(
+			HaveField("Status", metav1.ConditionTrue), HaveField("Reason", "SettingsReady"),
+		))
+		Expect(meta.FindStatusCondition(resource.Status.Conditions, "Ready")).To(HaveField("Status", metav1.ConditionTrue))
+
+		filterUpdatesBefore = proxy.filterUpdateCalls.Load()
+		projectUpdatesBefore = proxy.projectUpdateCalls.Load()
+		_, err = reconciler.Reconcile(context.Background(), reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(proxy.filterUpdateCalls.Load()).To(Equal(filterUpdatesBefore))
+		Expect(proxy.projectUpdateCalls.Load()).To(Equal(projectUpdatesBefore))
+
+		Expect(k8sClient.Delete(context.Background(), resource)).To(Succeed())
+		for attempt := 0; attempt < 30; attempt++ {
+			_, err = reconciler.Reconcile(context.Background(), reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			if apierrors.IsNotFound(k8sClient.Get(context.Background(), key, &sentryv1alpha1.SentryProject{})) {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+		Expect(apierrors.IsNotFound(k8sClient.Get(context.Background(), key, &sentryv1alpha1.SentryProject{}))).To(BeTrue())
+	})
 })
 
 type lostCreateResponseProxy struct {
 	*httptest.Server
-	upstream    *url.URL
-	slug        string
-	createCalls atomic.Int32
-	dropped     atomic.Bool
+	upstream           *url.URL
+	slug               string
+	createCalls        atomic.Int32
+	dropped            atomic.Bool
+	filterUpdateCalls  atomic.Int32
+	projectUpdateCalls atomic.Int32
 }
 
 func newLostCreateResponseProxy(upstream *url.URL, slug string) *lostCreateResponseProxy {
@@ -177,6 +318,13 @@ func (p *lostCreateResponseProxy) serveHTTP(w http.ResponseWriter, request *http
 		return
 	}
 	defer response.Body.Close()
+	if response.StatusCode >= 200 && response.StatusCode < 300 && request.Method == http.MethodPut {
+		if strings.Contains(request.URL.Path, "/filters/") {
+			p.filterUpdateCalls.Add(1)
+		} else if strings.Contains(request.URL.Path, "/projects/") {
+			p.projectUpdateCalls.Add(1)
+		}
+	}
 
 	if request.Method == http.MethodPost && strings.Contains(request.URL.Path, "/projects/") && bodyHasSlug(body, p.slug) {
 		p.createCalls.Add(1)
@@ -211,6 +359,55 @@ func bodyHasSlug(body []byte, slug string) bool {
 
 func certificatePEM(certificate *x509.Certificate) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Raw})
+}
+
+func liveSentryEnvironment() (string, string, string, string, string) {
+	baseURL := os.Getenv("SENTRY_LIVE_BASE_URL")
+	tokenFile := os.Getenv("SENTRY_LIVE_TOKEN_FILE")
+	organization := os.Getenv("SENTRY_LIVE_ORGANIZATION")
+	team := os.Getenv("SENTRY_LIVE_TEAM")
+	version := os.Getenv("SENTRY_LIVE_VERSION")
+	if baseURL == "" || tokenFile == "" || organization == "" || team == "" || version == "" {
+		Skip("live Sentry acceptance environment is not configured")
+	}
+	tokenBytes, err := os.ReadFile(tokenFile)
+	Expect(err).NotTo(HaveOccurred())
+	token := strings.TrimSpace(string(tokenBytes))
+	Expect(token).To(MatchRegexp(`^sntryu_[0-9a-f]{64}$`))
+	return baseURL, token, organization, team, version
+}
+
+func assertLiveSettings(adapter *settingsruntime.HTTPAdapter, organization, slug string, active bool, sensitive, safe []string) {
+	filters, err := adapter.ListFilters(context.Background(), organization, slug)
+	Expect(err).NotTo(HaveOccurred())
+	observed := make(map[string]bool, len(filters))
+	for _, filter := range filters {
+		observed[filter.ID] = filter.Active
+	}
+	for _, filterID := range []string{"browser-extensions", "localhost", "web-crawlers"} {
+		Expect(observed).To(HaveKeyWithValue(filterID, active))
+	}
+	state, err := adapter.GetProjectState(context.Background(), organization, slug)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(state.ScrubData).NotTo(BeNil())
+	Expect(*state.ScrubData).To(Equal(active))
+	Expect(state.ScrubDefaults).NotTo(BeNil())
+	Expect(*state.ScrubDefaults).To(Equal(active))
+	Expect(state.ScrubIPAddresses).NotTo(BeNil())
+	Expect(*state.ScrubIPAddresses).To(Equal(active))
+	Expect(state.SensitiveFields).NotTo(BeNil())
+	Expect(*state.SensitiveFields).To(Equal(sensitive))
+	Expect(state.SafeFields).NotTo(BeNil())
+	Expect(*state.SafeFields).To(Equal(safe))
+}
+
+func deleteLiveControllerFixtures(key types.NamespacedName, connectionName string) {
+	ctx := context.Background()
+	_ = k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: key.Name + sentryv1alpha1.DefaultDSNSecretSuffix, Namespace: key.Namespace,
+	}})
+	_ = k8sClient.Delete(ctx, &sentryv1alpha1.SentryProject{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}})
+	_ = k8sClient.Delete(ctx, &sentryv1alpha1.SentryConnection{ObjectMeta: metav1.ObjectMeta{Name: connectionName}})
 }
 
 func liveManagedProjectInput(baseURL, organization, team, slug, version string) projectruntime.Input {

@@ -6,9 +6,8 @@ DSNs, tokens, Telegram chat IDs, and operation journals stay out of CR specs and
 
 The repository currently provides source-derived and mock-verified project ownership,
 public DSN publication, typed filters/PII settings, destination pinning, and the protected
-Telegram registration path. It is **not production-ready**: live Sentry controller-level
-settings drift repair, alert adapters, Slack runtime discovery, live Telegram delivery,
-upgrade recovery,
+Telegram registration path. It is **not production-ready**: alert adapters, Slack runtime
+discovery, live Telegram delivery, upgrade recovery,
 and release packaging are still incomplete. See
 [`docs/t06-destinations-progress.txt`](docs/t06-destinations-progress.txt),
 [`docs/t07-alerts-progress.txt`](docs/t07-alerts-progress.txt), and

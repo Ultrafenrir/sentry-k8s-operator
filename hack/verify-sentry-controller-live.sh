@@ -37,4 +37,4 @@ GOMODCACHE="$product_gomodcache" \
 GOCACHE="$product_gocache" \
   "$go_bin" test ./internal/controller --ginkgo.label-filter=live-sentry -count=1
 
-echo "Sentry $version controller lost-response recovery acceptance passed"
+echo "Sentry $version controller recovery/settings-drift acceptance passed"
