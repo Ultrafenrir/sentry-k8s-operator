@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: network-server
+  namespace: sentry-operator-t00-probe
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: network-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: network-server
+    spec:
+      containers:
+        - name: server
+          image: busybox:t00-arm64
+          imagePullPolicy: Never
+          command:
+            - sh
+            - -c
+            - mkdir -p /www && echo ok >/www/index.html && exec httpd -f -p 8080 -h /www
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: network-client
+  namespace: sentry-operator-t00-probe
+  labels:
+    app.kubernetes.io/name: network-client
+spec:
+  containers:
+    - name: client
+      image: busybox:t00-arm64
+      imagePullPolicy: Never
+      command:
+        - sleep
+        - "3600"

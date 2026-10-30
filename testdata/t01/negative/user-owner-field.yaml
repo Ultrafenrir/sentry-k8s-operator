@@ -1,0 +1,10 @@
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryProject
+metadata:
+  name: invalid-owner
+  namespace: checkout-prod
+spec:
+  owner: payments
+  project:
+    create:
+      team: payments

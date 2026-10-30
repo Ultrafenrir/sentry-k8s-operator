@@ -1,0 +1,117 @@
+SENTRY CONFIGURATION OPERATOR — T00 NAME RESOLUTION MATRIX
+Дата: 2026-10-29
+
+1. Единый алгоритм
+
+1) Ограничить поиск connection + organization + policy scope.
+2) Собрать все страницы до выбора.
+3) Нормализовать только документированные cosmetic элементы (# у Slack channel).
+4) Потребовать одно точное совпадение readable name/slug.
+5) 0 -> ReferenceNotFound; >1 -> ReferenceAmbiguous.
+6) После одного совпадения сохранить external identity только в protected binding.
+7) На следующих reconcile читать pinned identity и сверять readable name/marker.
+8) Не переключаться на новый объект с прежним именем.
+
+External ID никогда не предлагается в SentryProject как workaround. Если readable
+discriminator недостаточен, объект в alpha не поддерживается до переименования.
+
+2. Matrix
+
+Reference          Primary selector         Optional discriminator     Ambiguity behavior
+connection         metadata.name            default=true after policy  0 Required; >1 DefaultAmbiguous
+access owner       namespace policy rule     none                       0 Denied; >1 PolicyAmbiguous
+project.use        exact project slug        connection                 slug unique in organization
+project.create.team exact team slug/name     connection/org             duplicates -> Ambiguous
+client key         exact label/name          project                    one active auto; duplicates reject
+Slack workspace    exact integration.name    explicit workspace         duplicates reject
+Slack channel      exact name without #      workspace                  duplicate display name reject
+PagerDuty account  exact integration.name    explicit account           duplicates reject
+PagerDuty service  exact service_name        account                    duplicates reject
+Telegram target    local logical target      one-time bot registration  numeric identity never public
+
+3. Project and team
+
+Project slugs are unique inside organization. Resolver should prefer direct project GET by
+slug when authorized; list is used for preflight and replacement detection. A matching
+slug never proves ownership.
+
+Team API supports slug and name, but alpha should require exact slug as canonical readable
+team reference. If compatibility UX later accepts display name, duplicate names return
+ReferenceAmbiguous and the status asks the admin to give teams unique slugs/names.
+
+Sources:
+https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/organization_projects.py
+https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/organization_teams.py
+
+4. Client keys
+
+The list endpoint is paginated and returns name/label, isActive and public DSN. The value
+called id may equal a public key and is never exposed as a selector.
+
+Resolution:
+- zero active: DSNReady=False/ReferenceNotFound; do not create a key;
+- one active: pin it regardless of label;
+- multiple active and dsn.clientKey omitted: DSNKeyAmbiguous;
+- dsn.clientKey set: exact unique label across all active pages;
+- duplicate/missing label: DSNKeyAmbiguous with instruction to rename keys in Sentry;
+- external rename after pin: keep identity, show ExternalNameChanged;
+- explicit selector change: resolve new key, verify, then CAS rebind.
+
+5. Slack
+
+Workspace candidates come from organization integrations filtered by providerKey=slack.
+The readable field is integration.name. Internal integration identity is stored only in
+protected binding.
+
+For legacy issue alerts 24.7.1, pending_save sends workspace identity plus channel name;
+Sentry strips #, paginates Slack conversations and returns failure on duplicate display
+name. The operator must poll task status and map failure to NotFound/Ambiguous only when
+the result can be proven; an undifferentiated failure is TemporaryFailure/Unknown.
+
+Current public API also documents an experimental channels endpoint, but its existence in
+current docs does not prove 24.7.1 support:
+GET /api/0/organizations/{org}/integrations/{integration}/channels/
+
+Sources:
+https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/tasks/integrations/slack/find_channel_id_for_rule.py
+https://docs.sentry.io/api/integration/list-messaging-channels-for-an-integration/
+
+6. PagerDuty
+
+Account candidates use integration.name. Service candidates are scoped to one selected
+account and use service_name from configData.service_table/pagerduty_services. Duplicate
+service_name inside the account is ReferenceAmbiguous. A service in a different account
+does not match. Internal service/account identities never enter public spec/status.
+
+Sources:
+https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/integrations/pagerduty/integration.py
+https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/integrations/pagerduty/actions/form.py
+
+7. Telegram
+
+target is not an external lookup. It is a namespace-local logical name which becomes bound
+to a numeric chat/topic identity only through the one-time registration protocol described
+in docs/telegram-design.txt. Rename is remove+create; no name-based auto-adoption occurs.
+
+8. Required negative contract tests
+
+- duplicate client labels across pagination;
+- duplicate Slack workspace names;
+- duplicate Slack channel display names in one workspace;
+- same Slack channel name in different workspaces resolves only after workspace selector;
+- duplicate PagerDuty account names;
+- duplicate service names in one account;
+- same service name in different accounts resolves only after account selector;
+- external object deletion and same-name replacement never changes pinned identity;
+- 403 is PermissionDenied, never Unsupported or NotFound.
+
+9. Executable T00 probe
+
+make verify-name-resolution запускает изолированный standard-library Go probe из
+tools/t00-name-resolution-probe/. Он проверяет exact scoped match, NotFound/Ambiguous,
+единственную разрешённую cosmetic normalization (# для Slack), duplicate client-key labels
+после объединения страниц, single-active-key default, pinned rename/replacement и отдельную
+классификацию 401/403. Тот же probe фиксирует exact managed suffix grammar, 50-character
+budget, delimiter/nesting rejection и правило marker+binding+manager claim. Probe намеренно
+возвращает internal identity только тестовому caller; он не добавляет ID в публичный API и
+не является product T02 client.

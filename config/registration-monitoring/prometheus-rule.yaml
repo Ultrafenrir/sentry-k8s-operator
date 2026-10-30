@@ -1,0 +1,36 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: telegram-delivery-worker
+  namespace: sentry-kubernetes-operator-system
+  labels:
+    app.kubernetes.io/name: sentry-kubernetes-operator
+    app.kubernetes.io/component: telegram-delivery-worker
+spec:
+  groups:
+  - name: sentry-kubernetes-operator.telegram-delivery
+    rules:
+    - alert: SentryOperatorTelegramDeliveryQueueStalled
+      expr: max(sentry_operator_telegram_delivery_oldest_outstanding_seconds) > 300
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: Telegram delivery queue has been outstanding for more than five minutes
+        description: Inspect the redacted admin report and worker fixed-enum metrics; do not dump queue Secrets.
+    - alert: SentryOperatorTelegramDeliveryDeadLetters
+      expr: sum(increase(sentry_operator_telegram_delivery_attempts_total{outcome="dead_letter"}[10m])) > 0
+      for: 1m
+      labels:
+        severity: warning
+      annotations:
+        summary: Telegram delivery records entered the dead-letter queue
+        description: Use aggregate queue state and the recovery runbook; message payload and target are protected data.
+    - alert: SentryOperatorTelegramDeliveryMetricsRefreshFailing
+      expr: sum(increase(sentry_operator_telegram_delivery_metrics_refresh_errors_total[10m])) > 0
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: Telegram delivery queue metrics cannot be refreshed
+        description: Check worker Kubernetes API reachability and delivery namespace RBAC without exposing Secret data.

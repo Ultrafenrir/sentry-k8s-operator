@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- rbac.yaml
+- certificates.yaml
+- service.yaml
+- deployment.yaml
+- network-policy.yaml
+- delivery-rbac.yaml
+- delivery-worker.yaml
+- delivery-network-policy.yaml
+- audit-rbac.yaml
+- hook-producer-rbac.yaml
+- hook-producer.yaml
+- hook-producer-network-policy.yaml
+- hook-receiver.yaml
+- hook-receiver-network-policy.yaml

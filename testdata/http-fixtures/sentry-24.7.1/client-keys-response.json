@@ -1,0 +1,15 @@
+[
+  {
+    "id": "__INTERNAL_KEY_ID__",
+    "name": "Default",
+    "label": "Default",
+    "public": "__PUBLIC_KEY__",
+    "secret": "__REDACTED__",
+    "projectId": "__INTERNAL_PROJECT_ID__",
+    "isActive": true,
+    "dsn": {
+      "public": "https://__PUBLIC_KEY__@sentry.invalid/__PROJECT_NUMBER__",
+      "secret": "__REDACTED__"
+    }
+  }
+]

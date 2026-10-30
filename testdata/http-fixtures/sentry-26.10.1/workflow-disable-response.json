@@ -1,0 +1,20 @@
+[
+  {
+    "id": "__WORKFLOW_ID__",
+    "name": "New issues [managed;o=payments;m=company-sentry-op]",
+    "organizationId": "__ORGANIZATION_ID__",
+    "createdBy": "__USER_ID__",
+    "dateCreated": "2026-10-29T00:00:00Z",
+    "dateUpdated": "2026-10-29T00:01:00Z",
+    "triggers": null,
+    "actionFilters": [],
+    "environment": "production",
+    "config": {},
+    "detectorIds": [
+      "__DETECTOR_ID__"
+    ],
+    "enabled": false,
+    "lastTriggered": null,
+    "owner": "team:__TEAM_ID__"
+  }
+]

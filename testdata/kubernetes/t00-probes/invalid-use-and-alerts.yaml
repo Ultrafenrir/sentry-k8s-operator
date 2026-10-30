@@ -1,0 +1,11 @@
+apiVersion: t00.sentry-operator.dev/v1alpha1
+kind: SentryProjectProbe
+metadata:
+  name: use-and-alerts
+  namespace: sentry-operator-t00-probe
+spec:
+  project:
+    use: shared-platform
+  alerts:
+    new-issues:
+      preset: new-issue

@@ -1,0 +1,111 @@
+T01 — SOURCE-ONLY V1ALPHA1 CONTRACT
+Дата: 2026-10-29
+Статус: Complete для source-only scope ADR 0001. Product controller behavior относится
+к T02+ и не считается реализованным.
+
+1. Scaffold и dependency freeze
+
+Module: github.com/artemantipov/sentry-kubernetes-operator
+API group/version: sentryconfiguration.io/v1alpha1
+Go: 1.26.10
+Kubebuilder CLI: 4.16.0
+controller-runtime: 0.24.1
+Kubernetes modules: 0.36.0
+controller-tools: 0.21.0
+
+Kubebuilder 4.16.0 первоначально сгенерировал controller-runtime 0.25.0/Kubernetes 0.37.0.
+До переноса scaffold dependency set явно приведён к принятому T00 baseline; go.mod/go.sum
+являются product dependency freeze, а не T00 probe module.
+
+2. Ресурсы
+
+SentryConnection — cluster-scoped platform-owned CR:
+- HTTPS URL и organization;
+- tokenSecretRef и optional caBundleSecretRef без namespace: Secret всегда читается из
+  фиксированного namespace оператора;
+- default connection flag;
+- access rules owner -> exact namespace names, teams, allowCreate, observe/consumeDSN;
+- destination grants Slack/PagerDuty/Telegram только по читаемым именам;
+- integration defaults и Telegram platform Secret refs/receiverURL;
+- status conditions, serverVersion, capabilities и несекретный registrationCommit fence.
+
+SentryProject — namespaced service-owner CR:
+- ровно один project.create или project.use;
+- optional connection, DSN customization, source-confirmed settings, destinations;
+- paused=false и lifecycle.onDelete=Retain defaults;
+- project.use запрещает settings, destinations и DeleteProject;
+- destination содержит ровно один из slack/pagerDuty/telegram;
+- spec.connection и spec.project immutable;
+- owner, manager, внешние IDs, alerts, profile, grouping и advanced отсутствуют в spec;
+- status показывает только безопасные origin/accessMode/projectURL/DSN Secret, readable
+  DSN client-key name, destination summaries и conditions. External key identity и DSN
+  value остаются protected/Secret-only.
+
+Output Secret contract:
+- default name: <metadata.name>-sentry;
+- единственный стабильный platform key: SENTRY_DSN;
+- public DSN value никогда не попадает в CR status.
+
+3. Limits и semantics
+
+- destinations max 20;
+- access rules max 100, unique by owner;
+- namespace/project/team/key lists bounded;
+- false и omitted различаются pointer boolean fields;
+- [] и omitted различаются pointer slice PII fields;
+- destination names — lowercase DNS labels;
+- Secret references состоят ровно из name + key;
+- consumeDSN обязан быть subset observe;
+- allowCreate требует хотя бы одну разрешённую team.
+
+4. Admission и conversion
+
+Generated mutating/validating webhooks имеют failurePolicy=Fail и sideEffects=None.
+Schema/CEL повторяет критические правила, webhook повторяет safety checks и добавляет:
+- HTTPS/Secret/name validation;
+- policy registration fence;
+- immutable identity;
+- DSN name default при явно заданном пустом dsn block.
+
+Conversion: strategy=None, см. ADR 0002.
+
+5. Golden contract
+
+Ровно пять positive fixtures находятся в testdata/t01/golden/:
+1) minimal Managed create;
+2) External observe без DSN request;
+3) External consume DSN с пустым dsn block и default Secret;
+4) полный опубликованный filters/PII settings contract;
+5) Slack/PagerDuty/Telegram selectors без alerts.
+
+Schema/CEL negative fixtures находятся в testdata/t01/negative/. Alert-dependent
+dangling-notify/delete-in-use fixtures перенесены ADR 0001 в T07.
+
+6. Проверки
+
+- make manifests generate fmt vet;
+- make test-matrix: Passed на envtest 1.35.0 и 1.36.2;
+- make verify-t01-crd: Passed на real kind v1.35.5;
+- тот же generated product CRD и fixture set: Passed на exact kind v1.35.9 и v1.36.5;
+- make verify-t01-webhook-kind: product manager TLS webhooks Passed на kind v1.35.5,
+  exact v1.35.9 и exact v1.36.5, включая default, immutable identity, policy validation
+  и failurePolicy=Fail при scale-to-zero;
+- make verify-t01-generated: dependency versions, conversion=None, five golden fixtures,
+  fail-closed webhook manifests и least-privilege generated manager RBAC проверены;
+- strict server-side validation сохранила false, [] и defaults;
+- unpublished owner/alerts/profile/advanced fields отклонены;
+- generated CRD, RBAC и webhook manifests воспроизводимы pinned controller-gen.
+
+7. Передано следующим задачам
+
+- controllers пока scaffold-only и не обращаются к Sentry;
+- policy evaluator/resolvers принадлежат T02;
+- Secret watch, DSN publisher и binding принадлежат T02–T04;
+- destination runtime capability остаётся Unknown до T06;
+- alerts остаются вне schema до live lifecycle evidence/T07;
+- certificate rotation/recovery остаётся T09; T01 проверил static TLS deployment и
+  fail-closed outage, не заявляя rotation готовой;
+- duplicate readable external names уже имеют T00 executable negative tests, а runtime
+  policy/name integration выполняется в T02;
+- forbidden destination grant проверяется будущим T02 policy evaluator до любого
+  resolver/API call; schema уже не допускает обход grant внешним ID.

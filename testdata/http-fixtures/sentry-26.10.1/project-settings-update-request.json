@@ -1,0 +1,12 @@
+{
+  "dataScrubber": true,
+  "dataScrubberDefaults": true,
+  "scrubIPAddresses": true,
+  "sensitiveFields": [
+    "authorization",
+    "password"
+  ],
+  "safeFields": [
+    "request.headers.x-request-id"
+  ]
+}

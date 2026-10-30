@@ -1,0 +1,126 @@
+ADMIN RECOVERY INVENTORY (READ-ONLY ALPHA)
+Date: 2026-10-30
+
+Purpose
+
+`kubectl sentry admin-report` is a read-only inventory for diagnosing protected operator
+state when live Sentry access is unavailable. It does not authorize or perform repair. The
+output is designed to be safe to attach to an internal incident: it omits Sentry external
+IDs, DSNs, Telegram chat/topic IDs, bot tokens, one-time registration hashes, route keys,
+dedupe keys, operation keys, event payloads, raw errors, and Secret data.
+
+Run
+
+  kubectl sentry admin-report --context <context>
+
+The defaults read these distinct namespaces:
+
+  sentry-kubernetes-operator-state
+  sentry-kubernetes-operator-hook-sources
+  sentry-kubernetes-operator-routing
+  sentry-kubernetes-operator-delivery
+
+The caller needs only `list` on core `secrets` in each of those namespaces. Do not grant
+access to `sentry-kubernetes-operator-system` for this command. Example preflight checks:
+
+  kubectl auth can-i list secrets -n sentry-kubernetes-operator-state
+  kubectl auth can-i list secrets -n sentry-kubernetes-operator-hook-sources
+  kubectl auth can-i list secrets -n sentry-kubernetes-operator-routing
+  kubectl auth can-i list secrets -n sentry-kubernetes-operator-delivery
+
+Mutation audit export
+
+`kubectl sentry audit-export` is a separate read-only surface over immutable records in:
+
+  sentry-kubernetes-operator-audit
+
+Bind `sentry-kubernetes-operator-protected-audit-reader` only to administrators who need
+the trail, then run:
+
+  kubectl auth can-i list secrets -n sentry-kubernetes-operator-audit
+  kubectl sentry audit-export --context <context> > mutation-audit.json
+
+The JSON contains only the closed event schema: timestamp, fixed component/action/outcome/
+reason enums, local Kubernetes resource identity, and monotonic local revision. Secret
+names, UIDs/resource versions, external IDs, Telegram targets, hashes, payloads, and raw
+errors are not exported. Every record is validated before any output is written; one
+malformed record fails the complete export instead of silently creating an incomplete
+trail. Writers have create-only access. Records are immutable, and only the controller's
+leader-only janitor can list/delete them in bounded batches after the default 30-day
+retention period. The controller's pre-existing cluster-wide output-Secret permission
+cannot be narrowed by a namespaced Role, so a fail-closed ValidatingAdmissionPolicy denies
+every UPDATE of an existing labelled audit record, including metadata-only patches.
+
+Interpretation
+
+- `bindings`: local namespace/name/generation, ownership/access class, pending flag, DSN
+  state, aggregate enabled/disabled alert and tombstone counts, and destination state.
+  `targetPinned` and `routePresent` are booleans only.
+- `claims`: readable installation/organization/slug and the local manager name. No external
+  project identity is emitted.
+- `operations`: only the fixed journal phase and revision. Keys and desired hashes are not
+  emitted.
+- `challenges`, `routes`, and `queue`: aggregate counts. Queue state names are fixed enums;
+  create/delete-only admission candidates are reported only as active/expired counts; no
+  route, dedupe key, candidate name or message content is emitted.
+- `hookSources`: aggregate count only. Source keys, expected Sentry slug, route keys and
+  locally rendered message fields are not emitted.
+- `invalidRecords`: labelled records that could not pass the report's fail-closed structural
+  checks. The report never deletes or normalizes them.
+
+Operational rules
+
+1. Capture the report before changing workloads or protected state.
+2. Keep all five protected namespaces backed up together. A binding, hook source plan,
+   route, queue item, and audit record may describe different stages of one operation.
+3. Do not edit or delete protected Secrets by hand. Immutable route/challenge records and
+   mutable queue/binding CAS revisions are safety evidence, not cache entries.
+4. A pending operation, missing route, invalid record, or orphan claim is not proof that an
+   external Sentry/Telegram object is safe to recreate or delete.
+5. Restore the same operator version and image digest first, then observe leader logs and a
+   second admin report. Same-tag development rollouts are not upgrade evidence.
+
+Protected-state backup contract
+
+`internal/statebackup` implements the source-tested core for the state, hook-source,
+routing, and delivery namespaces. Audit records have their own validated export and
+bounded-retention contract.
+It exports every Secret or fails closed on an unknown/unclassified record; it never silently
+skips a Secret. The versioned bundle excludes Kubernetes UID/resourceVersion/managedFields,
+sorts records deterministically, and covers each record plus the whole bundle with SHA-256.
+Every recognized payload must also pass its owning subsystem's semantic validator, including
+binding, claim, operation journal, challenge, hook source, route, final delivery records,
+and immutable delivery-admission candidates. A valid checksum cannot make a corrupt adapter
+pin, ownership marker, phase, target, queue state, admission candidate, or journal transition
+safe.
+Restore is create-only: an empty target is populated, an identical partial restore resumes,
+and any extra or byte-different live record stops the operation. It never edits a CR, grants
+Manage, performs handoff, or calls Sentry/Telegram.
+
+The bundle itself contains protected project/alert identities, pinned adapters, Telegram
+targets, registration hashes and queued message text. It is not the redacted admin report
+and must never be written to logs, tickets, ConfigMaps or an unencrypted artifact. A production backup system must
+encrypt it before persistence, restrict decrypt/list/create Secret access to platform admins,
+and keep these items in the same recovery set:
+
+  - SentryConnection/SentryProject metadata, spec and status;
+  - referenced platform input Secrets from sentry-kubernetes-operator-system;
+  - state, hook-source, routing and delivery namespace bundles;
+  - exact operator image digest, CRDs and installation values.
+
+Safe restore order is: keep controller/writer/worker scaled to zero; restore CRDs and input
+Secrets; restore state/hook-source/routing/delivery through create-only validation and restore separately
+retained immutable audit records according to platform policy; restore CRs;
+start the same image digest; capture a redacted admin report before allowing mutation. A
+Git-only CR restore without the protected bundle remains read-only/OwnershipRecoveryRequired
+by design. The repository currently exposes this as an internal tested core, not a plaintext
+`kubectl sentry backup` command; encryption/key management belongs to the installation.
+
+Current boundary
+
+There is intentionally no `repair`, `adopt`, `force-delete`, `handoff`, or queue replay
+command. Those actions require authenticated live observation of Sentry or an independently
+verified external outcome. The source-tested migration only moves valid legacy Telegram
+route records from state to routing using publish-before-delete; malformed/conflicting
+records remain for administrator review. Adding break-glass mutation before live acceptance
+would convert uncertainty into silent ownership or delivery corruption.

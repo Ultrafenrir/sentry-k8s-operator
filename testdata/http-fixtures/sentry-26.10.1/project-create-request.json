@@ -1,0 +1,5 @@
+{
+  "name": "Checkout [managed;o=payments;m=company-sentry-op]",
+  "slug": "checkout",
+  "default_rules": false
+}

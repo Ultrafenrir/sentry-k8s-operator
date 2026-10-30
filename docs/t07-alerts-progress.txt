@@ -1,0 +1,89 @@
+SENTRY CONFIGURATION OPERATOR — T07 ALERTS PROGRESS
+Date: 2026-10-30
+Status: In Progress; internal lifecycle core implemented, public API and live adapters gated.
+
+Implemented without claiming live Sentry support:
+
+- `internal/alerts` defines a narrow adapter-neutral desired model for first-seen,
+  regression and event-count rules. It accepts only readable local destination keys; raw
+  queries, native model names, adapter families and external IDs are not inputs.
+- Adapter capability selection is deterministic and then pinned in protected state. A
+  controller upgrade cannot silently switch an existing alert to a different family.
+- Every external child has an exact protected `AlertBinding`: adapter, external identity,
+  canonical desired hash, enable state, destination keys and the full ownership marker.
+- Protected binding decode is fail-closed: local key, pinned adapter, SHA-256 hash, exact
+  project marker, external identity and unique destination keys are validated before state
+  can reach reconciliation. Alert bindings are forbidden on External/ReadOnly records.
+- Reconcile observes the exact bound identity and marker before update, toggle or delete,
+  and calls the supplied authorization function immediately before every mutation.
+- Create uses an adapter `Ensure` contract keyed by project, local key and marker. A concrete
+  adapter must recover a lost create response by that marker instead of issuing a blind
+  second POST.
+- Every ensure/update/toggle/delete uses the existing protected `OperationJournal` contract.
+  The runner persists Planned -> Submitted before the external call, verifies a resumed
+  Submitted operation before retry, retries only the same idempotency hash, and persists
+  Verified only after observing the requested result. A different desired hash cannot
+  replace uncertain Submitted intent.
+- Every journaled alert mutation also emits a closed-schema audit event before an external
+  apply and after its verified/recovered/failure outcome. Events contain only timestamp,
+  fixed component/action/outcome/reason enums, local project/rule and journal revision;
+  external identity, desired hash, payload and raw error are not representable. If the audit
+  sink is unavailable before Apply, the adapter is not called and Submitted intent remains
+  recoverable. A verified result is recorded before the journal advances to Verified.
+- The Kubernetes-backed journal now validates its own transition graph: records start at
+  Planned; kind/local resource are immutable; Submitted can advance only to Verified/Failed
+  with the same hash; only terminal operations may start a new Planned intent. Unknown
+  phases, malformed hashes and stale revisions fail closed.
+- An absent alerts block performs no management. An explicitly managed empty map deletes
+  all and only protected operator-owned alert children and records per-key tombstones.
+- Removed alert keys are processed before new/update work, establishing the first half of
+  same-generation alert-before-destination cleanup ordering. The result releases a requested
+  destination cleanup only when no desired rule and no surviving protected binding refers
+  to it; absent alert management or a failed alert deletion keeps cleanup blocked.
+- Update support is capability-gated. When safe in-place update is unavailable the core
+  returns `AlertUpdateUnsupported`; it does not silently recreate, introduce downtime or
+  risk double notifications.
+- Canonical hashes sort destination references and exclude enable state, so a toggle does
+  not trigger an unrelated rule update. Invalid/unsupported rules fail per alert and do not
+  block independent valid rules.
+
+Verification:
+
+- `make verify-t07-core` runs the alert and binding packages under the race detector and
+  vet, checks lifecycle guards, and fails if an alerts field appears in the generated CRD.
+- Fake-adapter tests cover create/update/toggle/delete, deterministic pinning, repeated
+  authorization, ownership loss, missing/unsupported adapter, no-recreate update failure,
+  per-alert isolation, tombstones, delete-before-create ordering, canonical hashes, and
+  preservation of an unbound manual alert. Failure injection also covers a child created
+  before a lost Ensure response: restart recovery returns the same child, not a duplicate.
+  A policy failure during alert deletion is verified to block destination cleanup release.
+- Audit failure injection proves that no adapter call occurs when the start event cannot be
+  recorded, and that the protected journal remains Submitted. A separately verified resumed
+  operation records `Recovered` and closes without authorization or a second Apply. Sentinel
+  JSON checks reject external identity, desired hash and raw adapter error leakage.
+- The existing real-envtest protected-state round trip now includes an alert binding and
+  alert adapter pin; backup, deletion, restore, idempotent re-restore and digest-stable
+  re-export preserve the record exactly.
+- The read-only admin report exposes only aggregate total/enabled/disabled/tombstone counts.
+  Sentinel external identity, trigger and tombstone key tests confirm that protected alert
+  values are absent from its JSON.
+- A temporary protected binding in the persistent Kubernetes 1.35.5 kind cluster exercised
+  the built `kubectl-sentry admin-report` binary. It reported exactly 1/1/0/1
+  total/enabled/disabled/tombstone counts, emitted none of the sentinel identity/trigger/key,
+  and the probe Secret was removed while the controller remained 2/2 Ready.
+
+Evidence boundary and remaining work:
+
+- This is code-level lifecycle evidence only. No Sentry HTTP endpoint was called.
+- `spec.alerts` intentionally remains absent from v1alpha1. The source catalog records that
+  Sentry 24.7.1 lacks a confirmed non-destructive disable lifecycle and that the modern
+  detector/workflow registry is organization/feature dependent. Publishing presets before
+  runtime acceptance would violate the T00/T01 contract.
+- Concrete legacy issue, legacy metric and modern detector/workflow adapters, controller
+  wiring to the protected Store/status and destination release signal, and live
+  create/read/update/disable/enable/delete acceptance against all target environments
+  remain required before T07 can be Complete.
+- The closed audit core now covers managed project create/delete, internal alert mutations,
+  Telegram registration, destination cleanup and external Telegram delivery through the
+  durable immutable export/retention backend. Queue-administration coverage remains required
+  for a complete operator audit trail.

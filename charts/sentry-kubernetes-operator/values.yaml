@@ -1,0 +1,28 @@
+production: false
+
+image:
+  repository: example.com/sentry-kubernetes-operator
+  tag: dev
+  digest: ""
+  pullPolicy: IfNotPresent
+
+registration:
+  enabled: false
+
+registrationGateway:
+  enabled: false
+  gatewayName: ""
+  gatewayNamespace: ""
+  listenerName: ""
+  telegramHostname: ""
+  sentryHostname: ""
+
+registrationMonitoring:
+  enabled: false
+
+controllerMonitoring:
+  enabled: false
+  access:
+    enabled: false
+    serviceAccountName: ""
+    serviceAccountNamespace: ""

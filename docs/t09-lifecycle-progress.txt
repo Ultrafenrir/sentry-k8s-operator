@@ -1,0 +1,300 @@
+T09 — LIFECYCLE, SECURITY, HA И RECOVERY (PARTIAL / SOURCE-TESTED)
+Дата: 2026-10-30
+
+Реализовано и проверяется текущей матрицей:
+
+- controller manager рендерится с 2 replicas, Lease leader election, readiness/liveness,
+  graceful controller-runtime shutdown, preferred cross-node anti-affinity и policy/v1
+  PDB minAvailable=1. Отдельный three-node kind probe требует размещение replica на двух
+  разных workers, удаляет exact leader pod и проверяет transfer к уже живому follower;
+- default installation теперь действительно включает ingress NetworkPolicy для webhook и
+  metrics, а opt-in registration layer имеет отдельные writer/receiver policies;
+- controller, admission, registration writer и public Telegram receiver разделены:
+  receiver не монтирует ServiceAccount token и не имеет RBAC, writer не получает Sentry
+  token, protected state отделён от namespace platform credentials;
+- Telegram delivery worker также отделён: routing, mutable queue и project bindings лежат
+  в трёх namespaces; worker может только get routing record и CAS/list/delete queue, но не
+  create queue, delete route, читать binding/credential Secret или SentryProject;
+- periodic success, component retry, delete progress и registration recovery используют
+  bounded ±10% jitter; ошибка entropy возвращается к base interval, а не tight loop;
+- orphaned expired registration indexes очищает только leader manager bounded batch с
+  jitter и exact ResourceVersion delete; registration writer сохраняет exact-get RBAC без
+  list/watch;
+- legacy route records из прежнего state namespace переносятся leader-only в routing через
+  publish-before-delete; destination conflict/malformed source fail closed и не удаляются;
+- Retain удаляет finalizer без Sentry API, DeleteProject не проходит без live authorization
+  и ownership evidence, delete обрабатывается до paused;
+- manager claim/handoff, protected bindings, operation journals, DSN cutover, Telegram
+  PendingPublish/PendingFenceRelease и route revoke/restore используют CAS/idempotency;
+- registration pending recovery выполняется direct client до Sentry dependencies;
+- standalone registration probes выполняют полный HTTPS /healthz request вместо TCP
+  connect, поэтому readiness также проверяет динамически загружаемый server certificate и
+  не генерирует постоянный TLS handshake EOF noise;
+- registration server/client leaf certificates reload на каждом handshake: kind rotation
+  revisions 1->2->3 прошла с receiver->mTLS writer 204 и нулевыми pod restarts; CA trust
+  overlap остаётся отдельной незакрытой границей;
+- policy revoke сохраняет pinned destination identity; Telegram route exact target сначала
+  отзывается и лишь затем binding фиксирует RouteRevoked; Active reconcile verify/repair
+  закрывает crash window внешняя mutation -> binding CAS.
+- `kubectl sentry admin-report` читает protected state в read-only режиме и выводит только
+  локальные имена, фиксированные фазы и агрегаты; тесты с sentinel external ID/chat ID/event
+  payload/operation key подтверждают их отсутствие в JSON. Alert bindings представлены
+  только total/enabled/disabled/tombstone counts; external identity/trigger/key скрыты.
+  Команда не имеет repair/delete.
+- SentryConnection/SentryProject публикуют Normal/Warning Kubernetes Events только при
+  изменении status/reason/fixed redacted message условия; periodic reconcile без перехода
+  не создаёт event spam. Raw error/response никогда не передаётся Event recorder. Это
+  transition context, а не полный audit trail.
+- controller публикует product-specific `sentry_operator_reconciles_total`,
+  `sentry_operator_reconcile_duration_seconds` и
+  `sentry_operator_condition_transitions_total`. Все labels закрыты фиксированными
+  controller/outcome/condition/status enum; namespace, resource name, Sentry identity,
+  reason/message и raw error не принимаются metrics API. Unknown значения clamp-ятся к
+  `unknown`, отрицательная duration к нулю, а condition counter растёт только вместе с
+  уже deduplicated condition transition. Помимо source/race tests, обновлённый локальный
+  image прошёл authenticated kind scrape с CA+hostname verification: видны reconcile
+  duration/count, success/requeue и CredentialsReady/False transition без dynamic labels.
+- optional `config/controller-monitoring` и Helm `controllerMonitoring.enabled` добавляют
+  ServiceMonitor с bearer auth, exact service DNS и `ca.crt` verification без insecure TLS,
+  а также fixed-label alerts на reconcile errors и burst False transitions. Установка
+  fail-fast проверяет обе Prometheus Operator CRD и оставляет discovery labels overlay-у.
+  Отдельный opt-in controller-monitoring access renderer/Make target/Helm values требуют
+  exact Prometheus ServiceAccount name+namespace, проверяют существование SA и metrics-reader
+  ClusterRole и создают только fixed-subject binding; default render доступ не выдаёт.
+  `make verify-t09-kind-monitoring-access` в persistent kind создал временный exact SA,
+  подтвердил `GET /metrics=yes` и `get Secrets=no`, проверил точный subject/roleRef и удалил
+  binding+namespace; все controller/registration Deployment остались 2/2 Ready.
+  Независимый `make verify-t09-kind-controller-monitoring` поднял disposable Kubernetes
+  1.35.5 с cert-manager v1.21.1 и Prometheus Operator v0.94.2: оба CA/hostname-verified
+  controller target сначала были `down` с HTTP 403 и `GET /metrics=no`, затем один exact
+  binding восстановил обе серии `up=1`, не дав SA читать operator Secrets. Prometheus
+  получил product reconcile metric, загрузил оба штатных alert rule и перевёл временное
+  правило на этой метрике в firing; controller остался 2/2 Ready с restartCount=0, а
+  временный кластер удалён;
+- legacy scaffold path `config/prometheus` больше не содержит небезопасный
+  `insecureSkipVerify: true`: даже этот opt-in render требует exact service DNS и `ca.crt`.
+  Default comment теперь направляет в полный `controller-monitoring` overlay с alerts;
+- real envtest API-server load probe создаёт burst из 40 SentryConnection с отсутствующими
+  credential Secrets и одновременно запускает reconcile. Все 40 за bounded 30s получают
+  redacted CredentialsReady=False/SecretInputInvalid и requeue, а fixed-label counters
+  получают ровно 40 reconcile и 40 condition transitions. Probe проходит race и matrix
+  1.35/1.36; это контролируемый thundering-herd contract без Sentry HTTP, не production soak.
+- versioned protected-state backup core атомарно по смыслу объединяет state/hook-source/routing/delivery:
+  deterministic per-record и bundle SHA-256, create-only resumable restore, отказ при
+  unknown/tampered/extra/different Secret. Real envtest round trip сохраняет binding/claim,
+  alert child с adapter pin/marker/hash, pending journal, immutable route/challenge и
+  InFlight/Retry/DLQ. Он не выдаёт ownership,
+  а production encryption и CR/input-Secret orchestration остаются обязанностью установки;
+- protected operation journal принимает только Planned -> Submitted -> Verified/Failed,
+  запрещает смену kind/local resource и desired hash у Submitted intent; новый intent можно
+  начать только после terminal phase. Stale revision и неизвестная phase fail closed;
+- внутренний alert lifecycle теперь связывает этот journal с закрытым identity-free audit
+  событием до внешнего Apply и после verified/recovered/failure outcome. Audit outage до
+  Apply блокирует adapter call и сохраняет Submitted intent; событие не может содержать
+  external ID, desired hash, payload или raw error. Это source/race-tested alert core, но
+  ещё не полный audit всех компонентов;
+- Managed project create/delete теперь используют тот же fail-closed audit boundary: start
+  фиксируется после Submitted и до POST/DELETE, verified outcome — до очистки pending state.
+  Sink outage после успешного внешнего ответа восстанавливается marker/NotFound observation
+  как Recovered без второго POST/DELETE; ReadOnly и Retain внешних вызовов не делают;
+- Telegram worker тем же закрытым audit sink ограждает внешний sendMessage: sink failure до
+  вызова даёт zero-send, а failure после 2xx оставляет InFlight claim для at-least-once lease
+  recovery вместо ложного Sent. Event не принимает queue hashes, record/chat/topic/message,
+  token или raw error; race tests фиксируют обе crash-boundary;
+- Telegram registration пишет closed audit start до status fences, target CAS и immutable
+  route publish. Outage до start не меняет ни один ресурс; outage после route publish
+  сохраняет PendingFenceRelease, а Resume завершает тот же route с outcome Recovered.
+  Code/hash, chat/topic, outbox/route key, policy resourceVersion и raw errors отсутствуют;
+- Telegram destination cleanup пишет closed audit до exact-target route revoke и после
+  подтверждённого delete. Outage до start даёт zero mutation; outage после delete оставляет
+  binding незавершённым, а повторный RouteStore NotFound превращается в Recovered до
+  RouteRevoked CAS. Audit shape не принимает target, route key или raw error;
+- все эти события теперь сериализуются до mutation в отдельном protected audit namespace:
+  один immutable Secret на событие, create-only права у registration writer и delivery
+  worker; fail-closed ValidatingAdmissionPolicy запрещает любой UPDATE такой записи даже
+  субъекту с более широкими Secret permissions. Leader-only janitor немедленно и
+  затем с bounded jitter удаляет не более 100 записей старше 30 дней за проход; до первого
+  delete он валидирует весь набор. `kubectl sentry audit-export` сортирует валидированные
+  события по времени и не выводит Secret metadata; одна повреждённая запись даёт zero
+  partial output. Unit/race и RBAC/render gates покрывают contract, kind acceptance ниже;
+- backup export дополнительно прогоняет owning-subsystem semantic validators для
+  binding/claim/journal/challenge/route/delivery: корректная SHA-256 не маскирует
+  повреждённый alert pin/marker, target, queue state или неизвестную journal phase;
+- controller Deployment закрепляет RollingUpdate maxUnavailable=0, maxSurge=1 и
+  minReadySeconds=5. Kind image-rollout test делает upgrade и rollback, сохраняет живой
+  SentryConnection, семь pending/routing/delivery records и повторно проверяет admission
+  после каждой смены обеих replica;
+- metrics endpoint использует общий cert-manager leaf с service DNS вместо runtime
+  self-signed fallback. E2E проверяет CA без insecureSkipVerify; после удаления Secret обе
+  replica hot-reload новый leaf через controller-runtime watcher, повторный scrape проходит,
+  pod UID и restartCount не меняются;
+- release build target требует versioned non-latest tag, Buildx SBOM + max provenance,
+  push metadata с canonical image digest; production deploy aliases fail closed без exact
+  repository@sha256. Builder Go 1.26.10 и distroless runtime также закреплены exact OCI
+  index digests, а release target отклоняет mutable overrides. Production aliases теперь
+  дополнительно требуют успешный `cosign verify` exact digest с exact GitHub release-workflow
+  identity и фиксированным OIDC issuer; fake boundary проверяет отказ для mutable image,
+  broad/branch identity и verification failure. Tag-only GitHub workflow с SHA-pinned
+  actions, минимальными permissions, keyless signing exact digest и немедленной проверкой
+  exact workflow/tag identity закреплён отдельным source gate. Hosted workflow run,
+  registry push/signing/real verification не выполнялись локально.
+- generated Helm chart сохраняет canonical Kustomize payloads с drift check, рендерится
+  для Kubernetes 1.35/1.36, требует digest при production=true и keep-аннотации на всех
+  protected namespaces; default и registration renders прошли kind server dry-run.
+
+Эти пункты не означают T09 Complete. Остаются:
+
+- multi-node failover с живыми Sentry mutations и registration traffic; cross-node
+  controller Lease transfer без внешнего HTTP уже проверен;
+- единый формализованный ObserveLocal -> Authorize -> ObserveExternalAllowed -> Normalize
+  -> Plan -> Journal -> Apply -> Verify -> Report для всех компонентов;
+- alert ingress, production encrypted backup orchestration и реальный upgrade/rollback
+  между разными code/schema versions с внешне отправленными pending operations; защищённые
+  локальные records уже прошли API-server backup round trip и same-commit rollout/rollback;
+- authenticated admin break-glass/orphan mutation, включая legacy Telegram binding без
+  route key; read-only redacted inventory и boundary runbook уже есть;
+- audit для queue administration и large/long-running production soak; durable immutable
+  Kubernetes retention/export, закрытые project/alert mutation, Telegram registration,
+  Telegram route cleanup и внешняя delivery audit boundaries уже source-tested;
+  Slack/PagerDuty cleanup ждёт
+  реальных adapters;
+  low-cardinality product metrics, защищённый runtime endpoint и безопасные
+  transition-only Events уже реализованы, bounded API-server herd проверен; отдельный
+  Prometheus Operator kind gate обнаружил обе delivery worker replica, загрузил shipped
+  rules и подтвердил firing disposable product-metric alert;
+- hosted release-workflow execution, real registry signature verification, chart publication
+  и release upgrade acceptance; tag-only signing workflow, verification policy,
+  base/builder pinning, SBOM/provenance, digest gates и generated Helm packaging уже
+  source/kind-tested;
+- conversion webhook только при появлении второй storage version; alpha пока намеренно
+  использует conversion.strategy=None.
+
+Evidence boundary: unit/race и envtest 1.35/1.36 зелёные; persistent single-node kind
+v1.35.5 подтвердил RBAC separation, cert-manager v1.21.1 certificate readiness, 2/2
+controller replicas, PDB allowedDisruptions=1 и Lease transfer после удаления exact leader
+pod с автоматическим восстановлением Deployment до 2/2. После transfer server-side dry-run
+принял positive minimal manifest и отклонил create+use negative; временный namespace был
+удалён. Opt-in registration layer с локальными тестовыми TLS/secret также подтвердил 2/2
+writer и receiver, HTTPS probes без handshake noise и public receiver -> signed mTLS writer
+transport; unknown registration code завершился безопасным 204 без раскрытия state. Это не
+live Sentry/Telegram acceptance, не публичный CA/Ingress и не multi-node production HA.
+Отдельный disposable kind v1.35.5 с control-plane и двумя worker nodes разместил controller
+replica на разных workers. Удаление exact leader pod передало `c4d7095e.io` существующему
+follower на другом node; его UID/restartCount остались прежними, Deployment восстановился
+до двух Ready replica на двух nodes. SentryConnection сохранил UID и redacted
+`SecretInputInvalid`, server-side SentryProject admission прошёл после transfer. Probe не
+имел credential Secret, поэтому Sentry HTTP не вызывался; временный кластер удалён. Это
+cross-node controller failover, не node-loss и не live external-mutation acceptance.
+В том же flow cert-manager server/client leaf Certificates были перевыпущены, затем их
+исходные duration/renewBefore восстановлены вторым перевыпуском: revisions 1->2->3,
+receiver->writer 204 после каждой ротации, 0 restarts у обеих пар pod. CA rotation/overlap
+этим не проверялись.
+Тот же кластер подтвердил 2/2 delivery worker, PDB allowedDisruptions=1, health/readiness и
+реальные allow/deny RBAC decisions между routing/queue/state/system namespaces; queue была
+пустой и внешний Telegram API не вызывался.
+Обновлённый worker после rollout снова 2/2 Ready и отдаёт отдельный identity-free
+Prometheus endpoint: все пять queue states и oldest age были нулевыми, query route = 404,
+sensitive label names отсутствовали. Metrics NetworkPolicy проверена структурно; kind
+network enforcement этим probe не доказан.
+Текущий project/delivery audit image затем был загружен в тот же kind: controller и worker
+выполнили rolling update и остались 2/2 Ready с restartCount=0. Безопасный queue probe с
+отсутствующим route не делал Telegram call, но доказал runtime LogSink: фиксированное
+`delivery/deliver/failed/RouteUnavailable`, DeadLetter attempts=1 и отсутствие sentinel
+message, route/dedupe hash или chat/topic в логах. Probe Secret удалён. Project mutation
+audit в kind не вызывался, потому что Managed create честно заблокирован без live capability
+evidence.
+Следующий controller image
+`dev-registration-audit-finalizer-rbac-20261030` исправил обнаруженную тем же kind реальную
+RBAC границу finalizer: CRD не имеет вызываемого `/finalizers`, поэтому manager теперь
+получает только main-resource `patch` и использует MergePatch exact metadata diff; main
+`create/delete/update` остаются `no`. После rollout 2/2 без restart изолированный
+PendingPublish recovery без Sentry/Telegram вызовов создал immutable route, активировал
+binding и выдал redacted registration started/recovered audit. Protected external ID,
+chat/topic, outbox и code hash отсутствовали в логах; все probe-ресурсы удалены.
+Controller image `dev-destination-cleanup-audit-20261030` затем подтвердил новую cleanup
+boundary на том же kind: намеренно policy-denied Connection с отсутствующим credential
+Secret не мог вызвать Sentry, exact immutable Telegram route был удалён, а protected binding
+получил `Revoked/RouteRevoked`. Runtime LogSink выдал только redacted destination
+started/succeeded; sentinel external ID, target, selector и route key отсутствовали. Probe
+полностью очищен, controller остался 2/2 Ready без restart.
+Образ `dev-durable-audit-20261030` развернул durable sink во всех четырёх workload того же
+kind. Registration writer и delivery worker фактически получили только `create` на audit
+Secrets; `get/list/update/patch/delete` возвращают `no`. У controller из-за существующих
+cluster-wide output-Secret прав `can-i update` неизбежно остаётся `yes`, поэтому отдельная
+fail-closed ValidatingAdmissionPolicy после observedGeneration запретила реальный metadata
+PATCH immutable audit record. Перед rollout были созданы свежая и event-time expired
+валидные записи: elected leader немедленно удалил только expired и сохранил свежую. Новый
+локальный policy-deny cleanup без Sentry/Telegram HTTP создал две durable immutable записи,
+удалил exact route и зафиксировал `Revoked/RouteRevoked`. Собранный `kubectl sentry
+audit-export` прочитал три записи в event-time порядке и вывел только семь schema fields;
+Secret names/resourceVersion и sentinel external ID/chat/selector отсутствовали. Все probe
+CR/Secrets/namespace затем удалены, четыре Deployment остались 2/2 Ready с restartCount=0.
+Следующий source-only T08 подэтап добавил отдельный пятый protected namespace
+`sentry-kubernetes-operator-hook-sources`: authenticated hook source→route plan больше не
+делит RBAC boundary с project bindings/journals. Revisioned record использует Kubernetes
+CAS, canonical hash keys, immutable source identity/project slug и полностью валидированный
+PII-minimal render plan. Real envtest backup/delete/create-only restore сохранил этот record
+вместе с state/routing/delivery. В persistent kind namespace/RBAC применены, controller
+получил ожидаемый CRUD; временный valid source record дал admin-report только
+`hookSources.total=1`, не раскрыв source/route hashes, Sentry slug или sentinel render
+fields. Probe удалён, все четыре workload сохранили 2/2 Ready и restartCount=0.
+Leader-only challenge GC отдельно проверен двумя immutable indexes: до нового holder Lease
+обе записи сохранялись, после acquisition удалена только expired, future не затронута и
+очищена вручную после probe.
+Leader-only route migration также проверена в kind: legacy immutable state record был
+publish-before-delete перенесён в routing только после смены holder; source стал NotFound,
+destination сохранил immutable=true/type=telegram-route и был удалён после probe.
+Read-only `admin-report` выполнен против того же kind context: после очистки probes он
+показал нулевые binding/claim/journal/challenge/route/queue counts и пустой invalidRecords;
+это real Kubernetes read path, но не доказательство backup/restore или repair.
+После появления create/delete-only queue admission отдельный future-expiry candidate дал
+только aggregate `admissionPending=1`; candidate name, hashes и sentinel message не попали
+в JSON, probe был удалён и delivery namespace снова стал пустым.
+Отдельный bounded kind burst провёл 128 уникальных signed hook events при concurrency=16:
+получены 128 final Pending revision=2, zero admission candidates/raw event-ID leaks и
+неизменные UID/restartCount двух receiver и двух producer. Exact cleanup снова оставил
+delivery/source/verifier probes пустыми; это не multi-node или long-running production soak.
+Расширенный rotation probe без смены pod template применил новый public receiver leaf от
+независимого CA: overlap/new-only client trust сохранили signed ingress 204, old-only trust
+после cutover был отклонён. Одновременно повторно прошёл internal mTLS CA cutover; UID и
+restartCount четырёх hook pod не изменились, canonical Secret references восстановлены.
+Повторный read-only probe с временным protected alert binding показал только агрегаты
+total/enabled/disabled/tombstones = 1/1/0/1; sentinel external identity, trigger и tombstone
+key отсутствовали в JSON. Probe Secret удалён, controller остался 2/2 Ready.
+Отдельный clean-cluster e2e на pinned kind 0.32.0/Kubernetes 1.35.5 прошёл 8/8: default
+deployment поднял две replica, webhook TLS/CA injection и authenticated metrics прошли с
+реальной metrics NetworkPolicy и CA verification без insecure TLS, а missing credential
+Secret дал condition и Kubernetes
+Event `SecretInputInvalid` с фиксированным redacted message. Metrics probe читает projected
+ServiceAccount token только внутри pod, использует non-verbose bounded curl и не печатает
+token в host/CI log. Дополнительный rollout с локального image tag v0.0.1 на v0.0.2 и
+rollback на v0.0.1 сохранил UID и condition живого SentryConnection. До upgrade suite
+создал pending project binding, Submitted operation journal, immutable Telegram route и
+immutable admission candidate вместе с InFlight/Retry/DeadLetter delivery records; после
+upgrade и rollback у всех семи совпали UID, labels, immutable flag и payload bytes.
+Server-side dry-run прошёл mutating/validating
+admission после обеих смен. Первый upgrade probe обнаружил краткое connection refused окно
+сразу после Deployment rollout; после явного zero-unavailable/min-ready контракта чистый
+повтор прошёл. Отдельный focused run обнаружил зависимость spec от предыдущего readiness
+test; сценарий теперь сам ждёт initial rollout и прошёл 1/1 за 141.5s. Оба image tag
+собраны из одного commit: это проверка Kubernetes rollout/rollback и сохранности локального
+состояния, не semantic межверсионная migration и не незавершённая внешняя Sentry operation.
+Кластер после теста удалён автоматически.
+Metrics Secret rotation создала новый UID; стандартная kubelet projected-Secret доставка
+заняла около минуты, после чего оба watcher подтвердили reload. Новый pod доверился новой CA
+и получил metrics, а обе controller replica сохранили UID и restartCount=0. Первый probe,
+запущенный до завершения projection, ожидаемо исчерпал TLS retries и не засчитан; acceptance
+теперь явно ждёт post-rotation watcher events на обеих replica.
+После добавления product metrics persistent kind был обновлён каноническим default overlay.
+Это одновременно устранило drift старой установки: прежний Certificate всё ещё содержал
+literal `SERVICE_NAME.SERVICE_NAMESPACE`, а Deployment не передавал metrics-cert-path.
+Certificate generation 2/revision 2 получил реальные Service DNS, Deployment стал 2/2
+Ready на новом image с нулевыми restartCount. OpenSSL `verify_hostname` подтвердил CA и
+cluster-local SAN; authenticated `/metrics` вернул
+`sentry_operator_reconciles_total`, `sentry_operator_reconcile_duration_seconds` и
+`sentry_operator_condition_transitions_total{condition="CredentialsReady",controller="connection",status="False"}`.
+Для transition использовался временный Connection с отсутствующим Secret, поэтому Sentry
+HTTP не вызывался; CR, metrics-reader binding и port-forward после probe удалены. Host
+macOS curl отвергал cert-manager SelfSigned leaf с пустым issuer DN, поэтому acceptance
+выполнен через OpenSSL с `verify_return_error`, а не через insecure TLS.
+Структурный набор повторяется командой `make verify-t09-core`.

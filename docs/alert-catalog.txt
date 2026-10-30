@@ -1,0 +1,108 @@
+SENTRY CONFIGURATION OPERATOR — T00 ALERT CATALOG
+Дата source review: 2026-10-29
+Статус: legacy 24.7.1 и modern 26.10.1 source catalogs complete; runtime availability
+modern registry остаётся Unknown; ничего из каталога не опубликовано в alpha API.
+Machine-readable copy: testdata/contracts/t00-alert-catalog.json
+
+1. Правило использования
+
+Ни один native class ID, query string, integration ID или Sentry payload не является
+публичным полем SentryProject. Каталог нужен adapters для оценки переносимости. Поле может
+появиться в common/advanced только после одинаковой adapter-neutral семантики и полного
+create/read/update/disable/enable/delete lifecycle на всех target environments.
+
+2. Legacy issue alerts — Sentry 24.7.1
+
+Core registry содержит 12 conditions:
+- every event;
+- first seen/new issue;
+- regression;
+- reappeared;
+- new/existing high-priority issue;
+- tag match;
+- event count, unique-user count и frequency-percent;
+- event attribute;
+- level.
+
+Core registry содержит 9 filters:
+- age comparison, issue occurrences, assigned-to;
+- latest adopted/latest release;
+- issue category;
+- event attribute, tag и level filter variants.
+
+Полные native IDs перечислены в machine-readable catalog. Подтверждённые target delivery
+actions: SlackNotifyServiceAction и PagerDutyNotifyServiceAction. Slack transport имеет
+workspace/channel/channel_id/tags/notes, PagerDuty — account/service/severity. Публичный
+operator API использует только readable workspace/channel и account/service; native IDs
+разрешаются и сохраняются исключительно в protected binding.
+
+Общие string/tag match operators: co, ew, eq, is, in, nc, new, ne, ns, nsw, nin, sw.
+Frequency interval является duration token, а не числом: 1m, 5m, 15m, 1h, 1d, 1w, 30d.
+Percent comparison interval не допускает 1m: 5m, 15m, 1h, 1d, 1w, 30d.
+
+Lifecycle blocker: public non-destructive disable endpoint для legacy issue rule не найден.
+Поэтому даже first-seen и regression не могут стать common presets target set.
+
+3. Legacy metric alerts — Sentry 24.7.1
+
+Error-count source mapping:
+- queryType=0 (ERROR);
+- dataset=events;
+- aggregate=count().
+
+Units and bounds:
+- timeWindow: minutes, 1..1440;
+- thresholdPeriod: consecutive windows, 1..20;
+- comparisonDelta: minutes, 1..128160 (89 days);
+- crash-rate timeWindow: exactly 30/60/120/240/720/1440 minutes;
+- thresholdType: above=0, below=1, aboveAndBelow=2;
+- trigger labels: critical and optional warning; alertThreshold/resolveThreshold are values
+  in the selected aggregate's unit.
+
+Request also accepts environment, query, projects/excludedProjects/includeAllProjects,
+eventTypes and trigger actions. Raw query and native aggregate strings are adapter details,
+not public advanced fields. Public disable/enable lifecycle remains absent in 24.7.1.
+
+4. Modern detector/workflow — Sentry 26.10.1
+
+Source universe содержит 38 Condition enum values: шесть базовых comparisons, anomaly,
+24 issue/workflow conditions, шесть frequency/session conditions и Seer activity trigger.
+Discovery endpoint скрывает шесть LEGACY_CONDITIONS. issue_open_duration существует в
+enum и импортируется, но не имеет source registration decorator; поэтому его нельзя
+считать runtime-available.
+
+Action enum содержит 16 types. Available-actions endpoint исключает deprecated plugin и
+отдельно provisioned seer_workflow; ticket actions требуют feature gate, integration
+actions — установленную integration, Sentry App/webhook — подходящую installation, а
+часть actions может быть plan-disabled. Target delivery types slack и pagerduty есть в
+source registry, но их runtime availability/delivery остаётся Unknown.
+
+Data-source registrations: snuba_query_subscription, uptime_subscription, cron_monitor.
+Detector-settings registrations: error, metric_issue, monitor_check_in_failure,
+uptime_domain_failure, sourcemap_configuration, preprod_size_analysis, issue_stream.
+Released types с handler: error, metric_issue и uptime_domain_failure. Unreleased types с
+handler sourcemap_configuration и preprod_size_analysis появляются только через feature
+visibility. monitor_check_in_failure и issue_stream зарегистрированы без handler и
+отсекаются endpoint. Реальный detector-types endpoint дополнительно применяет org-specific
+feature visibility.
+
+Discovery endpoints detector types, data conditions и available actions имеют status
+EXPERIMENTAL. Следовательно source catalog complete не означает adapter lifecycle support:
+machine-readable status = source-catalogued-runtime-availability-unknown, и никакой
+inferred common/advanced mapping не публикуется.
+
+5. Source identities
+
+https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/constants.py
+https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/rules/match.py
+https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/rules/conditions/event_frequency.py
+https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/incidents/serializers/alert_rule.py
+https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/incidents/models/alert_rule.py
+https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/integrations/slack/actions/notification.py
+https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/integrations/pagerduty/actions/notification.py
+https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/models/data_condition.py
+https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/models/action.py
+https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/registry.py
+https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/organization_detector_types.py
+https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/organization_data_condition_index.py
+https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/organization_available_action_index.py

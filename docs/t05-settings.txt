@@ -1,0 +1,81 @@
+T05 — FILTERS, PII И GROUPING
+Дата: 2026-10-29
+Статус: Complete для опубликованной source-derived alpha surface (filters + PII).
+Profile, grouping/fingerprintRules, advanced и reset остаются Unsupported по T00/ADR 0001;
+live synthetic-event semantics остаются Unknown без Sentry.
+
+1. Граница публичного контракта
+
+Реализованы только поля, одинаково подтверждённые source и version-pinned fixtures:
+
+- filters.browserExtensions -> browser-extensions / active;
+- filters.localhost -> localhost / active;
+- filters.webCrawlers -> web-crawlers / active;
+- pii.scrubData -> dataScrubber;
+- pii.scrubDefaults -> dataScrubberDefaults;
+- pii.scrubIPAddresses -> scrubIPAddresses;
+- pii.sensitiveFields -> sensitiveFields;
+- pii.safeFields -> safeFields.
+
+Raw fingerprintingRules Sentry DSL не принимается. 24.7.1 и 26.10.1 имеют различия
+parser/diagnostics, а одинаковый typed AST и real round-trip не доказаны. Поэтому
+recommended-v1/strict-pii-v1, grouping, settings.advanced и reset не добавлены скрыто и
+не объявлены реализованными. Это обязательное source-only решение T00, а не пропуск
+runtime реализации.
+
+2. Reconcile semantics
+
+internal/settings выполняет preflight validation всего desired settings до любых reads
+или writes. Для каждого присутствующего блока:
+
+- fresh GET получает текущее состояние;
+- отсутствующее поле не управляется;
+- false и [] являются явным desired state;
+- списки сравниваются и применяются целиком с сохранением порядка;
+- удалённый filters/PII/settings block прекращает управление без reset;
+- drift по управляемому полю исправляется;
+- перед каждой отдельной mutation повторяется manager authorization.
+
+Filters читаются всеми страницами GET filters и меняются только PUT exact filter ID с
+body {active: bool}. PII использует fresh project GET, строит узкий partial PUT только из
+изменившихся управляемых полей и передаёт If-Match, когда GET вернул ETag. Соседние ручные
+поля не копируются в body и не сбрасываются. 409/412 классифицируются Conflict и приводят
+к новому fresh GET на следующем reconcile; PUT не retry-safe.
+
+Sensitive/safe lists с blank/control/duplicate values отклоняются до Sentry. Ошибка не
+заменяет рабочую remote конфигурацию.
+
+3. Ownership и partial components
+
+Settings доступны только active Managed manager. Controller перед каждым PUT перечитывает
+exact SentryProject UID/generation, policy, protected binding/identity и manager claim без
+handoff. project.use запрещён API и runtime.
+
+Filters и PII являются независимыми компонентами: ошибка одного не отменяет успешно
+проверенный/применённый другой. SettingsReady получает SettingsPartiallyApplied, а DSN
+продолжает независимый reconcile. Аналогично DSN failure больше не блокирует settings.
+Ready=True требует все применимые компоненты; отсутствующий settings или reader без DSN
+получает соответствующий NotApplicable condition и не блокирует Ready.
+
+4. HTTP и fixture evidence
+
+Используются public routes:
+
+- GET /api/0/projects/{org}/{slug}/filters/;
+- PUT /api/0/projects/{org}/{slug}/filters/{filter-id}/;
+- GET /api/0/projects/{org}/{slug}/;
+- PUT /api/0/projects/{org}/{slug}/.
+
+Fixtures 24.7.1/26.10.1 фиксируют filter response, filter update body и project settings
+update body. Local TLS tests доказывают exact route, fresh GET -> conditional PUT, узкий
+body и отсутствие blind retry.
+
+5. Проверки и честные ограничения
+
+- make verify-t05: race engine/HTTP tests, vet, fixture и public-schema fences, controller
+  envtest с partial settings + независимым DSN;
+- make test-matrix: весь набор на Kubernetes envtest 1.35.0 и 1.36.2.
+
+Без live Sentry нельзя подтвердить реальное event filtering, data scrubbing, grouping или
+историческую перегруппировку. Оператор их не заявляет. После появления стенда grouping и
+profiles требуют отдельного adapter-neutral design/round-trip, а не передачи raw DSL.

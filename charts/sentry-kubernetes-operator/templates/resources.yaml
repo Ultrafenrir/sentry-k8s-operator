@@ -1,0 +1,33 @@
+{{- $image := include "sentry-kubernetes-operator.image" . -}}
+{{- $pullPolicy := printf "imagePullPolicy: %s" .Values.image.pullPolicy -}}
+{{- $state := .Files.Get "files/state.yaml" | replace "app.kubernetes.io/managed-by: kustomize" "app.kubernetes.io/managed-by: Helm" -}}
+{{ $state }}
+---
+{{ $operator := .Files.Get "files/operator.yaml" | replace "controller:latest" $image | replace "imagePullPolicy: IfNotPresent" $pullPolicy | replace "app.kubernetes.io/managed-by: kustomize" "app.kubernetes.io/managed-by: Helm" }}
+{{ $operator }}
+{{ if .Values.registration.enabled }}
+---
+{{ $registration := .Files.Get "files/registration.yaml" | replace "controller:latest" $image | replace "imagePullPolicy: IfNotPresent" $pullPolicy | replace "app.kubernetes.io/managed-by: kustomize" "app.kubernetes.io/managed-by: Helm" }}
+{{ $registration }}
+{{ end }}
+{{ if .Values.registrationGateway.enabled }}
+{{- if eq .Values.registrationGateway.telegramHostname .Values.registrationGateway.sentryHostname }}
+{{- fail "registrationGateway.telegramHostname and registrationGateway.sentryHostname must be distinct" }}
+{{- end }}
+---
+{{ $gateway := .Files.Get "files/registration-gateway.yaml" | replace "GATEWAY_NAMESPACE" .Values.registrationGateway.gatewayNamespace | replace "GATEWAY_LISTENER" .Values.registrationGateway.listenerName | replace "GATEWAY_NAME" .Values.registrationGateway.gatewayName | replace "TELEGRAM_HOSTNAME" .Values.registrationGateway.telegramHostname | replace "SENTRY_HOSTNAME" .Values.registrationGateway.sentryHostname | replace "app.kubernetes.io/managed-by: kustomize" "app.kubernetes.io/managed-by: Helm" }}
+{{ $gateway }}
+{{ end }}
+{{ if .Values.registrationMonitoring.enabled }}
+---
+{{ .Files.Get "files/registration-monitoring.yaml" | replace "app.kubernetes.io/managed-by: kustomize" "app.kubernetes.io/managed-by: Helm" }}
+{{ end }}
+{{ if .Values.controllerMonitoring.enabled }}
+---
+{{ .Files.Get "files/controller-monitoring.yaml" | replace "app.kubernetes.io/managed-by: kustomize" "app.kubernetes.io/managed-by: Helm" }}
+{{ end }}
+{{ if .Values.controllerMonitoring.access.enabled }}
+---
+{{ $access := .Files.Get "files/controller-monitoring-access.yaml" | replace "PROMETHEUS_SERVICE_ACCOUNT_NAMESPACE" .Values.controllerMonitoring.access.serviceAccountNamespace | replace "PROMETHEUS_SERVICE_ACCOUNT_NAME" .Values.controllerMonitoring.access.serviceAccountName | replace "app.kubernetes.io/managed-by: kustomize" "app.kubernetes.io/managed-by: Helm" }}
+{{ $access }}
+{{ end }}

@@ -1,0 +1,8 @@
+apiVersion: t00.sentry-operator.dev/v1alpha1
+kind: SentryProjectProbe
+metadata:
+  name: external
+  namespace: sentry-operator-t00-probe
+spec:
+  project:
+    use: shared-platform

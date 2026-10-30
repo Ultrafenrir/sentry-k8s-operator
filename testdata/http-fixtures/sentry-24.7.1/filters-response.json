@@ -1,0 +1,5 @@
+[
+  {"id": "browser-extensions", "active": true},
+  {"id": "localhost", "active": true},
+  {"id": "web-crawlers", "active": true}
+]

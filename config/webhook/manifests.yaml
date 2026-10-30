@@ -1,0 +1,94 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: mutating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-sentryconfiguration-io-v1alpha1-sentryconnection
+  failurePolicy: Fail
+  name: msentryconnection-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - sentryconfiguration.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - sentryconnections
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-sentryconfiguration-io-v1alpha1-sentryproject
+  failurePolicy: Fail
+  name: msentryproject-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - sentryconfiguration.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - sentryprojects
+  sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-sentryconfiguration-io-v1alpha1-sentryconnection
+  failurePolicy: Fail
+  name: vsentryconnection-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - sentryconfiguration.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - sentryconnections
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-sentryconfiguration-io-v1alpha1-sentryproject
+  failurePolicy: Fail
+  name: vsentryproject-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - sentryconfiguration.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - sentryprojects
+  sideEffects: None

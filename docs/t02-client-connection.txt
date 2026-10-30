@@ -1,0 +1,91 @@
+T02 — SENTRY CLIENT, CONNECTION И NAME RESOLVERS
+Дата: 2026-10-29
+Статус: Complete для source-only scope. Реальная Sentry недоступна; поэтому discovery
+сохраняет только полученное HTTP evidence, а ни одна capability не повышена до Verified.
+
+1. Безопасный HTTP client
+
+- принимает только absolute HTTPS base URL без userinfo;
+- TLS не ниже 1.2, поддерживает platform-owned custom CA bundle;
+- redirect разрешён только в тот же exact origin; cross-origin token leak проверен тестом;
+- timeout, connection-scoped semaphore и bounded full-jitter backoff настраиваются на
+  connection client;
+- retry выполняется только при RetrySafe=true и только для transport/timeout, 429 и 5xx;
+- create/mutating POST по умолчанию не RetrySafe и после uncertain timeout не повторяется;
+- Retry-After seconds/date поддерживается; Sentry Link rel=next собирается до results=false;
+- response ограничен 4 MiB; error никогда не содержит body, token, DSN или complete URL;
+- JSON сначала декодируется во временное значение, поэтому malformed body не оставляет
+  caller частично заполненный чувствительными данными;
+- 400/401/403/404/409/429/5xx/timeout/transport/decode имеют отдельные stable classes.
+
+2. Capability discovery
+
+Discovery принимает только GET/HEAD probes. 2xx даёт Available. 404 остаётся Unknown,
+если конкретный version-pinned probe не объявил, что NotFound доказывает Unavailable.
+401/403/transport возвращаются как ошибки и никогда не означают Unsupported. Версия
+сервера сама по себе capability не доказывает.
+
+3. Exact name resolution
+
+Product resolver реализует правила docs/name-resolution.txt:
+
+- exact match после сбора всех страниц;
+- 0 -> ReferenceNotFound, >1 -> ReferenceAmbiguous, без выбора первого элемента;
+- canonical team/project slug, provider-scoped Slack/PagerDuty integrations;
+- единственная cosmetic normalization — один ведущий # у Slack channel;
+- client key выбирается только среди active: один active без selector либо единственная
+  exact label по явному selector; duplicate labels across pages отклоняются;
+- external identity отсутствует в resolver errors и публичных selector types.
+
+4. Access policy
+
+Evaluator до внешнего lookup выбирает ровно одно access rule по exact namespace:
+
+- create требует allowCreate и exact team grant, результат Manage + trusted owner;
+- project.use требует observe, всегда ReadOnly и не получает owner;
+- DSN при project.use требует отдельный ConsumeDSN по тому же slug;
+- Slack workspace/channel, PagerDuty account/service и Telegram target сверяются exact с
+  destination grants до resolution;
+- default workspace/account берутся из platform-owned connection integrations;
+- missing, overlapping policy и malformed multi-type destination fail closed.
+
+5. Secret watch и rotation
+
+Все tokenSecretRef, caBundleSecretRef, botTokenSecretRef и webhookAuthSecretRef читаются
+только из namespace установки оператора. Manager cache ограничивает Secret informer этим
+namespace. Отдельный namespaced connection-secret-reader Role даёт только get/list/watch,
+причём cache credential Secret остаётся ограничен этим namespace. Начиная с T03 тот же
+ServiceAccount также получает отдельный namespaced protected-state-manager Role для binding
+Secret CRUD. T04 добавляет в основной ClusterRole get/create/update/patch/delete, но не
+list/watch, для exact cross-namespace output DSN Secrets через uncached client. Это не
+расширяет credential informer; разделение runtime identities остаётся T09 risk.
+
+Secret event ставит в очередь все SentryConnection, которые ссылаются на его имя. Reconcile
+повторно загружает значения. При стабильном URL registry сохраняет тот же client pointer и
+атомарно меняет token/CA; bot/webhook material заменяется защитной копией. В status попадает
+только CredentialsReady с фиксированным сообщением. Значения Secret и hashes туда не пишутся.
+receiverURL дополнительно проверяется как absolute HTTPS без userinfo/fragment.
+
+6. Uncertain mutation boundary
+
+OperationJournal фиксирует интерфейс Load + CompareAndSwap и фазы Planned, Submitted,
+Verified, Failed. Operation содержит только local resource identity и idempotency hash.
+T03 реализует Kubernetes-backed journal/binding и marker GET recovery; T02 гарантирует, что
+сам client не сделает blind retry POST, но разрешит отдельный RetrySafe read-only marker GET.
+
+7. Исполняемая приёмка
+
+- make verify-t02: race HTTP tests, resolvers, policy, secret registry, vet и static RBAC/TLS;
+- make test-matrix: весь проект на pinned envtest Kubernetes 1.35.0 и 1.36.2;
+- internal/controller envtest: Secret token rotation меняет safe fingerprint, сохраняет live
+  client и выставляет CredentialsReady=True;
+- make manifests && sh hack/verify-t01-generated.sh: T01 generated contracts не изменены.
+
+8. Осознанные границы
+
+- live server version/capability result остаётся Unknown без доступной Sentry;
+- real project/team/integration endpoint adapters начинаются в T03/T06; T02 предоставляет
+  transport, pagination и ambiguity-safe product resolvers;
+- persistent operation journal и protected external-ID binding принадлежат T03;
+- bot delivery и receiver runtime принадлежат T08, хотя их inputs уже reloadable;
+- certificate lifecycle admission webhook остаётся T09.

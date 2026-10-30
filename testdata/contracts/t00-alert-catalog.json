@@ -1,0 +1,230 @@
+{
+  "publishedInAlpha": false,
+  "legacyIssue": {
+    "version": "24.7.1",
+    "conditions": [
+      "sentry.rules.conditions.every_event.EveryEventCondition",
+      "sentry.rules.conditions.first_seen_event.FirstSeenEventCondition",
+      "sentry.rules.conditions.regression_event.RegressionEventCondition",
+      "sentry.rules.conditions.reappeared_event.ReappearedEventCondition",
+      "sentry.rules.conditions.high_priority_issue.NewHighPriorityIssueCondition",
+      "sentry.rules.conditions.high_priority_issue.ExistingHighPriorityIssueCondition",
+      "sentry.rules.conditions.tagged_event.TaggedEventCondition",
+      "sentry.rules.conditions.event_frequency.EventFrequencyCondition",
+      "sentry.rules.conditions.event_frequency.EventUniqueUserFrequencyCondition",
+      "sentry.rules.conditions.event_frequency.EventFrequencyPercentCondition",
+      "sentry.rules.conditions.event_attribute.EventAttributeCondition",
+      "sentry.rules.conditions.level.LevelCondition"
+    ],
+    "filters": [
+      "sentry.rules.filters.age_comparison.AgeComparisonFilter",
+      "sentry.rules.filters.issue_occurrences.IssueOccurrencesFilter",
+      "sentry.rules.filters.assigned_to.AssignedToFilter",
+      "sentry.rules.filters.latest_adopted_release_filter.LatestAdoptedReleaseFilter",
+      "sentry.rules.filters.latest_release.LatestReleaseFilter",
+      "sentry.rules.filters.issue_category.IssueCategoryFilter",
+      "sentry.rules.filters.event_attribute.EventAttributeFilter",
+      "sentry.rules.filters.tagged_event.TaggedEventFilter",
+      "sentry.rules.filters.level.LevelFilter"
+    ],
+    "baseActions": [
+      "sentry.mail.actions.NotifyEmailAction",
+      "sentry.rules.actions.notify_event.NotifyEventAction",
+      "sentry.rules.actions.notify_event_service.NotifyEventServiceAction",
+      "sentry.rules.actions.notify_event_sentry_app.NotifyEventSentryAppAction"
+    ],
+    "targetDeliveryActions": {
+      "slack": "sentry.integrations.slack.notify_action.SlackNotifyServiceAction",
+      "pagerduty": "sentry.integrations.pagerduty.notify_action.PagerDutyNotifyServiceAction"
+    },
+    "matchOperators": [
+      "co",
+      "ew",
+      "eq",
+      "is",
+      "in",
+      "nc",
+      "new",
+      "ne",
+      "ns",
+      "nsw",
+      "nin",
+      "sw"
+    ],
+    "frequencyIntervals": {
+      "unit": "duration-token",
+      "values": ["1m", "5m", "15m", "1h", "1d", "1w", "30d"]
+    },
+    "comparisonIntervals": {
+      "unit": "duration-token",
+      "values": ["5m", "15m", "1h", "1d", "1w", "30d"]
+    }
+  },
+  "legacyMetric": {
+    "version": "24.7.1",
+    "requestFields": [
+      "name",
+      "queryType",
+      "dataset",
+      "query",
+      "timeWindow",
+      "environment",
+      "thresholdType",
+      "resolveThreshold",
+      "thresholdPeriod",
+      "comparisonDelta",
+      "aggregate",
+      "projects",
+      "includeAllProjects",
+      "excludedProjects",
+      "triggers",
+      "eventTypes"
+    ],
+    "errorCountMapping": {
+      "queryType": 0,
+      "dataset": "events",
+      "aggregate": "count()"
+    },
+    "thresholdTypes": {
+      "above": 0,
+      "below": 1,
+      "aboveAndBelow": 2
+    },
+    "timeWindow": {
+      "unit": "minutes",
+      "minimum": 1,
+      "maximum": 1440
+    },
+    "thresholdPeriod": {
+      "unit": "consecutive-windows",
+      "minimum": 1,
+      "maximum": 20
+    },
+    "comparisonDelta": {
+      "unit": "minutes",
+      "minimum": 1,
+      "maximum": 128160
+    },
+    "crashRateTimeWindows": {
+      "unit": "minutes",
+      "values": [30, 60, 120, 240, 720, 1440]
+    },
+    "triggerLabels": ["critical", "warning"],
+    "targetActionTypes": ["slack", "pagerduty"]
+  },
+  "modern": {
+    "version": "26.10.1",
+    "status": "source-catalogued-runtime-availability-unknown",
+    "conditionEnum": [
+      "eq",
+      "gte",
+      "gt",
+      "lte",
+      "lt",
+      "ne",
+      "anomaly_detection",
+      "age_comparison",
+      "assigned_to",
+      "event_attribute",
+      "event_created_by_detector",
+      "event_seen_count",
+      "every_event",
+      "existing_high_priority_issue",
+      "first_seen_event",
+      "issue_category",
+      "issue_occurrences",
+      "issue_open_duration",
+      "issue_priority_deescalating",
+      "issue_priority_equals",
+      "issue_priority_greater_or_equal",
+      "issue_resolution_change",
+      "issue_resolved_trigger",
+      "issue_type",
+      "latest_adopted_release",
+      "latest_release",
+      "level",
+      "new_high_priority_issue",
+      "reappeared_event",
+      "regression_event",
+      "tagged_event",
+      "event_frequency_count",
+      "event_frequency_percent",
+      "event_unique_user_frequency_count",
+      "event_unique_user_frequency_percent",
+      "percent_sessions_count",
+      "percent_sessions_percent",
+      "seer_activity_trigger"
+    ],
+    "legacyConditionsHiddenByDiscoveryEndpoint": [
+      "event_created_by_detector",
+      "event_seen_count",
+      "new_high_priority_issue",
+      "existing_high_priority_issue",
+      "issue_resolution_change",
+      "issue_priority_equals"
+    ],
+    "enumWithoutSourceRegistration": ["issue_open_duration"],
+    "actionEnum": [
+      "slack",
+      "slack_staging",
+      "msteams",
+      "discord",
+      "pagerduty",
+      "opsgenie",
+      "github",
+      "github_enterprise",
+      "jira",
+      "jira_server",
+      "vsts",
+      "email",
+      "sentry_app",
+      "plugin",
+      "webhook",
+      "seer_workflow"
+    ],
+    "actionsExcludedByDiscoveryEndpoint": {
+      "deprecated": ["plugin"],
+      "provisionedSeparately": ["seer_workflow"]
+    },
+    "targetDeliveryActions": ["slack", "pagerduty"],
+    "dataSourceRegistrations": [
+      "snuba_query_subscription",
+      "uptime_subscription",
+      "cron_monitor"
+    ],
+    "detectorSettingsRegistrations": [
+      "error",
+      "metric_issue",
+      "monitor_check_in_failure",
+      "uptime_domain_failure",
+      "sourcemap_configuration",
+      "preprod_size_analysis",
+      "issue_stream"
+    ],
+    "releasedDetectorTypesWithHandler": [
+      "error",
+      "metric_issue",
+      "uptime_domain_failure"
+    ],
+    "featureGatedDetectorTypesWithHandler": [
+      "sourcemap_configuration",
+      "preprod_size_analysis"
+    ],
+    "detectorTypesWithoutHandler": [
+      "monitor_check_in_failure",
+      "issue_stream"
+    ],
+    "discoveryEndpoints": {
+      "detectorTypes": "experimental",
+      "dataConditions": "experimental",
+      "availableActions": "experimental"
+    },
+    "runtimeAvailabilityDependsOn": [
+      "group-type visibility",
+      "feature gates",
+      "plan gates",
+      "installed integrations",
+      "registered sentry apps"
+    ]
+  }
+}

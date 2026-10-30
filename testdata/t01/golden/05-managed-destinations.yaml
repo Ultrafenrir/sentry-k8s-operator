@@ -1,0 +1,22 @@
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryProject
+metadata:
+  name: checkout-destinations
+  namespace: checkout-prod
+spec:
+  connection: company-sentry
+  project:
+    create:
+      team: payments
+  destinations:
+    team:
+      slack:
+        workspace: Company Slack
+        channel: payments-alerts
+    oncall:
+      pagerDuty:
+        account: Company PagerDuty
+        service: Payments Primary
+    chat:
+      telegram:
+        target: payments-alerts

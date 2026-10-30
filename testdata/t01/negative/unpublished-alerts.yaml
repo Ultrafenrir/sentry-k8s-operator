@@ -1,0 +1,10 @@
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryProject
+metadata:
+  name: invalid-alerts
+  namespace: checkout-prod
+spec:
+  project:
+    create:
+      team: payments
+  alerts: {}

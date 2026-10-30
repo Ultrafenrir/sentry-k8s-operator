@@ -1,0 +1,1079 @@
+/*
+Copyright 2026 Sentry Kubernetes Operator Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package controller
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"reflect"
+	"time"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/events"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	sentryconfigurationv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/audit"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
+	connectionruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/connection"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/destination"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/dsn"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/policy"
+	projectruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/project"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/registration"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/resolver"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
+	settingsruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/settings"
+)
+
+const sentryProjectFinalizer = "sentryconfiguration.io/project-protection"
+
+type AdapterFactory func(*sentryapi.Client) projectruntime.Adapter
+
+type ClientKeyLister func(context.Context, *sentryapi.Client, string, string) ([]dsn.ClientKey, error)
+
+type SettingsAdapterFactory func(*sentryapi.Client) settingsruntime.Adapter
+
+type DestinationCatalogFactory func(*sentryapi.Client) destination.Catalog
+
+// SentryProjectReconciler reconciles a SentryProject object.
+type SentryProjectReconciler struct {
+	client.Client
+	Scheme   *runtime.Scheme
+	Registry *connectionruntime.Registry
+	Bindings *binding.Store
+	// OutputSecrets bypasses the Secret cache, which is deliberately limited to
+	// the distinct platform-credential and protected-state namespaces.
+	OutputSecrets         client.Client
+	ManagedBy             string
+	NewAdapter            AdapterFactory
+	ListKeys              ClientKeyLister
+	NewSettingsAdapter    SettingsAdapterFactory
+	NewDestinationCatalog DestinationCatalogFactory
+	// RegistrationRecovery uses a direct uncached client. It completes a durable
+	// Telegram publish/fence release before any Sentry API dependency is needed.
+	RegistrationRecovery *registration.Service
+	RegistrationRoutes   registration.RouteManager
+	RegistrationIndexes  *registration.ChallengeIndexStore
+	Recorder             events.EventRecorder
+	Metrics              *Metrics
+	Audit                audit.Sink
+	DestinationAudit     audit.Sink
+}
+
+// +kubebuilder:rbac:groups=sentryconfiguration.io,resources=sentryprojects,verbs=get;list;watch;patch
+// +kubebuilder:rbac:groups=sentryconfiguration.io,resources=sentryprojects/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update;patch;delete
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
+
+func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (reconcileResult ctrl.Result, reconcileErr error) {
+	started := time.Now()
+	defer func() {
+		r.Metrics.ObserveReconcile(controllerProject, reconcileResult, reconcileErr, time.Since(started))
+	}()
+	resource := &sentryconfigurationv1alpha1.SentryProject{}
+	if err := r.Get(ctx, req.NamespacedName, resource); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	if r.Registry == nil || r.Bindings == nil || r.ManagedBy == "" {
+		return ctrl.Result{}, fmt.Errorf("project runtime is not configured")
+	}
+	if attempted, recoveryErr := r.resumePendingRegistration(ctx, resource); attempted {
+		if recoveryErr != nil {
+			return ctrl.Result{RequeueAfter: jitterDuration(5 * time.Second)}, nil
+		}
+		// Let the Secret informer observe the direct-client CAS before ordinary
+		// destination reconciliation reads or writes the same binding.
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	if !resource.DeletionTimestamp.IsZero() {
+		if !containsString(resource.Finalizers, sentryProjectFinalizer) {
+			return ctrl.Result{}, nil
+		}
+		if resource.Spec.Lifecycle.OnDelete != sentryconfigurationv1alpha1.OnDeleteDeleteProject {
+			return ctrl.Result{}, r.removeFinalizer(ctx, resource)
+		}
+		return r.reconcileDelete(ctx, resource)
+	}
+	if !containsString(resource.Finalizers, sentryProjectFinalizer) {
+		base := resource.DeepCopy()
+		resource.Finalizers = append(resource.Finalizers, sentryProjectFinalizer)
+		if err := r.Patch(ctx, resource, client.MergeFrom(base)); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+	if resource.Spec.Paused {
+		return r.reportFailure(ctx, resource, "Paused", "Reconciliation is paused; no Sentry API operation was attempted.")
+	}
+
+	connection, err := r.resolveConnection(ctx, resource)
+	if err != nil {
+		dsnRevoked, revokeErr := r.revokeDSNIfDenied(ctx, resource)
+		if revokeErr != nil {
+			return r.reportFailure(ctx, resource, reasonForError(revokeErr), "Connection policy could not be verified; an existing working DSN Secret was preserved.")
+		}
+		destinationResult, destinationsRevoked, destinationErr := r.revokeDestinationsIfDenied(ctx, resource)
+		if destinationErr != nil {
+			return r.reportFailure(ctx, resource, reasonForError(destinationErr), "Connection policy revoke state could not be recorded; existing destination identities were preserved.")
+		}
+		if dsnRevoked || destinationsRevoked {
+			return r.reportAccessRevoked(ctx, resource, dsnRevoked, destinationResult, reasonForError(err))
+		}
+		return r.reportFailure(ctx, resource, reasonForError(err), "Connection or access policy could not be resolved.")
+	}
+	if resource.Spec.Project.Create != nil && !projectruntime.ManagedCreateSupported(connection.Status.Capabilities) {
+		return r.reportFailure(ctx, resource, "ManagedCreateUnsupported", "The connection has not proven atomic default-rule suppression and an automatic active client key.")
+	}
+	apiClient, found := r.Registry.Get(connection.Name)
+	if !found {
+		return r.reportFailure(ctx, resource, "ConnectionNotReady", "The selected SentryConnection has not loaded its credentials yet.")
+	}
+	result, err := r.engine(apiClient).Reconcile(ctx, projectruntime.Input{
+		Project:        resource,
+		ConnectionName: connection.Name,
+		Connection:     connection.Spec,
+	})
+	if err != nil {
+		return r.reportFailure(ctx, resource, reasonForError(err), "Project reconciliation is safely blocked; no unverified mutation was performed.")
+	}
+	dsnResult, err := r.reconcileDSN(ctx, resource, connection, apiClient, result)
+	dsnErr := err
+	settingsResult := r.reconcileSettings(ctx, resource, connection, apiClient, result)
+	settingsErr := settingsResult.Err()
+	destinationResult := r.reconcileDestinations(ctx, resource, connection, apiClient, result)
+	destinationErr := destinationResult.Err()
+	base := resource.DeepCopy()
+	resource.Status.ObservedGeneration = resource.Generation
+	resource.Status.Origin = string(result.Origin)
+	resource.Status.AccessMode = result.AccessMode
+	resource.Status.ProjectURL = result.ProjectURL
+	resource.Status.DSNSecret = dsnResult.Secret
+	resource.Status.DSNClientKey = dsnResult.ClientKey
+	resource.Status.Destinations = safeDestinationStatuses(destinationResult.Statuses, resource.Status.Destinations)
+	dsnApplicable := result.AccessMode == binding.AccessManage || resource.Spec.DSN != nil
+	dsnStatus, dsnReason, dsnMessage := dsnCondition(dsnApplicable, dsnResult.Phase, dsnResult.ExternalNameChanged, dsnErr)
+	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+		Type:               "DSNReady",
+		Status:             dsnStatus,
+		ObservedGeneration: resource.Generation,
+		Reason:             dsnReason,
+		Message:            dsnMessage,
+	})
+	settingsApplicable := resource.Spec.Settings != nil
+	settingsStatus, settingsReason, settingsMessage := settingsCondition(settingsApplicable, settingsResult, settingsErr)
+	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+		Type:               "SettingsReady",
+		Status:             settingsStatus,
+		ObservedGeneration: resource.Generation,
+		Reason:             settingsReason,
+		Message:            settingsMessage,
+	})
+	destinationApplicable := len(resource.Spec.Destinations) > 0 || len(destinationResult.Statuses) > 0
+	destinationStatus, destinationReason, destinationMessage := destinationCondition(destinationApplicable, destinationResult, destinationErr)
+	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+		Type:               "DestinationsReady",
+		Status:             destinationStatus,
+		ObservedGeneration: resource.Generation,
+		Reason:             destinationReason,
+		Message:            destinationMessage,
+	})
+	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+		Type:               "ProjectReady",
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: resource.Generation,
+		Reason:             "ProjectVerified",
+		Message:            "Project identity, access mode and ownership evidence are verified.",
+	})
+	ready := (!dsnApplicable || dsnStatus == metav1.ConditionTrue) && (!settingsApplicable || settingsStatus == metav1.ConditionTrue) && (!destinationApplicable || destinationStatus == metav1.ConditionTrue)
+	readyStatus := metav1.ConditionTrue
+	readyReason := "ProjectVerified"
+	readyMessage := "Project identity, access mode and all applicable components are verified."
+	if !ready {
+		readyStatus = metav1.ConditionFalse
+		readyReason = "ComponentNotReady"
+		readyMessage = "One or more applicable components are not ready; verified components were preserved."
+	}
+	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             readyStatus,
+		ObservedGeneration: resource.Generation,
+		Reason:             readyReason,
+		Message:            readyMessage,
+	})
+	if err := r.Status().Patch(ctx, resource, client.MergeFrom(base)); err != nil {
+		return ctrl.Result{}, err
+	}
+	emitConditionChangesObserved(r.Recorder, r.Metrics, controllerProject, resource, base.Status.Conditions, resource.Status.Conditions)
+	if !ready {
+		return ctrl.Result{RequeueAfter: jitterDuration(30 * time.Second)}, nil
+	}
+	return ctrl.Result{RequeueAfter: jitterDuration(10 * time.Minute)}, nil
+}
+
+func (r *SentryProjectReconciler) resumePendingRegistration(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject) (bool, error) {
+	service := r.RegistrationRecovery
+	if service == nil || service.Store == nil || resource == nil || resource.UID == "" {
+		return false, nil
+	}
+	record, err := service.Store.GetBinding(ctx, string(resource.UID))
+	if errors.Is(err, binding.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	attempted := false
+	for name, destinationBinding := range record.Binding.Destinations {
+		if destinationBinding.Telegram == nil ||
+			(destinationBinding.Telegram.Phase != registration.PhasePendingPublish && destinationBinding.Telegram.Phase != registration.PhasePendingFenceRelease) {
+			continue
+		}
+		attempted = true
+		if err := service.Resume(ctx, string(resource.UID), name); err != nil {
+			return true, err
+		}
+	}
+	return attempted, nil
+}
+
+func dsnCondition(applicable bool, phase dsn.Phase, externalNameChanged bool, err error) (metav1.ConditionStatus, string, string) {
+	if !applicable {
+		return metav1.ConditionUnknown, "NotApplicable", "DSN publication was not requested for this read-only project."
+	}
+	if err != nil {
+		if errors.Is(err, dsn.ErrPinnedKeyLost) {
+			return metav1.ConditionFalse, "DSNKeyRevoked", "The output Secret was removed after the pinned client key was proven missing or inactive."
+		}
+		return metav1.ConditionFalse, reasonForError(err), "DSN reconciliation is safely blocked; an existing working Secret was preserved unless revoke was proven."
+	}
+	if phase == dsn.PhaseCutoverPending {
+		return metav1.ConditionFalse, "DSNCutoverPending", "The new Secret is ready; confirm the cutover annotation before the old Secret is removed."
+	}
+	if externalNameChanged {
+		return metav1.ConditionTrue, "ExternalNameChanged", "The pinned client key was renamed in Sentry; its verified identity and output Secret remain current."
+	}
+	return metav1.ConditionTrue, "DSNReady", "The managed output Secret is current."
+}
+
+func settingsCondition(applicable bool, result settingsruntime.Result, err error) (metav1.ConditionStatus, string, string) {
+	if !applicable {
+		return metav1.ConditionUnknown, "NotApplicable", "No typed project settings are managed."
+	}
+	if err != nil {
+		if (result.Filters.Managed && result.Filters.Err == nil) || (result.PII.Managed && result.PII.Err == nil) {
+			return metav1.ConditionFalse, "SettingsPartiallyApplied", "At least one independent settings component failed; successful components were preserved."
+		}
+		return metav1.ConditionFalse, reasonForError(err), "Typed project settings could not be fully reconciled."
+	}
+	return metav1.ConditionTrue, "SettingsReady", "All requested typed project settings match desired state."
+}
+
+func destinationCondition(applicable bool, result destination.Result, err error) (metav1.ConditionStatus, string, string) {
+	if !applicable {
+		return metav1.ConditionUnknown, "NotApplicable", "No notification destinations are configured."
+	}
+	if err != nil {
+		if result.RevokeOnly {
+			return metav1.ConditionFalse, "DestinationAccessRevoked", "Destination access was revoked; only protected cleanup state remains."
+		}
+		return metav1.ConditionFalse, reasonForError(err), "One or more destinations could not be safely resolved; pinned identities were preserved."
+	}
+	for _, status := range result.Statuses {
+		if status.State == destination.StateRegistrationRequired {
+			return metav1.ConditionFalse, "TelegramRegistrationRequired", "Telegram destination registration is required."
+		}
+		if status.State == destination.StateCleanupPending {
+			return metav1.ConditionFalse, "DestinationCleanupPending", "Removed destination routing cleanup is pending."
+		}
+	}
+	return metav1.ConditionTrue, "DestinationsReady", "All configured destinations have verified pinned identities."
+}
+
+type dsnReconcileResult struct {
+	Secret              string
+	ClientKey           string
+	Phase               dsn.Phase
+	ExternalNameChanged bool
+}
+
+func (r *SentryProjectReconciler) reconcileDSN(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, apiClient *sentryapi.Client, projectResult projectruntime.Result) (dsnReconcileResult, error) {
+	current := dsnReconcileResult{Secret: resource.Status.DSNSecret, ClientKey: resource.Status.DSNClientKey}
+	if projectResult.AccessMode == binding.AccessReadOnly && resource.Spec.DSN == nil {
+		return dsnReconcileResult{}, nil
+	}
+	decision, err := policy.EvaluateProject(resource.Namespace, resource.Spec, connection.Spec)
+	if err != nil {
+		return current, err
+	}
+	if projectResult.AccessMode == binding.AccessReadOnly && !decision.ConsumeDSN {
+		return current, dsn.ErrAuthorization
+	}
+	record, err := r.Bindings.GetBinding(ctx, string(resource.UID))
+	if err != nil {
+		return current, err
+	}
+	current.Secret = existingSecret(record.Binding.DSN)
+	selector := ""
+	desiredSecret := ""
+	if resource.Spec.DSN != nil {
+		selector = resource.Spec.DSN.ClientKey
+		desiredSecret = resource.Spec.DSN.Secret
+	}
+	listKeys := r.ListKeys
+	if listKeys == nil {
+		listKeys = func(ctx context.Context, client *sentryapi.Client, organization, projectSlug string) ([]dsn.ClientKey, error) {
+			return (&dsn.KeyReader{Client: client}).List(ctx, organization, projectSlug)
+		}
+	}
+	keys, err := listKeys(ctx, apiClient, connection.Spec.Organization, record.Binding.Slug)
+	if err != nil {
+		return current, err
+	}
+	selection, err := dsn.Select(keys, selector, record.Binding.DSN)
+	if err != nil {
+		if errors.Is(err, dsn.ErrPinnedKeyLost) && record.Binding.DSN != nil {
+			expected := *record.Binding.DSN
+			if revokeErr := (&dsn.Publisher{Client: r.outputSecrets()}).Revoke(ctx, resource, expected, r.dsnAuthorizer(resource, connection, record.Binding)); revokeErr != nil {
+				return current, revokeErr
+			}
+			next := record.Binding
+			nextDSN := expected
+			nextDSN.CurrentSecret = ""
+			nextDSN.PendingSecret = ""
+			next.DSN = &nextDSN
+			if _, updateErr := r.Bindings.UpdateBinding(ctx, record, next); updateErr != nil {
+				return current, updateErr
+			}
+			return dsnReconcileResult{}, dsn.ErrPinnedKeyLost
+		}
+		return current, err
+	}
+	nextDSN := selection.Binding
+	if record.Binding.DSN != nil {
+		nextDSN.CurrentSecret = record.Binding.DSN.CurrentSecret
+		nextDSN.PendingSecret = record.Binding.DSN.PendingSecret
+	}
+	authorize := r.dsnAuthorizer(resource, connection, record.Binding)
+	nextDSN, phase, err := (&dsn.Publisher{Client: r.outputSecrets()}).Reconcile(ctx, resource, decision.Owner, desiredSecret, selection.Key.DSN.Public, nextDSN, authorize)
+	if err != nil {
+		return current, err
+	}
+	nextBinding := record.Binding
+	nextBinding.DSN = &nextDSN
+	if _, err := r.Bindings.UpdateBinding(ctx, record, nextBinding); err != nil {
+		return current, err
+	}
+	return dsnReconcileResult{
+		Secret: nextDSN.CurrentSecret, ClientKey: selection.ReadableName, Phase: phase,
+		ExternalNameChanged: selection.ExternalRenamed,
+	}, nil
+}
+
+func (r *SentryProjectReconciler) dsnAuthorizer(original *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, expected binding.ProjectBinding) dsn.Authorization {
+	return func(ctx context.Context) error {
+		latest := &sentryconfigurationv1alpha1.SentryProject{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(original), latest); err != nil {
+			return err
+		}
+		if latest.UID != original.UID || latest.Generation != original.Generation || !latest.DeletionTimestamp.IsZero() || latest.Spec.Paused {
+			return dsn.ErrAuthorization
+		}
+		latestConnection := &sentryconfigurationv1alpha1.SentryConnection{}
+		if err := r.Get(ctx, client.ObjectKey{Name: connection.Name}, latestConnection); err != nil {
+			return err
+		}
+		decision, err := policy.EvaluateProject(latest.Namespace, latest.Spec, latestConnection.Spec)
+		if err != nil {
+			return err
+		}
+		state, err := r.Bindings.GetBinding(ctx, string(latest.UID))
+		if err != nil || state.Binding.ExternalIdentity != expected.ExternalIdentity || state.Binding.Connection != connection.Name || state.Binding.AccessMode != expected.AccessMode {
+			return dsn.ErrAuthorization
+		}
+		if latest.Spec.Project.Use != nil {
+			if latest.Spec.DSN == nil || decision.AccessMode != binding.AccessReadOnly || !decision.ConsumeDSN {
+				return dsn.ErrAuthorization
+			}
+			return nil
+		}
+		claim, err := r.Bindings.GetClaim(ctx, expected.Installation, expected.Organization, expected.Slug)
+		if err != nil || decision.AccessMode != binding.AccessManage || claim.Claim.Manager.UID != string(latest.UID) || claim.Claim.ExternalIdentity != expected.ExternalIdentity || claim.Claim.Handoff != nil {
+			return dsn.ErrAuthorization
+		}
+		return nil
+	}
+}
+
+func (r *SentryProjectReconciler) reconcileSettings(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, apiClient *sentryapi.Client, projectResult projectruntime.Result) settingsruntime.Result {
+	if resource.Spec.Settings == nil {
+		return settingsruntime.Result{}
+	}
+	if projectResult.AccessMode != binding.AccessManage {
+		return settingsruntime.Result{Filters: settingsruntime.Component{Managed: true, Err: settingsruntime.ErrInvalidDesiredState}}
+	}
+	record, err := r.Bindings.GetBinding(ctx, string(resource.UID))
+	if err != nil {
+		return settingsruntime.Result{Filters: settingsruntime.Component{Managed: resource.Spec.Settings.Filters != nil, Err: err}, PII: settingsruntime.Component{Managed: resource.Spec.Settings.PII != nil, Err: err}}
+	}
+	factory := r.NewSettingsAdapter
+	if factory == nil {
+		factory = func(client *sentryapi.Client) settingsruntime.Adapter {
+			return &settingsruntime.HTTPAdapter{Client: client}
+		}
+	}
+	return (&settingsruntime.Engine{Adapter: factory(apiClient)}).Reconcile(ctx, settingsruntime.Input{
+		Organization: connection.Spec.Organization,
+		ProjectSlug:  record.Binding.Slug,
+		Desired:      resource.Spec.Settings,
+		Authorize:    settingsruntime.Authorization(r.dsnAuthorizer(resource, connection, record.Binding)),
+	})
+}
+
+func (r *SentryProjectReconciler) reconcileDestinations(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, apiClient *sentryapi.Client, projectResult projectruntime.Result) destination.Result {
+	if projectResult.AccessMode != binding.AccessManage {
+		return destination.Result{}
+	}
+	record, err := r.Bindings.GetBinding(ctx, string(resource.UID))
+	if err != nil {
+		return destination.Result{PolicyErr: err}
+	}
+	if len(resource.Spec.Destinations) == 0 && len(record.Binding.Destinations) == 0 {
+		return destination.Result{}
+	}
+	var catalog destination.Catalog
+	if r.NewDestinationCatalog != nil {
+		catalog = r.NewDestinationCatalog(apiClient)
+	} else {
+		catalog = &destination.HTTPCatalog{Client: apiClient}
+	}
+	result := (&destination.Engine{Catalog: catalog}).Reconcile(ctx, destination.Input{
+		Namespace:  resource.Namespace,
+		Project:    resource.Spec,
+		Connection: connection.Spec,
+		Current:    record.Binding.Destinations,
+	})
+	if reflect.DeepEqual(record.Binding.Destinations, result.Bindings) {
+		return result
+	}
+	if err := r.destinationAuthorizer(resource, connection, record.Binding, result)(ctx); err != nil {
+		result.PolicyErr = err
+		return result
+	}
+	if err := r.reconcileTelegramRoutes(ctx, resource, record.Binding.Destinations, &result); err != nil {
+		result.PolicyErr = err
+		return result
+	}
+	next := record.Binding
+	next.Destinations = result.Bindings
+	if _, err := r.Bindings.UpdateBinding(ctx, record, next); err != nil {
+		result.PolicyErr = err
+	}
+	return result
+}
+
+func (r *SentryProjectReconciler) reconcileTelegramRoutes(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, current map[string]binding.DestinationBinding, result *destination.Result) error {
+	if result == nil {
+		return nil
+	}
+	for name, previous := range current {
+		if previous.Kind != "telegram" || previous.Telegram == nil || previous.Telegram.Challenge == nil {
+			continue
+		}
+		next, found := result.Bindings[name]
+		if found && next.Telegram != nil && next.Telegram.Challenge != nil && next.Telegram.Challenge.CodeHash == previous.Telegram.Challenge.CodeHash && next.State == destination.StateRegistrationRequired {
+			continue
+		}
+		if r.RegistrationIndexes == nil {
+			return registration.ErrChallengeIndexInvalid
+		}
+		challenge := previous.Telegram.Challenge
+		index := registration.ChallengeIndex{
+			Version: binding.CurrentVersion, CodeHash: challenge.CodeHash, ProjectUID: challenge.Project.UID,
+			Destination: challenge.Destination, ExpiresAt: challenge.ExpiresAt,
+		}
+		if err := r.RegistrationIndexes.DeleteExact(ctx, index); err != nil {
+			return err
+		}
+		if found && next.Telegram != nil && next.Telegram.Challenge != nil && next.Telegram.Challenge.CodeHash == challenge.CodeHash {
+			telegram := cloneTelegramBinding(next.Telegram)
+			telegram.Challenge = nil
+			next.Telegram = telegram
+			result.Bindings[name] = next
+		}
+	}
+	for name, next := range result.Bindings {
+		if next.Kind != "telegram" || next.Telegram == nil {
+			continue
+		}
+		telegram := cloneTelegramBinding(next.Telegram)
+		switch next.State {
+		case destination.StateActive:
+			if telegram.RouteKey == "" || telegram.Target == nil || telegram.RouteRevoked || r.RegistrationRoutes == nil {
+				return registration.ErrRouteIdentityLost
+			}
+			// Idempotent verification repairs the crash window where the route
+			// mutation succeeded but the protected binding CAS did not.
+			if err := r.RegistrationRoutes.PublishTelegramRoute(ctx, telegram.RouteKey, *telegram.Target); err != nil {
+				return err
+			}
+		case destination.StateRevoked, destination.StateCleanupPending:
+			if telegram.RouteRevoked {
+				continue
+			}
+			if telegram.RouteKey == "" {
+				if telegram.Target != nil {
+					return registration.ErrRouteIdentityLost
+				}
+				continue
+			}
+			if r.RegistrationRoutes == nil {
+				return registration.ErrPublishPending
+			}
+			if telegram.Target == nil {
+				return registration.ErrRouteIdentityLost
+			}
+			if observer, ok := r.RegistrationRoutes.(registration.RouteObserver); ok {
+				observed, err := observer.GetTelegramRoute(ctx, telegram.RouteKey)
+				if apierrors.IsNotFound(err) {
+					if err := r.recordDestinationCleanupAudit(ctx, resource, name, audit.OutcomeRecovered, audit.ReasonResultRecovered); err != nil {
+						return err
+					}
+					telegram.RouteRevoked = true
+					next.Telegram = telegram
+					result.Bindings[name] = next
+					continue
+				}
+				if err != nil {
+					return err
+				}
+				if observed != *telegram.Target {
+					return registration.ErrRouteConflict
+				}
+			}
+			if err := r.recordDestinationCleanupAudit(ctx, resource, name, audit.OutcomeStarted, audit.ReasonCleanupAuthorized); err != nil {
+				return err
+			}
+			if err := r.RegistrationRoutes.RevokeTelegramRoute(ctx, telegram.RouteKey, *telegram.Target); err != nil {
+				return errors.Join(err, r.recordDestinationCleanupAudit(ctx, resource, name, audit.OutcomeFailed, audit.ReasonApply))
+			}
+			if err := r.recordDestinationCleanupAudit(ctx, resource, name, audit.OutcomeSucceeded, audit.ReasonMutationVerified); err != nil {
+				return err
+			}
+			telegram.RouteRevoked = true
+			next.Telegram = telegram
+			result.Bindings[name] = next
+		case destination.StateRestorePending:
+			if telegram.RouteKey == "" || telegram.Target == nil || !telegram.RouteRevoked || r.RegistrationRoutes == nil {
+				return registration.ErrPublishPending
+			}
+			if err := r.RegistrationRoutes.PublishTelegramRoute(ctx, telegram.RouteKey, *telegram.Target); err != nil {
+				return err
+			}
+			telegram.RouteRevoked = false
+			next.Telegram = telegram
+			next.State = destination.StateActive
+			next.Reason = "TelegramReady"
+			result.Bindings[name] = next
+			result.Statuses[name] = destination.Status{Kind: "telegram", State: destination.StateActive, Reason: "TelegramReady"}
+		}
+	}
+	return nil
+}
+
+var errDestinationAuditUnavailable = errors.New("destination cleanup audit is unavailable")
+
+func (r *SentryProjectReconciler) recordDestinationCleanupAudit(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, destinationName string, outcome audit.Outcome, reason audit.Reason) error {
+	if r == nil || r.DestinationAudit == nil || resource == nil || resource.Namespace == "" || resource.Name == "" || resource.Generation <= 0 || destinationName == "" {
+		return errDestinationAuditUnavailable
+	}
+	event := audit.Event{
+		Component: audit.ComponentDestinations, Action: audit.ActionDelete,
+		Outcome: outcome, Reason: reason,
+		LocalResource: resource.Namespace + "/" + resource.Name + "/" + destinationName,
+		Revision:      resource.Generation,
+	}
+	if err := r.DestinationAudit.Record(ctx, event); err != nil {
+		return errDestinationAuditUnavailable
+	}
+	return nil
+}
+
+func cloneTelegramBinding(input *binding.TelegramBinding) *binding.TelegramBinding {
+	if input == nil {
+		return nil
+	}
+	result := *input
+	if input.Challenge != nil {
+		challenge := *input.Challenge
+		result.Challenge = &challenge
+	}
+	if input.Target != nil {
+		target := *input.Target
+		result.Target = &target
+	}
+	return &result
+}
+
+func (r *SentryProjectReconciler) destinationAuthorizer(original *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, expected binding.ProjectBinding, result destination.Result) dsn.Authorization {
+	return func(ctx context.Context) error {
+		if err := r.dsnAuthorizer(original, connection, expected)(ctx); err != nil {
+			return err
+		}
+		latest := &sentryconfigurationv1alpha1.SentryProject{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(original), latest); err != nil {
+			return err
+		}
+		latestConnection := &sentryconfigurationv1alpha1.SentryConnection{}
+		if err := r.Get(ctx, client.ObjectKey{Name: connection.Name}, latestConnection); err != nil {
+			return err
+		}
+		for name, desired := range latest.Spec.Destinations {
+			_, policyErr := policy.EvaluateDestination(latest.Namespace, latest.Spec, latestConnection.Spec, desired)
+			status, statusFound := result.Statuses[name]
+			next, nextFound := result.Bindings[name]
+			if policy.IsKind(policyErr, policy.ErrorDestinationAccessDenied) {
+				if !statusFound || status.Reason != "DestinationAccessRevoked" || (nextFound && next.State != destination.StateRevoked) {
+					return dsn.ErrAuthorization
+				}
+				continue
+			}
+			if policyErr != nil || (statusFound && status.Reason == "DestinationAccessRevoked") {
+				return dsn.ErrAuthorization
+			}
+		}
+		state, err := r.Bindings.GetBinding(ctx, string(latest.UID))
+		if err != nil || state.Binding.ExternalIdentity != expected.ExternalIdentity || state.Binding.Connection != expected.Connection || !reflect.DeepEqual(state.Binding.Destinations, expected.Destinations) {
+			return dsn.ErrAuthorization
+		}
+		return nil
+	}
+}
+
+func safeDestinationStatuses(statuses map[string]destination.Status, existing map[string]sentryconfigurationv1alpha1.DestinationStatus) map[string]sentryconfigurationv1alpha1.DestinationStatus {
+	if len(statuses) == 0 {
+		return nil
+	}
+	result := make(map[string]sentryconfigurationv1alpha1.DestinationStatus, len(statuses))
+	for name, status := range statuses {
+		reason := status.Reason
+		if status.Err != nil {
+			reason = reasonForError(status.Err)
+		}
+		next := sentryconfigurationv1alpha1.DestinationStatus{Type: status.Kind, State: status.State, Reason: reason}
+		if current, found := existing[name]; found && current.RegistrationCommit != nil {
+			next.RegistrationCommit = current.RegistrationCommit.DeepCopy()
+		}
+		result[name] = next
+	}
+	return result
+}
+
+func existingSecret(state *binding.DSNBinding) string {
+	if state == nil {
+		return ""
+	}
+	return state.CurrentSecret
+}
+
+// revokeDSNIfDenied removes only the Secrets named in protected state, and only
+// after the current policy has been re-read and proven to deny project access.
+func (r *SentryProjectReconciler) revokeDSNIfDenied(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject) (bool, error) {
+	record, err := r.Bindings.GetBinding(ctx, string(resource.UID))
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if record.Binding.DSN == nil || record.Binding.Project.UID != string(resource.UID) || record.Binding.Project.Namespace != resource.Namespace || record.Binding.Project.Name != resource.Name {
+		return false, nil
+	}
+	connection := &sentryconfigurationv1alpha1.SentryConnection{}
+	if err := r.Get(ctx, client.ObjectKey{Name: record.Binding.Connection}, connection); err != nil {
+		return false, err
+	}
+	if _, err := policy.EvaluateProject(resource.Namespace, resource.Spec, connection.Spec); !policy.IsKind(err, policy.ErrorAccessDenied) {
+		return false, nil
+	}
+	expected := *record.Binding.DSN
+	authorize := func(ctx context.Context) error {
+		latest := &sentryconfigurationv1alpha1.SentryProject{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(resource), latest); err != nil {
+			return err
+		}
+		if latest.UID != resource.UID || latest.Generation != resource.Generation || !latest.DeletionTimestamp.IsZero() || latest.Spec.Paused {
+			return dsn.ErrAuthorization
+		}
+		latestConnection := &sentryconfigurationv1alpha1.SentryConnection{}
+		if err := r.Get(ctx, client.ObjectKey{Name: record.Binding.Connection}, latestConnection); err != nil {
+			return err
+		}
+		if _, err := policy.EvaluateProject(latest.Namespace, latest.Spec, latestConnection.Spec); !policy.IsKind(err, policy.ErrorAccessDenied) {
+			return dsn.ErrAuthorization
+		}
+		latestRecord, err := r.Bindings.GetBinding(ctx, string(latest.UID))
+		if err != nil || latestRecord.Binding.ExternalIdentity != record.Binding.ExternalIdentity || latestRecord.Binding.Connection != record.Binding.Connection || !sameDSNBinding(latestRecord.Binding.DSN, &expected) {
+			return dsn.ErrAuthorization
+		}
+		return nil
+	}
+	if err := (&dsn.Publisher{Client: r.outputSecrets()}).Revoke(ctx, resource, expected, authorize); err != nil {
+		return false, err
+	}
+	next := record.Binding
+	next.DSN = nil
+	if _, err := r.Bindings.UpdateBinding(ctx, record, next); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func sameDSNBinding(left, right *binding.DSNBinding) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func (r *SentryProjectReconciler) revokeDestinationsIfDenied(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject) (destination.Result, bool, error) {
+	record, err := r.Bindings.GetBinding(ctx, string(resource.UID))
+	if errors.Is(err, binding.ErrNotFound) {
+		return destination.Result{}, false, nil
+	}
+	if err != nil {
+		return destination.Result{}, false, err
+	}
+	if len(record.Binding.Destinations) == 0 {
+		return destination.Result{}, false, nil
+	}
+	connection := &sentryconfigurationv1alpha1.SentryConnection{}
+	if err := r.Get(ctx, client.ObjectKey{Name: record.Binding.Connection}, connection); err != nil {
+		return destination.Result{}, false, err
+	}
+	_, policyErr := policy.Evaluate(resource.Namespace, resource.Spec, connection.Spec)
+	if !policy.IsKind(policyErr, policy.ErrorAccessDenied) && !policy.IsKind(policyErr, policy.ErrorDestinationAccessDenied) {
+		return destination.Result{}, false, nil
+	}
+	result := (&destination.Engine{}).Reconcile(ctx, destination.Input{
+		Namespace: resource.Namespace, Project: resource.Spec, Connection: connection.Spec, Current: record.Binding.Destinations,
+	})
+	if !result.RevokeOnly {
+		return destination.Result{}, false, nil
+	}
+	expected := record.Binding.Destinations
+	latest := &sentryconfigurationv1alpha1.SentryProject{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(resource), latest); err != nil {
+		return destination.Result{}, false, err
+	}
+	latestConnection := &sentryconfigurationv1alpha1.SentryConnection{}
+	if err := r.Get(ctx, client.ObjectKey{Name: record.Binding.Connection}, latestConnection); err != nil {
+		return destination.Result{}, false, err
+	}
+	_, latestPolicyErr := policy.Evaluate(latest.Namespace, latest.Spec, latestConnection.Spec)
+	if latest.UID != resource.UID || latest.Generation != resource.Generation || !latest.DeletionTimestamp.IsZero() || latest.Spec.Paused || (!policy.IsKind(latestPolicyErr, policy.ErrorAccessDenied) && !policy.IsKind(latestPolicyErr, policy.ErrorDestinationAccessDenied)) {
+		return destination.Result{}, false, dsn.ErrAuthorization
+	}
+	latestRecord, err := r.Bindings.GetBinding(ctx, string(latest.UID))
+	if err != nil || latestRecord.Binding.ExternalIdentity != record.Binding.ExternalIdentity || latestRecord.Binding.Connection != record.Binding.Connection || !reflect.DeepEqual(latestRecord.Binding.Destinations, expected) {
+		return destination.Result{}, false, dsn.ErrAuthorization
+	}
+	if err := r.reconcileTelegramRoutes(ctx, latest, latestRecord.Binding.Destinations, &result); err != nil {
+		return destination.Result{}, false, err
+	}
+	next := latestRecord.Binding
+	next.Destinations = result.Bindings
+	if _, err := r.Bindings.UpdateBinding(ctx, latestRecord, next); err != nil {
+		return destination.Result{}, false, err
+	}
+	return result, true, nil
+}
+
+func (r *SentryProjectReconciler) reportAccessRevoked(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, dsnRevoked bool, destinationResult destination.Result, readyReason string) (ctrl.Result, error) {
+	base := resource.DeepCopy()
+	resource.Status.ObservedGeneration = resource.Generation
+	if dsnRevoked {
+		resource.Status.DSNSecret = ""
+		resource.Status.DSNClientKey = ""
+		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+			Type: "DSNReady", Status: metav1.ConditionFalse, ObservedGeneration: resource.Generation,
+			Reason: "DSNAccessRevoked", Message: "The managed DSN Secret was removed after current policy denial was verified.",
+		})
+	}
+	if len(destinationResult.Statuses) > 0 {
+		resource.Status.Destinations = safeDestinationStatuses(destinationResult.Statuses, resource.Status.Destinations)
+		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+			Type: "DestinationsReady", Status: metav1.ConditionFalse, ObservedGeneration: resource.Generation,
+			Reason: "DestinationAccessRevoked", Message: "New destination operations are denied; protected cleanup tombstones were recorded.",
+		})
+	}
+	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionFalse, ObservedGeneration: resource.Generation,
+		Reason: readyReason, Message: "Current connection policy denies one or more previously authorized operations.",
+	})
+	if err := r.Status().Patch(ctx, resource, client.MergeFrom(base)); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+	} else {
+		emitConditionChangesObserved(r.Recorder, r.Metrics, controllerProject, resource, base.Status.Conditions, resource.Status.Conditions)
+	}
+	return ctrl.Result{RequeueAfter: jitterDuration(30 * time.Second)}, nil
+}
+
+func (r *SentryProjectReconciler) reportDSNRevoked(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject) (ctrl.Result, error) {
+	return r.reportDSNRemoved(ctx, resource, "DSNAccessRevoked", "The managed DSN Secret was removed after current policy denial was verified.", string(policy.ErrorAccessDenied), "Connection policy currently denies access to this project.")
+}
+
+func (r *SentryProjectReconciler) reportDSNKeyRevoked(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject) (ctrl.Result, error) {
+	return r.reportDSNRemoved(ctx, resource, "DSNKeyRevoked", "The managed DSN Secret was removed after the pinned client key was proven missing or inactive.", "DSNKeyRevoked", "The pinned Sentry client key is no longer usable.")
+}
+
+func (r *SentryProjectReconciler) reportDSNRemoved(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, dsnReason, dsnMessage, readyReason, readyMessage string) (ctrl.Result, error) {
+	base := resource.DeepCopy()
+	resource.Status.ObservedGeneration = resource.Generation
+	resource.Status.DSNSecret = ""
+	resource.Status.DSNClientKey = ""
+	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+		Type:               "DSNReady",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: resource.Generation,
+		Reason:             dsnReason,
+		Message:            dsnMessage,
+	})
+	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: resource.Generation,
+		Reason:             readyReason,
+		Message:            readyMessage,
+	})
+	if err := r.Status().Patch(ctx, resource, client.MergeFrom(base)); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+	} else {
+		emitConditionChangesObserved(r.Recorder, r.Metrics, controllerProject, resource, base.Status.Conditions, resource.Status.Conditions)
+	}
+	return ctrl.Result{RequeueAfter: jitterDuration(30 * time.Second)}, nil
+}
+
+func (r *SentryProjectReconciler) outputSecrets() client.Client {
+	if r.OutputSecrets != nil {
+		return r.OutputSecrets
+	}
+	return r.Client
+}
+
+func (r *SentryProjectReconciler) reconcileDelete(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject) (ctrl.Result, error) {
+	connection, err := r.resolveConnection(ctx, resource)
+	if err != nil {
+		return r.reportFailure(ctx, resource, reasonForError(err), "DeleteProject is blocked because current authorization could not be proven.")
+	}
+	apiClient, found := r.Registry.Get(connection.Name)
+	if !found {
+		return r.reportFailure(ctx, resource, "ConnectionNotReady", "DeleteProject is blocked until the selected connection is ready.")
+	}
+	result, err := r.engine(apiClient).Delete(ctx, projectruntime.Input{
+		Project:        resource,
+		ConnectionName: connection.Name,
+		Connection:     connection.Spec,
+	})
+	if err != nil {
+		return r.reportFailure(ctx, resource, reasonForError(err), "DeleteProject is blocked until ownership and deletion can be verified.")
+	}
+	if !result.Complete {
+		return ctrl.Result{RequeueAfter: jitterDuration(10 * time.Second)}, nil
+	}
+	return ctrl.Result{}, r.removeFinalizer(ctx, resource)
+}
+
+func (r *SentryProjectReconciler) engine(apiClient *sentryapi.Client) *projectruntime.Engine {
+	factory := r.NewAdapter
+	if factory == nil {
+		factory = func(client *sentryapi.Client) projectruntime.Adapter {
+			return &projectruntime.HTTPAdapter{Client: client}
+		}
+	}
+	return &projectruntime.Engine{Bindings: r.Bindings, Adapter: factory(apiClient), ManagedBy: r.ManagedBy, Audit: r.Audit}
+}
+
+func (r *SentryProjectReconciler) resolveConnection(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject) (*sentryconfigurationv1alpha1.SentryConnection, error) {
+	if resource.Spec.Connection != "" {
+		connection := &sentryconfigurationv1alpha1.SentryConnection{}
+		if err := r.Get(ctx, client.ObjectKey{Name: resource.Spec.Connection}, connection); err != nil {
+			return nil, err
+		}
+		if _, err := policy.EvaluateProject(resource.Namespace, resource.Spec, connection.Spec); err != nil {
+			return nil, err
+		}
+		return connection, nil
+	}
+	list := &sentryconfigurationv1alpha1.SentryConnectionList{}
+	if err := r.List(ctx, list); err != nil {
+		return nil, err
+	}
+	candidates := make([]sentryconfigurationv1alpha1.SentryConnection, 0)
+	for _, connection := range list.Items {
+		if !connection.Spec.Default {
+			continue
+		}
+		if _, err := policy.EvaluateProject(resource.Namespace, resource.Spec, connection.Spec); err == nil {
+			candidates = append(candidates, connection)
+		}
+	}
+	selected, err := resolver.Only(candidates, "default-connection")
+	if err != nil {
+		return nil, err
+	}
+	return selected.DeepCopy(), nil
+}
+
+func (r *SentryProjectReconciler) reportFailure(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, reason, message string) (ctrl.Result, error) {
+	base := resource.DeepCopy()
+	resource.Status.ObservedGeneration = resource.Generation
+	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: resource.Generation,
+		Reason:             reason,
+		Message:            message,
+	})
+	if err := r.Status().Patch(ctx, resource, client.MergeFrom(base)); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+	} else {
+		emitConditionChangesObserved(r.Recorder, r.Metrics, controllerProject, resource, base.Status.Conditions, resource.Status.Conditions)
+	}
+	return ctrl.Result{RequeueAfter: jitterDuration(30 * time.Second)}, nil
+}
+
+func (r *SentryProjectReconciler) removeFinalizer(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject) error {
+	base := resource.DeepCopy()
+	resource.Finalizers = removeString(resource.Finalizers, sentryProjectFinalizer)
+	return r.Patch(ctx, resource, client.MergeFrom(base))
+}
+
+func (r *SentryProjectReconciler) projectsForConnection(ctx context.Context, _ client.Object) []reconcile.Request {
+	projects := &sentryconfigurationv1alpha1.SentryProjectList{}
+	if err := r.List(ctx, projects); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(projects.Items))
+	for _, project := range projects.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&project)})
+	}
+	return requests
+}
+
+func (r *SentryProjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.Registry == nil || r.Bindings == nil || r.ManagedBy == "" {
+		return fmt.Errorf("project runtime is required")
+	}
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&sentryconfigurationv1alpha1.SentryProject{}).
+		Watches(&sentryconfigurationv1alpha1.SentryConnection{}, handler.EnqueueRequestsFromMapFunc(r.projectsForConnection)).
+		Named("sentryproject").
+		Complete(r)
+}
+
+func reasonForError(err error) string {
+	if errors.Is(err, dsn.ErrKeyAmbiguous) {
+		return "DSNKeyAmbiguous"
+	}
+	if errors.Is(err, dsn.ErrKeyNotFound) {
+		return "DSNKeyNotFound"
+	}
+	if errors.Is(err, dsn.ErrInvalidKeyName) {
+		return "DSNKeyNameInvalid"
+	}
+	if errors.Is(err, dsn.ErrPinnedKeyLost) {
+		return "DSNKeyRevoked"
+	}
+	if errors.Is(err, dsn.ErrSecretConflict) {
+		return "DSNSecretConflict"
+	}
+	if errors.Is(err, dsn.ErrAuthorization) {
+		return "AuthorizationChanged"
+	}
+	if errors.Is(err, settingsruntime.ErrInvalidDesiredState) {
+		return "SettingsInvalid"
+	}
+	if errors.Is(err, settingsruntime.ErrUnsupportedFilter) {
+		return "SettingsUnsupported"
+	}
+	if errors.Is(err, destination.ErrExternalObjectReplaced) {
+		return "ExternalObjectReplaced"
+	}
+	if errors.Is(err, destination.ErrExternalNameChanged) {
+		return "ExternalNameChanged"
+	}
+	if errors.Is(err, destination.ErrInvalidDestination) {
+		return "DestinationUnsupported"
+	}
+	if errors.Is(err, destination.ErrCatalogUnsupported) {
+		return "DestinationUnsupported"
+	}
+	var projectErr *projectruntime.Error
+	if errors.As(err, &projectErr) {
+		return string(projectErr.Reason)
+	}
+	var policyErr *policy.Error
+	if errors.As(err, &policyErr) {
+		return string(policyErr.Kind)
+	}
+	var resolveErr *resolver.Error
+	if errors.As(err, &resolveErr) {
+		return string(resolveErr.Kind)
+	}
+	var apiErr *sentryapi.APIError
+	if errors.As(err, &apiErr) {
+		return string(apiErr.Kind)
+	}
+	if apierrors.IsNotFound(err) {
+		return "ReferenceNotFound"
+	}
+	return "TemporaryFailure"
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func removeString(values []string, unwanted string) []string {
+	result := values[:0]
+	for _, value := range values {
+		if value != unwanted {
+			result = append(result, value)
+		}
+	}
+	return result
+}

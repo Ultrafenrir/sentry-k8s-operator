@@ -1,0 +1,7 @@
+{
+  "id": "__INTERNAL_HOOK_ID__",
+  "secret": "fixture-only-not-a-secret",
+  "url": "https://telegram-receiver.invalid/events",
+  "events": ["event.alert"],
+  "status": "active"
+}

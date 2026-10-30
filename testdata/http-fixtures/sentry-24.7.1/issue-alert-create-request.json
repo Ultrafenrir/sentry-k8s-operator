@@ -1,0 +1,21 @@
+{
+  "name": "New issues [managed;o=payments;m=company-sentry-op]",
+  "actionMatch": "all",
+  "filterMatch": "all",
+  "conditions": [
+    {"id": "sentry.rules.conditions.first_seen_event.FirstSeenEventCondition"}
+  ],
+  "filters": [
+    {
+      "id": "sentry.rules.filters.tagged_event.TaggedEventFilter",
+      "key": "environment",
+      "match": "eq",
+      "value": "production"
+    }
+  ],
+  "actions": [
+    {"id": "sentry.rules.actions.notify_event.NotifyEventAction"}
+  ],
+  "frequency": 30,
+  "environment": "production"
+}

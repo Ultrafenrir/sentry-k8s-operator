@@ -1,0 +1,298 @@
+T06 — DESTINATIONS, БЕЗОПАСНОЕ ЯДРО (IN PROGRESS)
+Дата: 2026-10-30
+Статус: policy/resolution/pinning/revoke-state и Telegram registration core реализованы.
+T06 целиком не Complete: live Slack adapter/PagerDuty acceptance, action cleanup,
+user-facing exposure/plugin и Telegram delivery остаются открытыми.
+
+1. Реализованная граница
+
+internal/destination принимает только human-readable spec и выполняет policy evaluation
+до любого catalog lookup. Base project/DSN/settings access отделён от per-destination
+grants, а каждый destination повторно авторизуется отдельно. Поэтому revoke Slack не
+блокирует разрешённый PagerDuty. Непосредственно перед binding CAS controller live-read
+повторяет классификацию и принимает только монотонный Revoked transition для доказанного
+denial. DestinationAccessDenied или AccessDenied:
+
+- не вызывает Slack/PagerDuty catalog;
+- немедленно запрещает normal resolve/rebind;
+- CAS-переводит ранее pinned bindings в Revoked;
+- сохраняет private identities для будущей узкой cleanup/recovery проверки;
+- не удаляет внешний channel/service;
+- не отзывает независимый DSN при destination-only revoke.
+
+Temporary Kubernetes/ambiguous policy errors не считаются доказанным revoke и не меняют
+protected state.
+
+2. Resolution и pinning
+
+Catalog interface требует, чтобы implementation собрал все страницы до возврата. Engine:
+
+- Slack workspace выбирает exact integration.name после provider scope;
+- Slack channel допускает только cosmetic удаление одного leading #;
+- PagerDuty account/service выбираются exact в пределах account;
+- duplicate readable names дают ReferenceAmbiguous;
+- private integration/channel/service identity хранится только в protected binding;
+- неизменный selector проверяет pinned identity и не переключается на same-name replacement;
+- external rename даёт ExternalNameChanged;
+- явное изменение selector разрешает новый resolve и CAS rebind после проверки.
+
+Controller публикует только map local key -> {type,state,reason}. Envtest сериализует status
+и доказывает отсутствие private IDs; binding содержит IDs.
+
+3. Authoritative lifecycle
+
+Slack/PagerDuty local key removal удаляет только local binding: внешний объект оператору
+не принадлежит. Telegram target создаётся как RegistrationRequired без numeric lookup.
+Удаление Telegram сохраняет CleanupPending/DestinationRemoved tombstone: routing нельзя
+молча забыть до T08 cleanup ack.
+
+При revoke controller повторно читает exact Project UID/generation, Connection policy и
+protected binding перед CAS. Revoked identity не стирается. Restore grant должен будет
+проверить тот же pin; текущий core уже не выбирает одноимённый replacement.
+
+4. Production catalog: PagerDuty поддержан, Slack fail closed
+
+Public paginated organization integrations endpoint и serializer 24.7.1 подтверждают
+id/name/provider.key/configData. PagerDuty get_config_data подтверждает
+configData.service_table со строками id/service. Тот же contract зафиксирован
+обезличенными fixtures 24.7.1/26.10.1. HTTPCatalog собирает все страницы, pin-ит account
+и service IDs и намеренно не декодирует integration_key. Поэтому PagerDuty exact account
+и service resolution доступен production adapter.
+
+Для Slack одинакового version-pinned route для channel enumeration в 24.7.1 и 26.10.1 нет.
+Legacy 24.7.1 выполняет async channel lookup внутри alert pending_save, а современный
+experimental endpoint сам по себе не доказывает старую среду. Поэтому controller без
+явного Slack adapter возвращает DestinationUnsupported и не создаёт ложный binding.
+Injected envtest catalog проверяет Slack orchestration, но не повышает runtime capability.
+
+5. Telegram registration state machine
+
+internal/registration реализует transport-neutral protected core:
+
+- Issue возвращает 256-bit one-time code только caller и сохраняет только SHA-256 hash;
+- challenge привязан к exact Project namespace/name/UID/generation, destination key и
+  selector hash, owner, connection, policy generation/resourceVersion и expiry;
+- FenceCoordinator рассчитан на отдельный direct uncached client, повторно проверяет exact
+  Project UID/generation/destination selector/owner и Connection policy
+  generation/resourceVersion;
+- coordinator ставит status fences строго Connection -> Project, повторно читает оба CR и
+  снимает fences в обратном порядке; stale policy и чужой живой fence fail closed;
+- public status имеет несекретный per-destination registrationCommit; validating webhook
+  блокирует изменение/удаление этого destination и DELETE всего Project, Connection webhook
+  блокирует policy mutation и DELETE Connection, пока fence активен, а обычный controller
+  reconcile сохраняет чужой system-written fence;
+- два конкурентных redemption дают один CAS winner и один published target. Этот контракт
+  дополнительно проверяется через real envtest API server: разные targets одновременно
+  обновляют один protected binding, после чего остаются ровно один Active target и один
+  immutable route. Повторный idempotent publish того же outbox key допустим после
+  crash/retry и не считается второй registration. Быстрый unit stress оборачивает
+  controller-runtime fake явной resourceVersion precondition, потому что сам fake допускает
+  stale concurrent Update, которого настоящий API-server не допускает;
+- после CAS target получает PendingPublish + idempotency key; publisher failure оставляет
+  resumable outbox и оба fence, Resume после restart завершает тот же route;
+- protected journal проходит PendingPublish -> PendingFenceRelease; только после publish
+  ack и idempotent снятия обоих fences challenge очищается и state становится Active;
+- replay и stale live verification не меняют target.
+- Registration target commit и route publication ограждены closed-schema audit contract:
+  `registration/register/started` записывается после live verification, но до status
+  fences, binding CAS и route publish. Event содержит только local
+  namespace/project/destination и project generation; raw code/hash, target, route/outbox
+  key, policy resourceVersion и errors не представимы. Audit outage даёт zero fence,
+  zero target и zero publish. Если audit недоступен после immutable route publish, binding
+  остаётся `PendingFenceRelease`; следующий Resume пишет `Recovered` и активирует тот же
+  route без второй уникальной publication.
+
+Telegram route cleanup имеет отдельную closed-schema audit boundary. После повторной
+authorization, но до exact-target revoke controller пишет
+`destinations/delete/started/CleanupAuthorized`; audit outage даёт zero route mutation.
+После delete пишется `succeeded/MutationVerified` до binding CAS. Если sink упал именно в
+этом crash window, следующий reconcile наблюдает доказанный NotFound через RouteStore,
+пишет `recovered/ResultRecovered` и только затем фиксирует RouteRevoked. Event содержит
+только local namespace/project/destination и generation; target, route key и raw error не
+представимы. Slack/PagerDuty cleanup остаётся незакрытым до появления реальных adapters.
+
+Numeric chat/topic identities остаются только в protected binding. HTTP/SAR и internal
+mTLS handlers подключены к отдельным opt-in workloads, но production ingress/DNS и
+публично доверенный webhook certificate остаются ответственностью установки. Поэтому этот
+core не объявляет Telegram Ready в production. Двухресурсный протокол проверен unit/race
+тестами и реальными status
+subresources envtest 1.35/1.36, но не real-cluster HA.
+
+ChallengeHandler реализует отдельный Kubernetes-authenticated HTTP core: Bearer token
+проверяется через audience-bound TokenReview, затем exact-name SubjectAccessReview на
+update конкретного SentryProject выполняется до чтения CR/binding. Только после Allowed
+handler live-read проверяет exact Project/binding/policy/selector и выдаёт one-time
+`/register` command с no-store. Unknown JSON, неверный audience, Denied и stale state
+fail closed; bearer token и raw code не попадают в ошибки или protected Secret.
+
+cmd/kubectl-sentry реализует `kubectl sentry telegram-register`: берёт namespace и
+аутентификацию из выбранного kubeconfig context, поддерживает explicit short-lived
+audience-bound token file, отдельный endpoint CA/server-name и печатает только проверенную
+`/register <256-bit-code>` команду. Redirects запрещены, чтобы Authorization header не мог
+уйти на другой host; server error body и bearer token не выводятся. Endpoint и способ
+получения токена нужной audience пока остаются install-time конфигурацией, а не
+автоматическим discovery.
+
+Issue сначала создаёт immutable ChallengeIndex по SHA-256(code), затем CAS-обновляет
+binding; при CAS failure удаляет только exact index. Index не содержит raw code или
+Telegram identity и позволяет writer выполнить один точечный Secret GET без list/watch.
+Успешный redemption удаляет index; повтор после durable 202 разрешён только для того же
+target и возобновляет PendingPublish/PendingFenceRelease, а другой target fail closed.
+Leader-elected manager janitor сразу при старте и затем каждые jittered 5 минут удаляет
+ограниченную batch истёкших orphan indexes с ResourceVersion precondition. Writer по-прежнему
+не имеет list/watch. Malformed labelled Secret не удаляется автоматически, но не блокирует
+cleanup остальных записей и даёт видимую ошибку controller.
+Persistent kind v1.35.5 подтвердил границу leadership: до смены Lease expired/future probe
+records оставались, сразу после acquisition новый leader удалил только expired record;
+future record сохранился и затем был явно удалён как тестовый артефакт.
+
+InternalHandler реализует receiver->writer handoff core. Он принимает только POST на
+фиксированный internal path при наличии verified TLS chain и exact SPIFFE URI SAN;
+CommonName/proxy headers игнорируются. TLS helper требует TLS 1.3, client CA и
+RequireAndVerifyClientCert. Дополнительно обязательны 256-bit operation key и подпись
+canonical method/path/key/raw-body hash ключом verified leaf certificate (Ed25519,
+ECDSA или RSA-PSS); подпись проверяется до JSON parse/redemption. Body ограничен, strict
+JSON, code обязан быть 256-bit base64url, chat/topic IDs — числовые. Project UID и local
+destination через эту границу больше не передаются: writer разрешает их по ChallengeIndex.
+PendingPublish
+возвращает 202 без раскрытия target, а остальные ошибки используют только фиксированные
+безопасные сообщения.
+
+Public Telegram receiver реализован отдельным cmd/telegram-receiver без Kubernetes client
+и с automountServiceAccountToken=false. Он проверяет официальный
+X-Telegram-Bot-Api-Secret-Token constant-time до чтения JSON, ограничивает body, принимает
+только message с bot_command /register (включая настроенный /register@username), корректно
+интерпретирует entity offset/length как UTF-16 units и извлекает числовые chat/topic IDs.
+Каждый update получает стабильный 256-bit operation key. Receiver подписывает exact
+method/path/key/body hash ключом своего mTLS leaf certificate; webhook secret и TLS/client
+certificates перечитываются с файлов. Unknown/malformed/non-command update получает 204,
+а сбой writer для валидной команды — non-2xx, чтобы Telegram повторил update.
+
+RouteStore замыкает registration outbox на durable Kubernetes backend: outbox key
+создаёт immutable Opaque Secret только в отдельном protected-routing namespace. Повторный publish
+того же key/target идемпотентен, тот же key с другим numeric target даёт conflict, revoke
+удаляет только exact record и также идемпотентен. Writer Role получил create/delete только
+в state namespace, без list/watch и без доступа к credential/project namespaces.
+Это routing-record backend, но не delivery queue: Kubernetes encryption-at-rest должна
+быть включена установкой, а enqueue/claim/retry/DLQ ещё не реализованы.
+
+После Active route key остаётся в protected TelegramBinding; очистка OutboxKey больше не
+теряет единственный адрес routing-record. Policy revoke и remove выполняют idempotent
+exact revoke до binding CAS и отмечают RouteRevoked, сохраняя pinned numeric target.
+Restore того же grant публикует тот же route key/target и возвращает Active без name-based
+выбора. Изменение logical target сначала остаётся DestinationChanged/CleanupPending,
+отзывает старый route и только в следующем CAS создаёт новый RegistrationRequired.
+Revoke перед delete декодирует immutable record и требует совпадения expected target;
+одного совпавшего имени Secret недостаточно. Active reconcile выполняет idempotent publish
+того же key/target, поэтому crash после route mutation, но до binding CAS, чинится в сторону
+текущего авторизованного desired state. Revert смены target восстанавливает старый exact
+route, а не оставляет CleanupPending навсегда.
+Legacy Active binding с numeric target, но без route key, fail closed с
+ErrRouteIdentityLost: новый target не активируется, пока admin recovery не докажет очистку
+старого маршрута.
+
+Минимальный registration writer RBAC вынесен в config/registration. Protected-state Role
+намеренно расположен в отдельном sentry-kubernetes-operator-state namespace: выдавать
+writer get на все Secrets namespace оператора означало бы дать ему Sentry и Telegram
+tokens. Controller binding store и install layer уже используют отдельный state namespace.
+Route records отделены и от project bindings, и от mutable delivery queue: будущий worker
+имеет только get в routing namespace и не может удалить route при retention cleanup.
+Upgrade с раннего single-state-namespace prototype не теряет существующие routes:
+leader-only migrator сначала idempotently publish/verify immutable record в routing
+namespace и только затем exact-delete source по ResourceVersion. Destination conflict или
+malformed legacy record остаётся на месте и требует admin recovery; совпадение имени
+Secret само по себе не считается доказательством target.
+Persistent kind upgrade probe подтвердил порядок после нового Lease holder: искусственный
+immutable legacy route исчез из state только после появления идентичного immutable
+telegram-route record в routing namespace. Destination test record затем удалён явно.
+Registration component не добавлен в default deployment. Отдельный opt-in
+config/registration содержит по two-replica Deployment/PDB для writer и receiver,
+challenge/internal/public ClusterIP Services, минимальный writer RBAC, receiver без
+Kubernetes token, ingress/egress policies и cert-manager CA/server/client chain;
+`make deploy-registration` требует сначала обычную установку controller. Он остаётся
+ContractTested: до deploy пользователь должен предоставить telegram-webhook-tls с публично
+доверенным certificate и telegram-webhook-auth/secret-token, затем настроить внешний
+Ingress/DNS и Telegram setWebhook. User-facing CA distribution/plugin discovery и recovery
+при upgrade с раннего single-namespace prototype не готовы.
+
+cmd/registration-writer уже собирает executable wiring без Sentry client/token: отдельные
+challenge HTTPS и internal mTLS listeners, direct uncached Kubernetes client,
+TokenReview/SAR, FenceCoordinator, binding Store и RouteStore. Оба listener требуют TLS
+1.3/http1.1, имеют bounded headers/timeouts и graceful shutdown. Server certificate и
+internal client CA перечитываются при каждом новом TLS handshake, поэтому file-based
+rotation не требует restart. `make build-registration-writer` проверяет отдельный binary.
+Distroless image содержит manager, writer и receiver binaries, а Deployments явно запускают
+свои binaries. Receiver не содержит Kubernetes wiring и обращается только к writer mTLS.
+Server и client leaf certificate rotation подхватываются на handshake. Persistent kind
+probe изменил cert-manager duration, дождался revisions 1->2, выполнил signed
+receiver->mTLS writer flow, вернул исходные duration/renewBefore, дождался revision 3 и
+повторил flow: оба раза 204, все writer/receiver pods сохранили restartCount=0. Ротация
+самого CA и overlap старого/нового trust bundle ещё не доказаны. Поэтому opt-in manifests
+не означают production-ready.
+
+Standalone services публикуют только точный bodyless GET /healthz поверх своих HTTPS
+listeners. Readiness/liveness probes используют HTTPS, а не TCP connect: это одновременно
+проверяет загрузку server certificate и не создаёт периодические TLS handshake EOF в логах.
+Persistent kind v1.35.5 подтвердил 2/2 Ready для writer и receiver, cert-manager certificate
+readiness, публичную TLS границу (401 до JSON parse без webhook secret, 204 для harmless
+update) и signed receiver->writer mTLS handoff на синтаксически валидной /register команде.
+Для пробы применялся только локальный self-signed webhook certificate и тестовый secret;
+это не проверка публичного CA, Telegram setWebhook или live delivery.
+
+Crash recovery PendingPublish/PendingFenceRelease также подключён к основному
+SentryProject controller. Он использует отдельный direct client и выполняется до pause,
+connection registry и любых Sentry API calls. После попытки controller немедленно requeue
+и ждёт, пока Secret informer увидит direct CAS, прежде чем обычный destination reconcile
+снова сможет писать binding. Поэтому restart writer или прекращение Telegram webhook
+retry не является единственным способом завершить durable route/fence release.
+
+Persistent kind v1.35.5 дополнительно прошёл изолированный PendingPublish probe без
+SentryConnection и внешних HTTP-вызовов: paused SentryProject получил finalizer под реальным
+manager service account, controller опубликовал immutable route и перевёл protected binding
+в Active. Runtime LogSink записал только `registration/register/started/ResumeRetry` и
+`registration/register/recovered/ResultRecovered` с локальным resource/revision; sentinel
+external project ID, chat/topic, outbox key и code hash в логах отсутствовали. Binding,
+route и probe namespace после проверки удалены; controller и writer сохранили 2/2 Ready.
+
+Тот же cluster с controller image `dev-destination-cleanup-audit-20261030` прошёл локальный
+policy-deny cleanup probe: Connection ссылался на отсутствующий credential Secret и не
+разрешал probe namespace, поэтому Sentry/Telegram HTTP не вызывались. Controller удалил
+только exact immutable route, записал protected `Revoked/RouteRevoked` tombstone и выдал
+redacted `destinations/delete/started/CleanupAuthorized` плюс
+`succeeded/MutationVerified`. External project ID, chat/topic, selector и route key в audit
+логах отсутствовали. Binding, Connection, route и namespace удалены; все workload остались
+2/2 Ready с restartCount=0.
+
+Следующий `dev-durable-audit-20261030` повторил этот же изолированный cleanup уже с
+KubernetesStore: до exact route delete был создан immutable `started/CleanupAuthorized`,
+после него — immutable `succeeded/MutationVerified`. `kubectl sentry audit-export` вернул
+только закрытую схему без Secret metadata и sentinel external/chat/selector данных;
+expired event-time probe удалил только elected leader. Все runtime probes снова очищены.
+
+6. Проверки
+
+- make verify-t06-core: race resolver/binding/registration tests, policy-before-lookup,
+  duplicate, rename/replacement, concurrent fake stress и real-API CAS redemption,
+  fail-closed identity-free registration audit, resumable outbox, ordered
+  two-resource fences, TokenReview/SAR challenge handler, immutable concurrent RouteStore,
+  challenge index, kubectl plugin response/auth transport, Telegram webhook
+  authentication/UTF-16 parsing/signed handoff,
+  leader-only bounded challenge expiry garbage collection,
+  exact HTTPS health endpoint и HTTPS-only workload probes,
+  controller crash recovery до Sentry dependency, least-privilege writer RBAC/tokenless
+  receiver, Telegram tombstone, controller envtest и status leak fence;
+- make verify-t06-kind-rbac: реальные SubjectAccessReview decisions в persistent kind
+  подтверждают status-only CR access и отсутствие доступа writer к credential/project
+  namespace Secrets;
+- make test-matrix сохраняет Kubernetes 1.35/1.36 compatibility.
+
+7. До T06 Complete остаётся
+
+- versioned Slack channel catalog/capability discovery и live PagerDuty round-trip;
+- Sentry action ownership markers и monotonic cleanup/verify;
+- DestinationRevokePending vs AccessRevokePendingAdmin на реальном cleanup;
+- plugin discovery/distribution и audience-token UX, public Ingress/DNS/setWebhook
+  automation, internal CA distribution/CA overlap rotation, real-cluster HA/expiry index
+  garbage collection и durable delivery queue;
+- dangling alert referential integrity (alerts schema пока Unsupported по T00);
+- live duplicate/revoke/delivery acceptance.

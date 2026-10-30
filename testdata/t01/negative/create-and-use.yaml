@@ -1,0 +1,10 @@
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryProject
+metadata:
+  name: invalid-create-and-use
+  namespace: checkout-prod
+spec:
+  project:
+    create:
+      team: payments
+    use: checkout-api

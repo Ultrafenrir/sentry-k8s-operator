@@ -1,0 +1,11 @@
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryProject
+metadata:
+  name: invalid-profile
+  namespace: checkout-prod
+spec:
+  project:
+    create:
+      team: payments
+  settings:
+    profile: recommended-v1

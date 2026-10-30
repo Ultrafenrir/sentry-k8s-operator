@@ -1,0 +1,227 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registration-writer
+  namespace: sentry-kubernetes-operator-system
+  labels:
+    app.kubernetes.io/name: sentry-kubernetes-operator
+    app.kubernetes.io/component: registration-writer
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sentry-kubernetes-operator
+      app.kubernetes.io/component: registration-writer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sentry-kubernetes-operator
+        app.kubernetes.io/component: registration-writer
+    spec:
+      serviceAccountName: registration-writer
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: writer
+        image: controller:latest
+        imagePullPolicy: IfNotPresent
+        command:
+        - /registration-writer
+        args:
+        - --challenge-address=:8444
+        - --internal-address=:8445
+        - --tls-cert-file=/var/run/registration/server/tls.crt
+        - --tls-key-file=/var/run/registration/server/tls.key
+        - --client-ca-file=/var/run/registration/ca/tls.crt
+        - --receiver-client-uri=spiffe://cluster.local/ns/sentry-kubernetes-operator-system/sa/telegram-receiver
+        - --token-audience=sentry-registration
+        - --state-namespace=sentry-kubernetes-operator-state
+        - --routing-namespace=sentry-kubernetes-operator-routing
+        - --audit-namespace=sentry-kubernetes-operator-audit
+        ports:
+        - name: challenge
+          containerPort: 8444
+          protocol: TCP
+        - name: internal
+          containerPort: 8445
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: challenge
+            scheme: HTTPS
+          initialDelaySeconds: 2
+          periodSeconds: 5
+          timeoutSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: challenge
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 2
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 250m
+            memory: 128Mi
+        volumeMounts:
+        - name: server-tls
+          mountPath: /var/run/registration/server
+          readOnly: true
+        - name: client-ca
+          mountPath: /var/run/registration/ca
+          readOnly: true
+      volumes:
+      - name: server-tls
+        secret:
+          secretName: registration-writer-server-tls
+      - name: client-ca
+        secret:
+          secretName: registration-ca
+          items:
+          - key: tls.crt
+            path: tls.crt
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: registration-writer
+  namespace: sentry-kubernetes-operator-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sentry-kubernetes-operator
+      app.kubernetes.io/component: registration-writer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telegram-receiver
+  namespace: sentry-kubernetes-operator-system
+  labels:
+    app.kubernetes.io/name: sentry-kubernetes-operator
+    app.kubernetes.io/component: telegram-receiver
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sentry-kubernetes-operator
+      app.kubernetes.io/component: telegram-receiver
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sentry-kubernetes-operator
+        app.kubernetes.io/component: telegram-receiver
+    spec:
+      serviceAccountName: telegram-receiver
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: receiver
+        image: controller:latest
+        imagePullPolicy: IfNotPresent
+        command:
+        - /telegram-receiver
+        args:
+        - --address=:8443
+        - --tls-cert-file=/var/run/telegram/webhook-tls/tls.crt
+        - --tls-key-file=/var/run/telegram/webhook-tls/tls.key
+        - --telegram-secret-file=/var/run/telegram/auth/secret-token
+        - --writer-url=https://registration-writer-internal.sentry-kubernetes-operator-system.svc:8445/internal/v1/telegram/redemptions
+        - --writer-ca-file=/var/run/telegram/writer-ca/tls.crt
+        - --writer-cert-file=/var/run/telegram/writer-client/tls.crt
+        - --writer-key-file=/var/run/telegram/writer-client/tls.key
+        ports:
+        - name: webhook
+          containerPort: 8443
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: webhook
+            scheme: HTTPS
+          initialDelaySeconds: 2
+          periodSeconds: 5
+          timeoutSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: webhook
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 2
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+          limits:
+            cpu: 250m
+            memory: 64Mi
+        volumeMounts:
+        - name: webhook-tls
+          mountPath: /var/run/telegram/webhook-tls
+          readOnly: true
+        - name: webhook-auth
+          mountPath: /var/run/telegram/auth
+          readOnly: true
+        - name: writer-client
+          mountPath: /var/run/telegram/writer-client
+          readOnly: true
+        - name: writer-ca
+          mountPath: /var/run/telegram/writer-ca
+          readOnly: true
+      volumes:
+      - name: webhook-tls
+        secret:
+          secretName: telegram-webhook-tls
+      - name: webhook-auth
+        secret:
+          secretName: telegram-webhook-auth
+          items:
+          - key: secret-token
+            path: secret-token
+      - name: writer-client
+        secret:
+          secretName: telegram-receiver-client-tls
+      - name: writer-ca
+        secret:
+          secretName: registration-ca
+          items:
+          - key: tls.crt
+            path: tls.crt
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: telegram-receiver
+  namespace: sentry-kubernetes-operator-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sentry-kubernetes-operator
+      app.kubernetes.io/component: telegram-receiver

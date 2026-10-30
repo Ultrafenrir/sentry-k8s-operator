@@ -1,0 +1,24 @@
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryProject
+metadata:
+  name: checkout-settings
+  namespace: checkout-prod
+spec:
+  connection: company-sentry
+  project:
+    create:
+      team: payments
+      platform: python
+  settings:
+    filters:
+      browserExtensions: true
+      localhost: false
+      webCrawlers: true
+    pii:
+      scrubData: true
+      scrubDefaults: true
+      scrubIPAddresses: false
+      sensitiveFields:
+        - authorization
+        - password
+      safeFields: []

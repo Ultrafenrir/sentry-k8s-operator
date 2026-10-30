@@ -1,0 +1,28 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: sentry-kubernetes-operator-controller
+  namespace: sentry-kubernetes-operator-system
+  labels:
+    app.kubernetes.io/name: sentry-kubernetes-operator
+    app.kubernetes.io/component: controller-manager
+spec:
+  groups:
+  - name: sentry-kubernetes-operator.controller
+    rules:
+    - alert: SentryOperatorReconcileErrors
+      expr: sum by (controller) (increase(sentry_operator_reconciles_total{outcome="error"}[10m])) > 0
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: Sentry operator reconciliation is returning errors
+        description: Inspect fixed-enum metrics, redacted conditions and Kubernetes Events; do not dump credential or protected-state Secrets.
+    - alert: SentryOperatorConditionFailureBurst
+      expr: sum by (controller, condition) (increase(sentry_operator_condition_transitions_total{status="False"}[10m])) > 5
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: Sentry operator resources are entering failed conditions repeatedly
+        description: Use condition reason and the redacted admin report to identify the affected component without exposing external identities.

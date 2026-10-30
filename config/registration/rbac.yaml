@@ -1,0 +1,118 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: registration-writer
+  namespace: sentry-kubernetes-operator-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: telegram-receiver
+  namespace: sentry-kubernetes-operator-system
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: registration-writer
+rules:
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - create
+- apiGroups:
+  - authorization.k8s.io
+  resources:
+  - subjectaccessreviews
+  verbs:
+  - create
+- apiGroups:
+  - sentryconfiguration.io
+  resources:
+  - sentryconnections
+  - sentryprojects
+  verbs:
+  - get
+- apiGroups:
+  - sentryconfiguration.io
+  resources:
+  - sentryconnections/status
+  - sentryprojects/status
+  verbs:
+  - get
+  - patch
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: registration-writer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: registration-writer
+subjects:
+- kind: ServiceAccount
+  name: registration-writer
+  namespace: sentry-kubernetes-operator-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: registration-protected-state
+  namespace: sentry-kubernetes-operator-state
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - create
+  - update
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: registration-protected-state
+  namespace: sentry-kubernetes-operator-state
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: registration-protected-state
+subjects:
+- kind: ServiceAccount
+  name: registration-writer
+  namespace: sentry-kubernetes-operator-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: registration-protected-routing
+  namespace: sentry-kubernetes-operator-routing
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - create
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: registration-protected-routing
+  namespace: sentry-kubernetes-operator-routing
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: registration-protected-routing
+subjects:
+- kind: ServiceAccount
+  name: registration-writer
+  namespace: sentry-kubernetes-operator-system

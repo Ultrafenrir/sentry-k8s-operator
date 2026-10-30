@@ -1,0 +1,124 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentry-hook-producer
+  namespace: sentry-kubernetes-operator-system
+  labels:
+    app.kubernetes.io/name: sentry-kubernetes-operator
+    app.kubernetes.io/component: sentry-hook-producer
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sentry-kubernetes-operator
+      app.kubernetes.io/component: sentry-hook-producer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sentry-kubernetes-operator
+        app.kubernetes.io/component: sentry-hook-producer
+    spec:
+      serviceAccountName: sentry-hook-producer
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: producer
+        image: controller:latest
+        imagePullPolicy: IfNotPresent
+        command:
+        - /sentry-hook-producer
+        args:
+        - --address=:8447
+        - --health-address=:8081
+        - --tls-cert-file=/var/run/sentry-hook/server/tls.crt
+        - --tls-key-file=/var/run/sentry-hook/server/tls.key
+        - --client-ca-file=/var/run/sentry-hook/ca/tls.crt
+        - --allowed-client-uri=spiffe://cluster.local/ns/sentry-kubernetes-operator-system/sa/sentry-hook-receiver
+        - --hook-source-namespace=sentry-kubernetes-operator-hook-sources
+        - --delivery-namespace=sentry-kubernetes-operator-delivery
+        ports:
+        - name: internal
+          containerPort: 8447
+          protocol: TCP
+        - name: health
+          containerPort: 8081
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+            scheme: HTTP
+          initialDelaySeconds: 2
+          periodSeconds: 5
+          timeoutSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 2
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 10m
+            memory: 24Mi
+          limits:
+            cpu: 250m
+            memory: 96Mi
+        volumeMounts:
+        - name: server-tls
+          mountPath: /var/run/sentry-hook/server
+          readOnly: true
+        - name: client-ca
+          mountPath: /var/run/sentry-hook/ca
+          readOnly: true
+      volumes:
+      - name: server-tls
+        secret:
+          secretName: sentry-hook-producer-server-tls
+      - name: client-ca
+        secret:
+          secretName: registration-ca
+          items:
+          - key: tls.crt
+            path: tls.crt
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentry-hook-producer
+  namespace: sentry-kubernetes-operator-system
+  labels:
+    app.kubernetes.io/name: sentry-kubernetes-operator
+    app.kubernetes.io/component: sentry-hook-producer
+spec:
+  selector:
+    app.kubernetes.io/name: sentry-kubernetes-operator
+    app.kubernetes.io/component: sentry-hook-producer
+  ports:
+  - name: internal
+    port: 8447
+    targetPort: internal
+    protocol: TCP
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sentry-hook-producer
+  namespace: sentry-kubernetes-operator-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sentry-kubernetes-operator
+      app.kubernetes.io/component: sentry-hook-producer

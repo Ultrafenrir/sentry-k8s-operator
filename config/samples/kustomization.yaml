@@ -1,0 +1,6 @@
+## Append samples of your project ##
+resources:
+- sentryconfiguration_v1alpha1_sentryconnection.yaml
+- sentryconfiguration_v1alpha1_sentryproject.yaml
+- workload_with_sentry_dsn.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

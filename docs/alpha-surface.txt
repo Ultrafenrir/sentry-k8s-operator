@@ -1,0 +1,82 @@
+SENTRY CONFIGURATION OPERATOR — T00 ALPHA FIELD DECISION
+Дата: 2026-10-29
+Статус: source/contract decision; обязателен для T01 schema. Source-only plan adjustment
+принят в docs/adr/0001-source-only-alpha-surface.txt.
+Machine-readable copy: testdata/contracts/t00-alpha-surface.json
+
+1. Правило публикации
+
+Поле публикуется в v1alpha1 только если для него доказано adapter-neutral значение и
+безопасный lifecycle во всех заявленных средах. Source-derived fixture даёт максимум
+ContractTested. Отсутствие живого Sentry не заменяется предположением.
+
+2. Settings
+
+Опубликованные typed fields:
+
+settings.filters.browserExtensions  boolean  -> filter id browser-extensions / active
+settings.filters.localhost          boolean  -> filter id localhost / active
+settings.filters.webCrawlers        boolean  -> filter id web-crawlers / active
+
+settings.pii.scrubData              boolean  -> dataScrubber
+settings.pii.scrubDefaults          boolean  -> dataScrubberDefaults
+settings.pii.scrubIPAddresses       boolean  -> scrubIPAddresses
+settings.pii.sensitiveFields        []string -> sensitiveFields
+settings.pii.safeFields             []string -> safeFields
+
+Отсутствующее typed field не управляется. false и [] являются явными desired values.
+reset пока не публикуется: одинаковый reset-to-default transport не подтверждён.
+
+Не публикуются:
+- settings.profile и имена recommended-v1/strict-pii-v1;
+- settings.grouping и grouping.fingerprintRules;
+- settings.advanced.
+
+Причина: 24.7.1 принимает fingerprintingRules только raw Sentry DSL string. План запрещает
+raw native DSL в common/advanced API, а одинаковый typed round-trip не проверен на
+24.7.1, 26.10.1 и SaaS. Immutable состав profile также не подтверждён во всех средах.
+
+3. Common alerts
+
+Опубликованный список presets: пустой.
+
+Candidate     24.7.1 blocker                              Итог target set
+new-issue     issue rule нельзя non-destructively disable Unsupported
+regression    issue rule нельзя non-destructively disable Unsupported
+error-count   metric rule public disable/enable не найден Unsupported
+error-rate    одинаковая семантика не подтверждена        Unknown/not published
+latency       одинаковая семантика не подтверждена        Unknown/not published
+
+26.10.1 имеет public workflow enabled flag, но это не устраняет 24.7.1 blocker и не
+доказывает detector/action/delivery mapping. SaaS rolling API не проверен real call.
+
+Пока presets пусты, alerts не публикуется в v1alpha1 и common alert fields (preset,
+enabled, environment, tags, thresholds, window, recovery, notify) также не являются
+частью public schema. Их имена остаются кандидатами плана, а не выпущенным контрактом.
+
+4. Advanced alerts
+
+Опубликованный список advanced fields: пустой; alerts.<name>.advanced отсутствует.
+
+Нельзя публиковать пример signal/aggregate/condition/match как контракт: нет доказанного
+adapter-neutral отображения и полного disable/enable lifecycle для target set. Raw query,
+Sentry DSL/native payload, adapter family, endpoints, IDs, credentials и destinations в
+обход notify в любом случае запрещены будущим дизайном.
+
+5. Следствие для T01
+
+T01 не может честно выполнить исходные golden scenarios «full Managed ... common alerts»
+и «Managed ... advanced alert». ADR 0001 изменяет source-only acceptance: scaffold/schema
+разрешены без alerts/profile/grouping/advanced, а пять positive fixtures покрывают только
+опубликованную alpha surface. Alert-dependent acceptance переносится в T07 и не считается
+выполненной до live Sentry evidence.
+
+6. Version-pinned evidence
+
+https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/project_details.py
+https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/project_filter_details.py
+https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/project_rule_details.py
+https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/project_rule_enable.py
+https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/incidents/endpoints/organization_alert_rule_details.py
+https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/organization_workflow_index.py
+https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/validators/base/workflow.py

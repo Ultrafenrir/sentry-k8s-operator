@@ -1,0 +1,37 @@
+{
+  "settings": {
+    "profile": {
+      "published": false,
+      "names": []
+    },
+    "filters": [
+      "browserExtensions",
+      "localhost",
+      "webCrawlers"
+    ],
+    "pii": [
+      "safeFields",
+      "scrubData",
+      "scrubDefaults",
+      "scrubIPAddresses",
+      "sensitiveFields"
+    ],
+    "grouping": {
+      "published": false,
+      "fields": []
+    },
+    "advanced": {
+      "published": false,
+      "fields": []
+    }
+  },
+  "alerts": {
+    "published": false,
+    "presets": [],
+    "commonFields": [],
+    "advanced": {
+      "published": false,
+      "fields": []
+    }
+  }
+}

@@ -1,0 +1,12 @@
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryProject
+metadata:
+  labels:
+    app.kubernetes.io/name: sentry-kubernetes-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: checkout
+  namespace: checkout-prod
+spec:
+  project:
+    create:
+      team: payments

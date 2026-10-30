@@ -1,0 +1,65 @@
+SUPPLY-CHAIN RELEASE BOUNDARY
+Date: 2026-10-30
+
+Release build
+
+`make docker-buildx IMG=<registry>/<repository>:<version>` rejects `latest` and pushes the
+configured multi-platform index using Buildx with `--sbom=true` and
+`--provenance=mode=max`. Attestations must be pushed with the image; loading into a classic
+local Docker image store is not release evidence. Build metadata is written to
+`dist/build-metadata.json`, and the target fails unless `containerimage.digest` is one
+canonical lowercase SHA-256 digest.
+
+The release builder is project-scoped and selected explicitly; the target does not change
+the caller's global active Buildx builder. Dockerfile and Make defaults pin the reviewed OCI
+indexes for `docker.io/library/golang:1.26.10` and `gcr.io/distroless/static:nonroot` by
+digest. `make docker-buildx` rejects mutable `BASE_IMAGE` or `RUNTIME_IMAGE` overrides.
+The pinned indexes include every declared release platform (amd64, arm64, s390x and
+ppc64le). Digest review must still be repeated deliberately when either dependency changes;
+pinning makes inputs immutable, not automatically trusted or hermetically reproducible.
+
+Immutable deployment
+
+Development targets still accept tags. Production aliases fail closed unless IMG is an
+immutable reference whose keyless signature verifies against one exact GitHub release
+workflow identity at a version tag:
+
+  make deploy-production \
+    IMG=<registry>/<repository>@sha256:<64 lowercase hex> \
+    COSIGN_CERTIFICATE_IDENTITY=https://github.com/<owner>/<repo>/.github/workflows/release.yml@refs/tags/v1.2.3
+
+The registration alias takes the same IMG and identity. `verify-signed-image` invokes
+`cosign verify` with exact `--certificate-identity` and the fixed public GitHub Actions
+issuer `https://token.actions.githubusercontent.com`. Branch identities, broad regexes,
+tags instead of digests, missing cosign, unsigned images and cosign failures stop before
+the recursive deploy target can run. The separate prerequisite/recipe shape also preserves
+that ordering under parallel make.
+
+Use the digest from verified registry/build metadata, not a locally guessed value. Deploy
+the controller and opt-in executables from the same image digest.
+
+Signing boundary
+
+`.github/workflows/release.yml` runs only for pushed version tags. It grants the image job
+read-only repository access plus package-write and OIDC-token permissions, uses SHA-pinned
+actions and a pinned cosign release, builds the release image, signs the exact digest with
+GitHub OIDC and immediately verifies that digest against the exact workflow/tag identity.
+`make verify-release-workflow` source-checks that closed trigger, least-privilege permissions,
+pinned actions, digest signing and exact self-verification sequence.
+
+The repository does not possess or infer a long-lived registry signing key.
+`make verify-signature-policy` source-tests exact argument forwarding plus rejection of a
+mutable image, broad identity, branch identity and failed cosign verification using a fake
+boundary. These source checks do not prove that any registry image is signed: no hosted
+workflow run, registry push, transparency-log entry or real signature verification was
+performed in the local environment. Release acceptance still has to exercise rejection of
+unsigned and wrong-identity registry images.
+
+Official Buildx behavior
+
+Docker documents `--sbom` and `--provenance` as build attestations attached to an image
+index and states that `--push` preserves them in the registry. Docker also documents
+`--metadata-file` and its `containerimage.digest` field. The structural repository verifier
+checks these flags, digest validation, the release workflow contract and the cosign policy
+boundary, but no registry push or real signature verification was performed in the local
+kind environment.

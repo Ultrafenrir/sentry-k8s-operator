@@ -1,0 +1,6 @@
+{
+  "dataScrubber": true,
+  "dataScrubberDefaults": true,
+  "scrubIPAddresses": true,
+  "sensitiveFields": ["authorization", "password"]
+}

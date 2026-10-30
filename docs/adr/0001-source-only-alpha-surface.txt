@@ -1,0 +1,51 @@
+ADR 0001 — SOURCE-ONLY ALPHA SURFACE ДО LIVE SENTRY
+Дата: 2026-10-29
+Статус: Accepted for T01
+
+Контекст
+
+Первый этап выполняется без доступного Sentry. T00 source/fixture evidence подтверждает
+project identity, DSN output shape и ограниченный набор typed filters/PII settings, но не
+подтверждает переносимый alert lifecycle, recommended profile, grouping DSL или
+adapter-neutral advanced AST во всех целевых Sentry 24.7.1, 26.10.1 и SaaS.
+
+Исходный backlog требует в T01 ровно пять positive golden scenarios, включая common и
+advanced alerts. Выпуск этих полей только ради выполнения количества превратил бы Unknown
+в мнимую поддержку и нарушил бы основное правило compatibility matrix.
+
+Решение
+
+T01 создаёт SentryConnection и SentryProject v1alpha1, но публикует только:
+
+- connection/project create-or-use identity и lifecycle;
+- DSN output selection;
+- typed filters browserExtensions/localhost/webCrawlers;
+- typed PII scrubData/scrubDefaults/scrubIPAddresses/sensitiveFields/safeFields;
+- paused, status, access policy и adapter-neutral destination selectors.
+
+В T01 schema отсутствуют alerts, settings.profile, settings.grouping и все advanced поля.
+Неизвестное поле отклоняется structural schema. Destination objects ещё не обещают
+рабочую доставку: runtime capability остаётся Unknown до T06/T07.
+
+Source-only T01 использует пять изменённых positive golden scenarios:
+
+1. минимальный Managed create только с team;
+2. External observe без ConsumeDSN и без Secret;
+3. External observe с ConsumeDSN и ожидаемым Secret;
+4. Managed с полным опубликованным filters/PII settings contract;
+5. Managed с adapter-neutral Slack/PagerDuty/Telegram destination selectors.
+
+Alert-dependent negative fixtures (dangling notify и удаление destination, используемого
+alert) переносятся в T07 вместе с первым опубликованным alert contract. Остальные T01
+negative fixtures сохраняются. T07 обязан сначала получить live lifecycle evidence и
+отдельно изменить CRD contract/ADR; автоматического появления полей после upgrade нет.
+
+Последствия
+
+- T01 scaffold не блокируется отсутствующим внешним стендом.
+- Alpha API меньше исходного плана, но каждое опубликованное поле имеет честный статус.
+- M0 не считается завершённым: его alert-сценарии остаются открыты.
+- Добавление alerts/grouping/profile/advanced является явной API evolution, требует
+  generated CRD diff, обновлённых golden fixtures и повторной Kubernetes matrix.
+- API group выбран как sentryconfiguration.io; перед публичным релизом владелец проекта
+  должен подтвердить контроль/уникальность домена или провести conversion-aware rename.

@@ -1,0 +1,11 @@
+[
+  {
+    "id": "__PUBLIC_KEY__",
+    "name": "Default",
+    "label": "Default",
+    "isActive": true,
+    "dsn": {
+      "public": "https://__PUBLIC_KEY__@sentry.example.invalid/__INTERNAL_PROJECT_ID__"
+    }
+  }
+]

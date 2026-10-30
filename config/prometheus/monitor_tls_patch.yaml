@@ -1,0 +1,11 @@
+# Patch for Prometheus ServiceMonitor to enable secure TLS configuration
+# using certificates managed by cert-manager
+- op: replace
+  path: /spec/endpoints/0/tlsConfig
+  value:
+    serverName: sentry-kubernetes-operator-controller-manager-metrics-service.sentry-kubernetes-operator-system.svc.cluster.local
+    insecureSkipVerify: false
+    ca:
+      secret:
+        name: metrics-server-cert
+        key: ca.crt

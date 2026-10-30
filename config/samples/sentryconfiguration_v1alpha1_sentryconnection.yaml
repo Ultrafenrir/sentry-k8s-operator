@@ -1,0 +1,40 @@
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryConnection
+metadata:
+  labels:
+    app.kubernetes.io/name: sentry-kubernetes-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: company-sentry
+spec:
+  url: https://sentry.example.invalid
+  organization: company
+  credentials:
+    tokenSecretRef:
+      name: company-sentry-api
+      key: token
+  default: true
+  access:
+    - owner: payments
+      namespaces:
+        matchNames:
+          - checkout-prod
+      teams:
+        - payments
+      allowCreate: true
+      existingProjects:
+        observe:
+          - checkout-api
+        consumeDSN:
+          - checkout-api
+      destinations:
+        slack:
+          - workspace: Company Slack
+            channels:
+              - payments-alerts
+        pagerDuty:
+          - account: Company PagerDuty
+            services:
+              - Payments Primary
+        telegram:
+          targets:
+            - payments-alerts

@@ -1,0 +1,1985 @@
+ПЛАН РАЗРАБОТКИ SENTRY CONFIGURATION OPERATOR
+Версия документа: 2.0
+Дата: 29 октября 2026 года
+Формат: обычный текст, UTF-8
+Назначение: единый исполнимый план для ИИ-агентов.
+
+Статус: проектирование. Код и испытания ещё не выполнены.
+Этот документ заменяет план версии 1.0.
+
+
+0. КАК ИСПОЛЬЗОВАТЬ ЭТОТ ПЛАН
+
+Этот план — источник правды для публичного CRD API и поведения
+оператора. ИИ-агент не должен самостоятельно:
+
+- добавлять в публичный spec внешние ID;
+- разбивать обычную конфигурацию на новые CRD;
+- менять семантику удаления, pause, alerts и settings;
+- подменять непроверенный API предположением;
+- считать fixture или mock проверкой на реальной Sentry;
+- выводить токены, DSN, сырые API-ответы или данные событий в
+  логи и status.
+
+Перед задачей агент читает разделы 1–9, свою задачу из раздела 10, применимые Axx из
+раздела 11, Definition of Done из раздела 12 и version-specific sources раздела 14.
+Изменение публичного CRD контракта требует отдельного ADR и приёмки
+координатором.
+
+
+1. ЦЕЛЬ И ГРАНИЦЫ ПРОДУКТА
+
+1.1. Цель
+
+Команда хранит один понятный SentryProject рядом с манифестами
+своего сервиса. Оператор:
+
+- создаёт новый управляемый Sentry project или подключает существующий как read-only
+  по имени/slug;
+- публикует public DSN в Kubernetes Secret;
+- применяет inbound filters, PII/data scrubbing, grouping и fingerprinting;
+- создаёт, изменяет, выключает и удаляет алерты;
+- доставляет уведомления в Slack, PagerDuty и Telegram;
+- показывает понятный status и исправляет drift.
+
+Для обычного подключения сервиса не нужен запрос платформенной команде
+и не нужно изучать Sentry API, если namespace policy уже настроена. Подключение External
+project и выдача его DSN требуют заранее выданных observe/ConsumeDSN grants.
+
+Изменяющие settings и alerts поддерживаются только для Managed project, созданного
+оператором. External project подключается исключительно для безопасного чтения.
+
+1.2. Не входит в продукт
+
+Это Sentry Configuration Operator, а не оператор установки Sentry.
+
+В первую версию не входят:
+
+- установка, resize, ingress, backup и upgrade самой self-hosted Sentry;
+- управление командами, пользователями, membership и IAM;
+- ротация и создание Sentry client keys;
+- импорт и захват ручных алертов;
+- автоматическая миграция legacy alerts в detectors/workflows;
+- совместное управление одним project из нескольких кластеров;
+- обработка и перегруппировка исторических events/issues.
+
+Если позже потребуется управлять самой Sentry, для этого проектируется
+отдельный SentryInstallation. Его нельзя смешивать с SentryProject.
+
+
+2. ЗАФИКСИРОВАННЫЕ ПРОДУКТОВЫЕ РЕШЕНИЯ
+
+D01. В репозитории сервиса есть один основной namespaced CRD: SentryProject.
+
+D02. SentryConnection — platform-owned cluster-scoped CRD. Обычная команда его не
+создаёт и не редактирует.
+
+D03. Отдельных SentryAlert, SentryDestination и SentrySettings CRD в alpha нет.
+Алерты и получатели задаются именованными картами внутри SentryProject.
+
+D04. В публичном spec нет внешних ID. Пользователь не вводит:
+
+- Sentry organization/project/client-key ID;
+- detector/workflow/alert-rule ID;
+- integration ID;
+- Slack channel ID;
+- PagerDuty service ID;
+- Telegram chat/topic ID.
+
+D05. Все ссылки задаются понятными именами, slug или именами Kubernetes-ресурсов.
+Оператор сам разрешает имя во внутреннюю identity и закрепляет её в защищённом
+служебном binding. Внешние ID не публикуются в пользовательском spec и status.
+
+D06. Имя не является доказательством identity. После первой привязки оператор
+работает с закреплённым внешним объектом. Новый объект с прежним именем не
+подхватывается автоматически.
+
+D07. Для project явно задаётся create или use. Неявного создания нет.
+
+D08. Обычные алерты описываются короткими presets. Внутренние legacy,
+detector и workflow модели не попадают в обычный YAML.
+
+D09. Для редких сценариев есть ограниченный advanced режим. Он не может менять
+connection, organization, project, URL, credentials и destinations.
+
+D10. Получатели уведомлений — именованная карта внутри project. Алерты
+ссылаются на них по локальному имени.
+
+D11. Имя output Secret по умолчанию: <metadata.name>-sentry. Ключ: SENTRY_DSN.
+
+D12. Внешнее удаление project по умолчанию запрещено. lifecycle.onDelete = Retain.
+
+D13. Pause reconciliation, выключение алерта и resync — три разные операции.
+
+D14. На один Managed project допускается один manager/writer. OwnershipConflict получает
+только CR, который пытается захватить manager claim; любое число явно разрешённых
+read-only readers может сосуществовать. У External project writer отсутствует.
+
+В alpha это гарантируется внутри одной установки оператора. Конкурирующие writer
+из независимых кластеров запрещены организационно и не заявляются как решённая задача.
+
+D15. Выбранный для алерта API adapter закрепляется. Upgrade Sentry не вызывает
+скрытую миграцию legacy alert в detector/workflow.
+
+D16. Публичный CR ограничен 50 alerts и 20 destinations в alpha. Это защищает
+размер объекта и status. Реальные лимиты подтверждаются нагрузочным тестом.
+
+D17. Внешние ID, pending operations и tombstones хранятся в защищённом binding
+в namespace оператора. Обычный service owner не имеет к нему доступа.
+
+D18. Для частой настройки есть версионированные settings profiles. Профиль —
+короткая запись с опубликованным и неизменяемым составом; явные поля имеют приоритет.
+
+D19. Ресурсы строго разделены по происхождению. External существовал до оператора,
+не имеет operator owner и никогда не принимается под скрытое управление. Managed не
+существовал до create: оператор записал create intent, создал его и назначил immutable
+owner из доверенного правила SentryConnection.access.
+
+D20. Owner и manager — разные понятия. Owner обозначает команду/tenant, а manager —
+единственный SentryProject UID, имеющий право изменять ресурс. Чужой owner получает только
+явно разрешённый read-only view; create/update/delete запрещены. DSN по умолчанию также
+запрещён и возможен только по отдельному ConsumeDSN grant.
+
+D21. project.use всегда read-only и не назначает owner. Для публикации DSN любого reader
+CR — External или Managed — нужен отдельный platform-owned ConsumeDSN grant. Это право
+не даёт менять Sentry.
+
+D22. Каждый Managed resource несёт owner marker на самом внешнем объекте. Приоритет:
+native label/annotation/metadata, затем отдельное служебное поле, затем зарезервированная
+часть читаемого имени. Значения — human-readable owner и operator name, не external ID.
+Для мутации одновременно требуются marker и защищённый binding.
+
+
+3. ПОЛЬЗОВАТЕЛИ И ЧАСТЫЕ ОПЕРАЦИИ
+
+3.1. Platform admin
+
+Один раз или редко:
+
+- устанавливает и обновляет оператор;
+- создаёт SentryConnection;
+- хранит API token, CA и Telegram bot token в Secrets;
+- разрешает namespaces, Sentry teams и интеграции;
+- устанавливает Slack и PagerDuty integrations в Sentry;
+- выполняет break-glass, ownership recovery и manager handoff.
+
+3.2. Service owner
+
+Работает с одним SentryProject:
+
+- создаёт project или подключает его по slug;
+- подключает Secret к Deployment;
+- меняет settings своего Managed project;
+- добавляет и меняет алерты;
+- выбирает Slack channel, PagerDuty service и Telegram target по имени;
+- временно выключает алерт через enabled: false;
+- ставит reconciliation на паузу;
+- читает понятные ошибки, не ищет ID.
+
+3.3. Минимальное действие пользователя
+
+Операция                                Изменение в SentryProject
+Создать project                         project.create.team
+Подключить существующий read-only        project.use: <slug>
+Получить DSN Managed project            ничего дополнительно
+Получить DSN через project.use           platform ConsumeDSN grant по slug
+Включить безопасные настройки           settings.profile: recommended-v1
+Добавить Slack                          destinations.<имя>.slack.channel
+Добавить PagerDuty                      destinations.<имя>.pagerDuty.service
+Добавить Telegram                       destinations.<имя>.telegram.target и команда боту
+Добавить типовой алерт                  alerts.<имя>.preset + notify
+Временно выключить алерт                alerts.<имя>.enabled: false
+Остановить синхронизацию                paused: true
+Запросить немедленную сверку            annotation reconcile-at
+Удалить один управляемый алерт           удалить его ключ и дождаться Ready
+Удалить CR без удаления project         удалить CR; Retain задан по умолчанию
+
+Если частая операция требует копирования raw JSON, внешнего ID или отдельного CR,
+UX считается неготовым и возвращается на проектирование.
+
+
+4. ЦЕЛЕВАЯ МОДЕЛЬ CRD
+
+4.1. SentryConnection: платформенный ресурс
+
+Пример не является пользовательским golden path:
+
+apiVersion: sentry.example.io/v1alpha1
+kind: SentryConnection
+metadata:
+  name: company-sentry
+spec:
+  url: https://sentry.example.com
+  organization: company
+  credentials:
+    tokenSecretRef:
+      name: company-sentry-api
+      key: token
+    caBundleSecretRef:
+      name: company-sentry-api
+      key: ca.crt
+  default: true
+  access:
+    - owner: payments
+      namespaces:
+        matchNames:
+          - checkout-prod
+      teams:
+        - payments
+      allowCreate: true
+      existingProjects:
+        observe:
+          - checkout-api
+          - shared-platform
+        consumeDSN:
+          - checkout-api
+      destinations:
+        slack:
+          - workspace: Company Slack
+            channels:
+              - payments-alerts
+        pagerDuty:
+          - account: Company PagerDuty
+            services:
+              - Payments Primary
+        telegram:
+          targets:
+            - payments-alerts
+  integrations:
+    slack:
+      defaultWorkspace: Company Slack
+    pagerDuty:
+      defaultAccount: Company PagerDuty
+    telegram:
+      botTokenSecretRef:
+        name: company-telegram-bot
+        key: token
+      receiverURL: https://sentry-telegram.example.com/events
+      webhookAuthSecretRef:
+        name: company-sentry-webhook-auth
+        key: secret
+
+Все platform Secret refs состоят из name + key; namespace намеренно отсутствует и всегда
+равен фиксированному namespace оператора. tokenSecretRef обязателен, caBundleSecretRef
+необязателен. botTokenSecretRef и webhookAuthSecretRef обязательны при Telegram.
+
+Обычный пользователь не имеет к ним доступа. Отсутствующий ключ даёт SecretKeyMissing
+до сетевого вызова. Изменение Secret подхватывается watch без изменения SentryProject.
+receiverURL и webhookAuthSecretRef принадлежат platform admin; URL и secret нельзя задать
+в пользовательском CR.
+
+Human-readable managed-by name, например company-sentry-operator, задаётся один раз при
+установке Helm/manifests, неизменяемо и уникально в Sentry organization. Это не внешний
+ID и не поле SentryProject.
+
+Connection status показывает server version, organization name, capabilities, готовность
+интеграций и дату последней проверки. Все внешние ID остаются служебными.
+В status также допускается один краткоживущий system-written registrationCommit fence на
+connection; он содержит только operation hash, expected policy generation и expiry, не
+показывается в printer columns и никогда не содержит binding code или target identity.
+
+Если connection не указан, после namespace-policy filtering должен остаться ровно один
+доступный default connection. Ноль даёт ConnectionRequired, несколько —
+DefaultConnectionAmbiguous. Оператор никогда не выбирает первый по порядку.
+
+Каждое правило access связывает доверенное имя owner и namespace selector с разрешёнными
+teams, правом create и явными списками существующих project slug. observe даёт только
+безопасный read-only view. consumeDSN отдельно разрешает прочитать public DSN и создать
+локальный Secret, но не менять Sentry. Если slug отсутствует в observe, use запрещён.
+Один лишь известный slug не даёт namespace право подключить чужой project.
+allowCreate управляет только созданием новых project. Оngoing Manage уже созданного
+Managed project разрешён, пока то же owner/namespace access rule существует; перевод
+allowCreate в false не останавливает живые projects. Удаление/несовпадение всего rule
+отзывает Manage и запускает AccessRevoked semantics, включая только узкий cleanup ранее
+разрешённых destination actions по правилам 5.5.
+Destination grants разрешают только перечисленные workspace/channel, account/service и
+Telegram target names. Знание имени destination без grant не даёт право использовать его.
+Для большого числа проектов допускается отдельная platform-owned policy-модель, но она
+тоже использует имена/slug, не ID, и не усложняет SentryProject.
+
+API group sentry.example.io в примерах — placeholder. В T01 выбирается реальный group,
+после чего все golden YAML используют одно зафиксированное значение. Placeholder нельзя
+выпускать в релизе.
+
+4.2. SentryProject: единственный обычный CR
+
+Верхний уровень spec:
+
+- connection: имя SentryConnection; пропускается при одном default connection;
+- project: ровно один из create и use;
+- dsn: необязательная настройка output Secret и client key по имени;
+- settings: filters, pii, grouping и ограниченный advanced;
+- destinations: карта локальное имя -> Slack, PagerDuty или Telegram;
+- alerts: карта локальное имя -> alert spec;
+- paused: пауза reconciliation;
+- lifecycle.onDelete: Retain или DeleteProject.
+
+4.3. Пример 1: новый project
+
+apiVersion: sentry.example.io/v1alpha1
+kind: SentryProject
+metadata:
+  name: checkout
+  namespace: checkout-prod
+spec:
+  project:
+    create:
+      team: payments
+
+По умолчанию:
+
+- connection — default, разрешённый для namespace;
+- slug и display name — checkout;
+- platform — optional; при отсутствии оператор не угадывает SDK и использует
+  подтверждённое нейтральное значение API;
+- Sentry default rules при создании отключены;
+- Secret — checkout-sentry;
+- ключ Secret — SENTRY_DSN;
+- settings не управляются;
+- alerts не создаются;
+- onDelete — Retain.
+
+4.4. Пример 2: существующий project
+
+apiVersion: sentry.example.io/v1alpha1
+kind: SentryProject
+metadata:
+  name: checkout
+  namespace: checkout-prod
+spec:
+  project:
+    use: checkout-api
+
+checkout-api — slug, который виден в URL и UI Sentry. Оператор находит внутреннюю identity
+и закрепляет её в read-only binding. В YAML ID не появляется. Именно в этом примере у
+project нет валидных managed marker и binding, поэтому origin = External и owner ему не
+назначается. Settings и внешние дочерние ресурсы не меняются. Platform admin разрешил
+observe и ConsumeDSN, поэтому оператор публикует DSN Secret.
+
+4.5. Пример 3: обычная полная настройка
+
+apiVersion: sentry.example.io/v1alpha1
+kind: SentryProject
+metadata:
+  name: checkout
+  namespace: checkout-prod
+spec:
+  project:
+    create:
+      team: payments
+      platform: python
+
+  settings:
+    profile: recommended-v1
+    filters:
+      browserExtensions: true
+      localhost: true
+      webCrawlers: true
+    pii:
+      scrubData: true
+      scrubDefaults: true
+      scrubIPAddresses: true
+      sensitiveFields:
+        - authorization
+        - password
+    grouping:
+      fingerprintRules:
+        database-timeout:
+          when:
+            errorType: DatabaseTimeout
+          fingerprint:
+            - database-timeout
+
+  destinations:
+    team:
+      slack:
+        channel: payments-alerts
+    oncall:
+      pagerDuty:
+        service: Payments Primary
+    chat:
+      telegram:
+        target: payments-alerts
+
+  alerts:
+    new-issues:
+      preset: new-issue
+      environment: production
+      notify:
+        - team
+    many-errors:
+      preset: error-count
+      environment: production
+      above: 100
+      window: 5m
+      notify:
+        - team
+        - oncall
+        - chat
+
+Все имена team, oncall, chat, new-issues и many-errors локальны и понятны
+автору. Порядок элементов карты не влияет на identity.
+
+4.6. Только необходимые overrides
+
+Если default Secret не подходит:
+
+spec:
+  dsn:
+    secret: my-sentry-secret
+
+Если активных client keys несколько:
+
+spec:
+  dsn:
+    clientKey: Default
+
+Default — видимое имя/метка ключа. Если имена не уникальны, оператор возвращает
+DSNKeyAmbiguous. ID не предлагается как workaround.
+
+Если в Sentry есть несколько Slack workspace или PagerDuty account:
+
+spec:
+  destinations:
+    team:
+      slack:
+        workspace: Company Slack
+        channel: payments-alerts
+    oncall:
+      pagerDuty:
+        account: Company PagerDuty
+        service: Payments Primary
+
+Это всё ещё имена, а не ID.
+
+Самый короткий вариант типовых production-настроек:
+
+spec:
+  settings:
+    profile: recommended-v1
+
+Состав профиля публикуется как golden fixture. Уже выпущенный профиль не меняет смысл
+при upgrade оператора; для нового состава создаётся новое версионированное имя.
+
+4.7. Read-only без скрытого ownership
+
+Если shared-platform разрешён только в existingProjects.observe, тот же короткий use:
+
+spec:
+  project:
+    use: shared-platform
+
+создаёт External ReadOnly view. Status показывает origin и URL, но owner отсутствует,
+а DSN не выдаётся. Оператор не принимает settings, destinations, alerts или DeleteProject.
+Скрытого перевода External в Managed нет. Чтобы получить управляемый project, пользователь
+создаёт новый через project.create и переносит workload осознанно вне оператора.
+
+
+5. ТОЧНАЯ СЕМАНТИКА ПОЛЕЙ
+
+5.1. Разрешение имён
+
+Для любой ссылки по имени действует один алгоритм:
+
+1. Искать только в заданном connection, organization и разрешённом scope.
+2. Требовать одно точное совпадение имени или slug.
+3. Ноль совпадений: ReferenceNotFound.
+4. Больше одного: ReferenceAmbiguous.
+5. Одно совпадение: закрепить ID во внутреннем binding.
+6. На следующих сверках проверять закреплённую identity.
+7. Не переключаться на новый объект с прежним именем.
+
+Ошибка не должна просить пользователя указать ID. Для разрешения неоднозначности
+используется дополнительное читаемое имя: workspace, account, team или platform alias.
+
+Если даже после всех подтверждённых human-readable discriminators совпадений несколько,
+функция возвращает ReferenceAmbiguous и не поддерживает выбор этого объекта. Исправление —
+дать объектам уникальные читаемые имена в Sentry/интеграции. Ни public ID, ни скрытая
+позиция в списке не становятся selector. T00 обязан проверить этот путь для client keys,
+Slack workspace/channel и PagerDuty account/service.
+
+5.2. Project identity
+
+- create и use взаимоисключаются;
+- metadata.name — slug нового project по умолчанию;
+- create.displayName и create.slug допускаются как понятные overrides;
+- create.platform — необязательная human-readable подсказка; отсутствие и нейтральный
+  backend default должны быть подтверждены T00;
+- use содержит уникальный в organization slug;
+- use всегда означает ReadOnly и не назначает owner или manager;
+- origin при use определяется только доказательствами на найденном объекте: объект без
+  валидной пары managed marker + protected binding имеет origin External; объект с
+  совпавшими marker и binding сохраняет origin Managed, но этот CR остаётся reader;
+- settings, destinations, alerts и DeleteProject с use запрещены CEL/webhook;
+- connection, organization и закреплённый project после bind immutable;
+- ручное внешнее удаление не вызывает автосоздание пустого project.
+
+Если create встречает уже существующий slug, оператор возвращает ProjectAlreadyExists
+и не привязывает объект автоматически. Пользователь может осознанно сменить create на
+read-only use, если namespace-policy разрешает observe этого project.
+
+Единственное исключение — admin-approved manager handoff/recovery. Target CR сохраняет
+обычный project.create с тем же human-readable slug и сначала получает
+OwnershipRecoveryRequired, а не делает POST. Admin запускает команду по Kubernetes-именам
+source CR или orphan record и target CR; external ID не вводится. Команда проверяет
+Managed marker, protected binding, immutable owner, connection/organization, отсутствие
+незавершённой mutation и access target namespace, затем одним CAS обновляет единый
+manager-claim record: переносит manager UID на target и в той же записи создаёт one-time
+handoff authorization для его UID + generation + slug.
+Только с этой authorization target controller связывается с уже Managed object без POST
+и переходит в Manage. Старый manager немедленно теряет право mutation. Обычный existing
+slug без такого protected handoff по-прежнему даёт ProjectAlreadyExists; это не adoption.
+
+5.3. DSN
+
+- оператор читает существующие client keys;
+- оператор не создаёт, не ротирует и не отключает keys;
+- единственный active key выбирается автоматически;
+- при нескольких active keys нужно dsn.clientKey с именем/меткой;
+- выбранный key закрепляется внутренним ID и не переключается;
+- Secret содержит только public DSN в SENTRY_DSN;
+- Secret создаётся в namespace SentryProject;
+- чужой Secret не перезаписывается;
+- имя output Secret можно менять двухфазно;
+- временная ошибка Sentry не удаляет рабочий Secret;
+- доказанно отключённый или удалённый key приводит к удалению только
+  управляемого output Secret;
+- 403, timeout и неоднозначный 404 не считаются доказанной невалидностью.
+
+Неизменный dsn.clientKey продолжает ссылаться на pinned key даже после его внешнего
+rename и показывает ExternalNameChanged. Явное изменение dsn.clientKey в spec — это
+осознанный rebind по новому читаемому имени; новый key проверяется до обновления Secret.
+
+Для Managed project в режиме create DSN автоматически публикует только active manager,
+если его owner access rule всё ещё действует. Для любого project.use, независимо от
+origin External/Managed и совпадения owner, нужны одновременно observe и отдельный
+ConsumeDSN grant по slug. Observe без ConsumeDSN не читает client keys и не создаёт
+Secret. ConsumeDSN не разрешает mutation в Sentry.
+
+Попытка competing create/writer, проигравшая manager claim, не превращается в reader,
+не читает keys и не получает Secret. Чтобы читать тот же project, пользователь явно
+создаёт отдельный project.use, разрешённый policy. При доказанном AccessRevoked manager
+или отзыве ConsumeDSN у reader оператор удаляет только output Secret этого CR; при
+timeout/ошибке чтения policy прежний Secret сохраняется. Pause Secret не удаляет.
+
+Для любого project.use отзыв ConsumeDSN grant имеет ту же локальную revoke-
+семантику: после однозначно прочитанной новой policy оператор удаляет только созданный им
+output Secret. Исчезновение observe grant также отзывает ConsumeDSN, даже если slug по
+ошибке остался в consumeDSN. Timeout чтения policy, временная ошибка Kubernetes API,
+403/timeout Sentry и недоступность connection не доказывают отзыв и не удаляют рабочий
+Secret. Authorization повторяется непосредственно перед каждым create/update/delete
+output Secret; competing CR не считает Secret manager CR своим и не обновляет его.
+
+Изменение dsn.secret выполняется только двухфазно:
+
+1. Создать и проверить новый Secret, старый оставить рабочим.
+2. Показать DSNCutoverPending с old/new names и инструкцией обновить workload.
+3. Пользователь подтверждает новым именем в annotation
+   <api-group>/confirm-dsn-cutover после успешного rollout приложения.
+4. Оператор повторно проверяет authorization и новый Secret, удаляет старый и очищает
+   annotation/status.
+
+Автоматического timeout удаления нет. Повторная сверка идемпотентна; без подтверждения оба
+Secrets остаются. Удаление всего SentryProject по Retain удаляет оба local Secrets.
+
+5.4. Settings
+
+Три основных блока:
+
+- settings.filters;
+- settings.pii;
+- settings.grouping.
+
+Необязательное поле settings.profile включает зафиксированный набор полей для частого
+сценария. recommended-v1 — целевой профиль и блокер M0: T00 обязан подтвердить точный
+одинаковый смысл во всех заявленных средах. Если это невозможно, profile удаляется из
+public schema и golden examples до T01; неподтверждённое имя выпускать нельзя.
+strict-pii-v1 добавляется по тому же правилу. Поля профиля считаются управляемыми, явные
+typed fields поверх него имеют приоритет.
+
+Правила:
+
+- блок отсутствует: оператор им не управляет;
+- поле отсутствует: поле не меняется;
+- false, "" и [] — явные значения;
+- [] очищает управляемый список;
+- удаление блока прекращает управление и сохраняет последнее значение;
+- reset: true внутри filters, pii или grouping взаимоисключается с остальными полями
+  этого блока и декларативно удерживает подтверждённые поля в Sentry defaults;
+- явно заданный список управляется целиком;
+- соседние неуправляемые поля не перезаписываются;
+- drift управляемого поля исправляется.
+
+Точные поля утверждаются после T00. Стабильный человеческий API не должен
+повторять случайную структуру HTTP API Sentry.
+
+grouping.fingerprintRules — именованная карта typed rules. Common API не принимает raw
+Sentry fingerprint DSL строкой. Минимальные when-поля и fingerprint tokens утверждаются
+T00; неподдерживаемое выражение идёт в adapter-neutral settings.advanced либо получает
+UnsupportedFeature. Переименование ключа rule считается replace, порядок карты не важен.
+
+Удаление profile прекращает управление полями, которые пришли только из profile, и
+оставляет последние значения. Profile не является одноразовой командой. То же относится
+к reset: true: пока он присутствует, defaults остаются desired state.
+
+5.5. Destinations
+
+Ключ в destinations — локальное имя внутри project. В каждом элементе ровно один
+тип: slack, pagerDuty или telegram.
+
+Перед resolution оператор проверяет destination grant совпавшего access rule. Grant
+задаётся только человеческими workspace/channel, account/service и target names. Имя,
+которое существует во внешней системе, но не разрешено policy, даёт
+DestinationAccessDenied без раскрытия чужих IDs или конфигурации.
+
+Отзыв destination grant — отдельная reconciliation-операция:
+
+Тот же протокол имеет приоритет при полном удалении owner/namespace access rule. Last
+accepted policy revision и точный список ранее разрешённых destination bindings заранее
+хранятся в protected state. Полный revoke немедленно запрещает новые обычные операции и
+удаляет local DSN Secret, но при целых marker + binding + manager claim разрешает узкий
+RevokeCleanupOnly для перечисленной ниже очистки. Settings не откатываются, project не
+удаляется и новые actions не создаются.
+
+- однозначно прочитанная новая policy немедленно запрещает новые resolve/create/update;
+- оператор создаёт revoke tombstone из прежнего защищённого binding; он разрешает только
+  монотонную очистку ранее созданных operator-owned actions и routing, но не новые права;
+- перед внешней cleanup повторно проверяются Managed origin, owner marker, protected
+  binding и current manager; один revoke tombstone права на произвольную mutation не даёт;
+- у operator-owned alerts удаляется action на отозванный Slack/PagerDuty destination или
+  alert безопасно выключается, если отдельное удаление action невозможно; внешний
+  channel/service не удаляется;
+- Telegram routing выключается локально сразу, новые и queued сообщения уходят в DLQ с
+  reason DestinationAccessRevoked, затем очищается operator-owned Sentry action;
+- пока внешняя очистка не подтверждена, condition = DestinationRevokePending и status
+  честно предупреждает, что Sentry может продолжать прямую Slack/PagerDuty доставку;
+- после Verify удаляется cleanup tombstone, но protected destination identity переводится
+  в Revoked и сохраняет pinned external identity, last readable name и ownership evidence;
+  выставляется DestinationAccessRevoked;
+- revoked-identity record удаляется только когда destination удалён из desired spec и вся
+  cleanup подтверждена. При явном изменении selector/target он заменяется CAS только
+  после проверки новой identity или успешной re-registration, а не стирается заранее;
+- восстановление grant повторно применяет desired spec только после проверки сохранённой
+  pinned identity; отсутствующий или заменённый объект даёт ExternalObjectReplaced или
+  TelegramRegistrationRequired, но не переключение на одноимённый новый объект;
+- timeout чтения policy или временная ошибка Kubernetes API не доказывают revoke и не
+  запускают cleanup. Ошибка cleanup не затрагивает независимые destinations/alerts.
+
+Если при полном revoke marker/binding/manager evidence не сходятся, внешнего cleanup call
+нет: condition = AccessRevokePendingAdmin, normal access остаётся Deny, а status явно
+перечисляет по локальным именам actions, доставка которых может продолжаться. После
+успешного Verify cleanup scope исчезает и состояние становится полным Deny.
+
+Это двухфазная fail-closed модель для новых действий. Мгновенно остановить уже созданную
+прямую доставку Sentry в Slack/PagerDuty при недоступной Sentry технически невозможно;
+оператор не скрывает это ограничение и не объявляет revoke завершённым до Verify.
+
+Slack:
+
+- channel — читаемое имя без ID; решётку в начале имени указывать не требуется;
+- workspace — необязательное имя при нескольких installations.
+
+PagerDuty:
+
+- service — читаемое имя service;
+- account — необязательное имя при нескольких integrations.
+
+Telegram:
+
+- target — логическое имя чата/топика;
+- numeric chat ID и topic ID не попадают в CR.
+
+Привязка Telegram target:
+
+1. Пользователь добавляет destination с target: payments-alerts.
+2. Status показывает TelegramRegistrationRequired и безопасную подсказку:
+   kubectl sentry telegram-register <project> <destination>.
+3. Kubectl plugin через Kubernetes-authenticated endpoint проверяет SubjectAccessReview
+   на update этого SentryProject и выводит одноразовую bot-команду только в terminal.
+4. Пользователь отправляет команду боту в нужном чате и топике.
+5. Public receiver проверяет bot update и передаёт numeric identity по mTLS во внутренний
+   registration writer; Kubernetes credentials у receiver отсутствуют.
+6. Registration writer через uncached Kubernetes API повторно проверяет challenge,
+   UID/generation, destination spec hash, owner и policy resourceVersion, затем в строгом
+   порядке ставит два безопасных status fence: сначала на SentryConnection policy, потом
+   на destination SentryProject; только после этого CAS-сохраняет identity в binding.
+7. Idempotent publisher применяет routing record в durable store; только после ack status
+   становится TelegramReady.
+
+Bearer-код никогда не записывается в CR status, Event, log или annotation. В binding
+хранится только его hash. Код одноразовый, ограничен по времени и привязан к
+namespace/project/destination/owner. Человек с read-only доступом к CR не может получить
+код; caller с update правом уже имеет право менять этот destination. Этот flow
+предпочтительнее ввода chat ID в Secret или YAML.
+
+Registration writer — отдельный internal-only компонент с dedicated ServiceAccount. Его
+RBAC ограничен direct get SentryProject/SentryConnection, patch только их status
+subresources для несекретных registrationCommit fences и get/update protected binding
+records. Он не может менять spec, не имеет Sentry token и не принимает public webhook.
+Receiver аутентифицирует внутренний handoff взаимным TLS и подписанным operation key, но
+сам не читает Kubernetes API.
+
+Challenge redemption выполняется CAS по hash + namespace/project UID + generation +
+destination spec hash + owner + connection policy generation/hash/resourceVersion.
+Writer direct-read делает оба CR, затем по resourceVersion сначала ставит
+SentryConnection.status.registrationCommit, а потом
+SentryProject.status.destinations.<name>.registrationCommit. Validating webhook отклоняет
+изменение access/destination policy Connection и изменение/удаление destination Project,
+пока соответствующий fence активен; уже начатая запись со старым resourceVersion
+конфликтует. После второго direct-read обоих объектов writer либо видит те же значения,
+либо снимает оба fence и отклоняет challenge без binding/routing.
+
+Порядок всегда Connection -> Project, поэтому deadlock запрещён. Если policy revoke
+линеаризовался первым, writer видит новый epoch/hash и отклоняет registration. Если writer
+первым поставил Connection fence, policy update получает retryable PolicyCommitInProgress;
+после завершения registration update повторяется и запускает revoke cleanup из 5.5.
+Routing никогда не становится Ready под уже действующей revoked policy.
+
+При гонке redemption выигрывает ровно один writer. Запись routing store следует
+transactional-outbox модели: сначала CAS binding с pending publish, затем идемпотентный
+publish, затем Ready и снятие обоих fences. Restart/HA повторяют тот же operation по
+journal; controller снимает зависший fence только после проверки binding/outbox или
+доказанного expiry. Fence не содержит code, numeric identity или secret. Если T06 не
+докажет project-generation и policy-epoch fences конкурентными тестами, Telegram
+registration считается Unsupported.
+
+Lifecycle destinations map:
+
+- карта authoritative: отсутствующая destinations и destinations: {} означают ноль
+  desired destinations, в отличие от неуправляемого settings block;
+- notify обязан ссылаться на существующий ключ; dangling ref отклоняется admission;
+- destination нельзя удалить, пока desired alert ссылается на него;
+- если alerts и destinations удалены одной generation, сначала удаляются alerts, затем
+  local bindings destinations;
+- rename ключа — remove + create; Telegram target регистрируется заново;
+- удаление Slack/PagerDuty binding не удаляет внешний channel/service;
+- удаление Telegram binding немедленно отзывает routing; queued messages переводятся в
+  DLQ с reason DestinationRemoved, а не отправляются в старый чат;
+- явное изменение channel/service/target в spec означает rebind к новому имени;
+  внешнее переименование при неизменном spec не переключает pinned identity и даёт
+  ExternalNameChanged.
+
+5.6. Alerts
+
+Ключ карты alerts — стабильная локальная identity. Перестановка YAML не изменяет
+объект. Переименование ключа считается удалением старого и созданием нового.
+
+Минимальные presets первой версии:
+
+- new-issue;
+- regression;
+- error-count;
+- error-rate, если T00 подтвердит одинаковую понятную семантику;
+- latency, если T00 подтвердит её для целевых версий.
+
+Неподтверждённый preset не публикуется.
+
+Общие поля:
+
+- preset;
+- enabled, default true;
+- environment: одно читаемое имя;
+- tags: карта точных tag matches;
+- ровно одно из above или below для threshold presets;
+- warningAbove или warningBelow в том же направлении, если поддерживается;
+- window;
+- recoverAbove или recoverBelow, если поддерживается;
+- notify: список локальных destination names.
+
+В common API нет raw query и второго параллельного способа задать те же filters/threshold.
+Точная допустимость полей зависит от preset и валидируется до API call. Несколько
+environments в alpha выражаются отдельными alerts либо adapter-neutral advanced AST.
+Пустой notify запрещён для enabled alert, если выбранная модель не имеет отдельного
+осмысленного режима без actions.
+
+Оператор сам выбирает legacy issue, legacy metric или modern detector/workflow по
+подтверждённым capabilities. Выбор закрепляется в status. Он не меняется сам после
+upgrade Sentry.
+
+enabled: false выключает алерт, но не удаляет его. Common preset публикуется для среды
+только после проверки полного create/read/update/disable/enable/delete lifecycle. Если
+adapter не умеет выключать без удаления, этот preset для среды Unsupported и не считается
+поддержанным релизом. Для advanced возвращается UnsupportedAlertDisable. Скрытое удаление
+и пересоздание не допускается.
+
+Удаление ключа из alerts удаляет только созданные для него внешние объекты.
+Их binding и tombstone сохраняются до завершения очистки.
+
+Lifecycle alerts map:
+
+- карта authoritative: отсутствующая alerts и alerts: {} означают ноль desired alerts;
+- удаление всего блока после ранее применённых rules удаляет все Managed alerts;
+- rename ключа — delete old + create new, без предположения о сохранении identity;
+- при удалении нескольких объектов tombstone каждого хранится независимо;
+- ошибка удаления одного alert не блокирует reconcile других alerts, settings и DSN;
+- admission проверяет notify refs до mutation; controller повторяет проверку после restart.
+
+5.7. Advanced alerts и settings
+
+Advanced — не сырой HTTP request. Это ограниченная adapter-neutral semantic AST для
+условий, фильтров и параметров, которые не вошли в presets.
+
+Пример формы; точные поля фиксируются после T00:
+
+alerts:
+  special-rule:
+    advanced:
+      signal:
+        field: transaction.duration
+        aggregate:
+          percentile: 95
+      condition:
+        above: 2s
+        window: 10m
+      match:
+        environment: production
+        tags:
+          region: eu
+    notify:
+      - oncall
+
+В advanced запрещены:
+
+- connection, organization, project, team;
+- URL и HTTP headers;
+- credentials, tokens и Secret data;
+- все внешние ID;
+- actions/destinations в обход notify;
+- поля, меняющие ownership.
+- adapter family/model, endpoint names и raw Sentry query/DSL/native payload.
+
+Оператор сам отображает semantic AST в pinned adapter. Если одинаковая заявленная
+семантика не может быть сохранена, функция возвращает UnsupportedFeature; пользователь
+не выбирает legacy/metric/detector/workflow family.
+
+Если для нативного поля нужен внешний ID, для него создаётся именованное поле-ссылка
+и resolver. Если resolver нет, функция считается Unsupported. Просить ID как workaround нельзя.
+
+Неизвестное поле не игнорируется. Оно вызывает UnsupportedField до опасной мутации.
+
+5.8. Pause, disable и resync
+
+- spec.paused: true останавливает обычные внешние изменения;
+- pause не выключает работающие алерты;
+- pause не удаляет DSN Secret;
+- удаление CR обрабатывается независимо от pause;
+- alert.enabled: false выключает один алерт;
+- annotation sentry.example.io/reconcile-at с новым значением запрашивает внеочередную
+  сверку без изменения desired spec.
+
+5.9. Удаление
+
+lifecycle.onDelete:
+
+- Retain, default: оставить все внешние Sentry-ресурсы как есть, удалить только
+  управляемый Kubernetes Secret;
+- DeleteProject: удалить project целиком; допускается только при origin Managed,
+  совпавших marker + protected binding, текущем manager UID и действующей authorization.
+  Manager мог быть первоначальным creator или получить право через admin-only handoff.
+
+Для use DeleteProject отклоняется schema/webhook.
+
+При Retain оператор не пытается удалить алерты или откатить settings. Это самый
+безопасный результат ошибочного GitOps prune. Для очистки отдельных алертов
+пользователь сначала удаляет их ключи из alerts, дожидается Ready, затем удаляет CR.
+
+При Retain защищённый binding переводится в orphaned state, а не стирается. Он не даёт
+новому CR автоматически присвоить прежние объекты, но позволяет admin выполнить
+осознанный ownership recovery/manager handoff. Его удаление — отдельная admin-only
+операция после показа
+оставшихся внешних ресурсов. После успешного DeleteProject binding можно удалить.
+
+Retain finalizer не требует доступности Sentry: он завершается после локального удаления
+DSN Secrets и атомарного сохранения orphan record. Timeout/403 не блокирует этот путь,
+если destructive external operation не была начата. Для DeleteProject или уже начатой
+destructive operation timeout/403 finalizer не снимают.
+
+Orphan record сохраняет Telegram routing и delivery bindings, потому что retained alerts
+остаются активны. Удаление orphan record отдельной admin-командой сначала показывает,
+какие alerts продолжат посылать webhook, и требует подтверждения, что routing можно
+остановить. Иначе Retain не должен тихо ломать доставку.
+
+Удаление одного ключа из alerts всегда означает удаление именно этого управляемого
+алерта. Для временной паузы используется enabled: false.
+
+5.10. Origin, owner, marker, manager и read-only
+
+Есть ровно два происхождения:
+
+External:
+
+- объект найден до любой create intent оператора;
+- валидная пара operator managed marker + protected binding отсутствует; похожая ручная
+  метка не считается owner и не меняет origin;
+- project.use создаёт read-only binding с origin External, только если найденный объект
+  не имеет согласованных managed marker + protected binding;
+- оператор никогда не добавляет marker задним числом и не меняет External;
+- ручные alerts/integrations внутри Managed project также считаются External и не трогаются.
+
+Managed:
+
+- перед POST оператор доказал, что target не существует;
+- до POST сохранены create intent, owner name и manager UID;
+- объект создан оператором, а owner marker передан в том же create request;
+- все создаваемые alerts, workflows и delivery bindings получают тот же owner marker;
+- только закреплённый manager UID этого owner может делать create/update/delete;
+- project.use с совпавшими marker + binding сохраняет origin Managed, но не получает
+  manager claim и остаётся ReadOnly.
+
+Owner назначается по единственному совпавшему SentryConnection.access rule. В публичном
+SentryProject поля owner нет. Ноль правил даёт AccessDenied, больше одного —
+AccessPolicyAmbiguous. Изменение policy не меняет owner Managed resource; отзыв права
+переводит его в AccessRevoked до решения platform admin. Если отдельный observe grant
+остаётся, разрешён актуальный безопасный ReadOnly view. Если его нет, оператор не делает
+обычных Sentry API calls, удаляет свой output Secret после доказанного revoke и показывает
+только last-known очищенную сводку. Единственное внешнее исключение — ограниченный
+RevokeCleanupOnly из 5.5; без достаточных ownership evidence он не запускается.
+
+Стратегия marker для каждого типа ресурса фиксируется в capability matrix:
+
+1. Native label, annotation, tag или metadata — предпочтительно.
+2. Выделенное description/custom поле, если оно безопасно round-trip сохраняется.
+3. Зарезервированный фрагмент имени — только как последний fallback, например
+   "Checkout errors [owner=payments; managed-by=company-sentry-operator]".
+
+Логическое содержимое marker одинаково для всех adapters:
+
+- origin=managed;
+- operator-owner=payments;
+- managed-by=company-sentry-operator.
+
+Для создаваемых Kubernetes objects это обычные labels/annotations с выбранным API-group
+prefix. Для Sentry objects adapter отображает те же значения в лучший подтверждённый
+механизм. Manager UID и external IDs в marker не записываются.
+
+Same-namespace Kubernetes children, например output DSN Secret, дополнительно получают
+настоящий metadata.ownerReferences на SentryProject. Это управляет Kubernetes lifecycle,
+но не заменяет owner marker и binding для внешних Sentry resources.
+
+Если у project есть отдельные slug и displayName, marker fallback добавляется только в
+displayName и не ухудшает человекочитаемый slug. Формат fallback фиксирован и парсится
+строго, а не через поиск произвольной подстроки.
+
+Owner и managed-by — читаемые имена. Непрозрачный external ID в marker запрещён. Marker
+добавляется атомарно при create. Если API не позволяет ни один вариант, управление этим
+типом ресурса помечается Unsupported; постфактум дописывать marker и считать объект своим
+нельзя.
+
+Owner marker — это зарезервированная пара operator-owner и managed-by в выбранном
+namespace/формате оператора, а не любое чужое поле с названием owner. Совпавший team,
+обычный tag owner или похожая часть имени не считаются marker.
+
+Marker не является единственным доказательством ownership. Для каждой mutation должны
+одновременно совпасть origin Managed, owner marker, operator marker, protected binding и
+manager UID. Подделанная вручную метка без binding не даёт права записи. Имя без
+зарезервированного marker и binding никогда не доказывает ownership.
+
+Manager claim — отдельная детерминированно именованная запись в namespace оператора.
+Её ключ вычисляется из canonical Sentry origin, organization slug и project slug, а после
+create дополняется закреплённой identity. Claim создаётся Kubernetes Create/CAS до первой
+внешней mutation: AlreadyExists означает OwnershipConflict. Нормализация origin обязана
+свести два SentryConnection alias к одной Sentry installation. Read-only use claim не
+создаёт. Handoff заменяет manager UID только admin-only CAS-операцией и выдаёт target CR
+одноразовую protected authorization, описанную в 5.2; project.use в Manage не переводится.
+
+Read-only правила:
+
+- External не имеет owner и доступен только через явный observe grant;
+- Managed другого owner доступен только через явный observe grant;
+- ReadOnly показывает origin, owner если он есть, URL, readiness и безопасную сводку;
+- ReadOnly не читает DSN/client keys без отдельного ConsumeDSN grant и никогда не
+  показывает credentials, event payload или PII;
+- settings, destinations, alerts и DeleteProject с project.use отклоняются до mutation;
+- второй CR того же owner получает OwnershipConflict только при попытке получить manager
+  claim; явно разрешённый project.use остаётся независимым ReadOnly reader;
+- потеря или изменение marker/binding даёт OwnershipLost и останавливает mutation;
+- восстановление Managed выполняется как owner recovery/manager handoff по marker и
+  backup binding; External adoption в alpha отсутствует.
+
+ConsumeDSN — отдельное имя-based право platform admin. Оно разрешает только CR с
+project.use прочитать public DSN External или Managed project и создать свой Secret в
+разрешённом namespace. Совпадение owner не заменяет этот grant. ConsumeDSN не назначает
+owner, manager и не разрешает mutation в Sentry.
+
+
+6. STATUS, ОШИБКИ И ПОНЯТНОЕ ПОВЕДЕНИЕ
+
+6.1. Короткий вывод
+
+kubectl get sentryprojects показывает:
+
+NAME       READY   PROJECT    ORIGIN    OWNER      ACCESS   DSN SECRET        ALERTS   MESSAGE
+checkout   True    checkout   Managed   payments   Manage   checkout-sentry   2/2      Ready
+
+Обычный вывод не показывает внешние ID.
+
+6.2. Conditions
+
+Обязательны:
+
+- Ready;
+- ProjectReady;
+- DSNReady;
+- SettingsReady;
+- DestinationsReady;
+- AlertsReady;
+- Paused;
+- Deleting;
+- OwnershipConflict;
+- ReadOnly;
+- OwnershipLost;
+- AccessRevoked;
+- OwnershipRecoveryRequired.
+
+Каждый condition содержит status, reason, очищенный message, observedGeneration и
+lastTransitionTime.
+
+Ready оценивает только применимые к выбранному mode компоненты. Для project.use без
+ConsumeDSN условие DSNReady получает Unknown/NotApplicable и не делает Ready=False.
+Для Managed create DSNReady обязательно для Ready=True.
+
+Также нужны:
+
+- внешний URL project;
+- origin External/Managed;
+- читаемое имя owner и access mode Manage/ReadOnly;
+- имя выбранного client key;
+- status destinations по локальным именам;
+- status alerts по локальным именам;
+- lastAttemptTime, lastSuccessfulSyncTime и nextRetryTime;
+- закреплённый adapter/capability без необходимости его выбирать.
+
+Внешние ID хранятся только в защищённом system-written binding. Их нет в публичном status,
+printer columns и пользовательских сообщениях. Для диагностики используются локальные
+имена, Sentry URL и стабильный reason.
+
+6.3. Требования к message
+
+Сообщение отвечает на три вопроса:
+
+1. Что не готово?
+2. Какое понятное имя вызвало ошибку?
+3. Что должен сделать пользователь?
+
+Примеры reason:
+
+- ReferenceNotFound;
+- ReferenceAmbiguous;
+- ProjectAlreadyExists;
+- DSNKeyAmbiguous;
+- DSNCutoverPending;
+- UnsupportedFeature;
+- InvalidDestination;
+- DestinationAccessDenied;
+- DestinationRevokePending;
+- DestinationAccessRevoked;
+- SecretKeyMissing;
+- TelegramRegistrationRequired;
+- PolicyCommitInProgress;
+- WebhookAuthenticationUnsupported;
+- CreationOutcomeUnknown;
+- OwnershipConflict;
+- ExternalReadOnly;
+- ForeignOwnerReadOnly;
+- OwnershipLost;
+- OwnershipRecoveryRequired;
+- AccessDenied;
+- AccessPolicyAmbiguous;
+- AccessRevokePendingAdmin;
+- ExternalObjectReplaced;
+- PermissionDenied;
+- RateLimited;
+- TemporaryFailure.
+
+Нельзя требовать от пользователя разбирать HTTP body или копировать ID.
+
+
+7. ВНУТРЕННЯЯ АРХИТЕКТУРА И БЕЗОПАСНОСТЬ
+
+7.1. Компоненты
+
+- Kubernetes controller: watch, reconciliation, status, Secret, finalizers;
+- Sentry client: auth, TLS, pagination, rate limit, error classification;
+- name resolvers: project, team, client key, Slack, PagerDuty, Telegram target;
+- project/settings adapters;
+- legacy issue alert adapter;
+- legacy metric alert adapter;
+- modern detector/workflow adapter;
+- Telegram public receiver, internal registration writer и durable delivery worker;
+- admission/defaulting layer;
+- operation journal/binding state;
+- deterministic manager-claim registry.
+
+7.2. Внутренняя reconciliation state machine
+
+Reconciliation запускается событиями Kubernetes, изменением watched Secrets и
+периодической сверкой с jitter. Для каждого компонента цикл один и тот же:
+
+1. ObserveLocal: прочитать Kubernetes generation, binding и локальную policy; не вызывать Sentry.
+2. Authorize: проверить namespace, slug grant, origin, owner и manager.
+3. ObserveExternalAllowed: читать только разрешённые endpoints и поля.
+4. Normalize: построить канонический desired state без внешних ID.
+5. Plan: вычислить drift только для управляемых полей.
+6. Journal: сохранить finalizer, owner, target, intent, generation и desired hash.
+7. Apply: выполнить не более одного внешнего изменяющего шага.
+8. Verify: перечитать результат и сохранить applied hash/verification state.
+9. Report: обновить component status понятными именами.
+
+До успешного Authorize оператор не делает ни одного Sentry API call. Observe grant
+разрешает только минимальные project metadata. Client keys читаются только текущим
+Managed manager или явный project.use с ConsumeDSN. Полные settings/alerts читаются
+только текущим manager.
+Authorize возвращает один из scope: Manage, ReadOnly, RevokeCleanupOnly или Deny.
+RevokeCleanupOnly возникает только из доказанного destination-grant revoke либо полного
+access-rule revoke с сохранённой last accepted policy. Он разрешает читать/менять лишь
+точно закреплённые operator-owned actions, необходимые для монотонной очистки; создавать,
+переназначать, менять settings или удалять project он не позволяет.
+
+Непосредственно перед каждой внешней mutation и каждым локальным create/update/delete
+output Secret оператор повторно читает generation, policy, binding, origin, owner,
+managed-by marker и manager. Если они изменились, mutation отменяется и план строится
+заново. External и foreign owner останавливаются до внешней mutation. Output Secret для
+них допускается только при действующем ConsumeDSN grant. Удаление Secret после revoke
+разрешено лишь когда новая локальная policy однозначно прочитана и доказывает отзыв; для
+этой очистки Sentry API не вызывается.
+
+Журнал должен переживать restart и leader failover.
+
+Потерянный ответ создающего POST не повторяется вслепую. Если API не даёт
+доказуемого восстановления, объект переходит в CreationOutcomeUnknown и не мутируется
+до admin recovery.
+
+Unknown/error всегда имеет component scope:
+
+- project unknown блокирует все зависящие компоненты;
+- settings error блокирует только settings;
+- destination error блокирует только alerts, которые на него ссылаются;
+- alert unknown блокирует только этот alert и его replacement cleanup;
+- Telegram delivery error не блокирует Slack/PagerDuty и reconciliation Sentry;
+- DSN error не удаляет и не блокирует уже независимые settings/alerts.
+
+Controller продолжает reconciliation независимых компонентов той же generation. Status
+показывает scope по локальному имени; глобальный Ready агрегирует результат, но не служит
+причиной остановить всю state machine.
+
+7.3. Ownership и restore
+
+В alpha внутренний binding хранится как отдельный Opaque Secret в namespace оператора.
+Он обновляется атомарно с resourceVersion, не имеет cross-namespace ownerReference и
+закрыт RBAC от service owners. При Retain он остаётся orphan record; при DeleteProject
+удаляется после подтверждённого результата; в остальных случаях удаляется только явной
+admin recovery-операцией. Формат versioned и имеет migration tests.
+
+Внутренний binding хранит:
+
+- stable management identity;
+- Kubernetes UID;
+- connection и organization;
+- owner key, owner name и active manager UID;
+- внешний project ID;
+- все external child IDs;
+- происхождение каждого объекта;
+- pending operations и tombstones;
+- applied hashes и pinned adapters.
+
+В T00 для каждого создаваемого типа выбирается marker strategy: native metadata,
+служебное поле или reserved name fragment. Совпадение обычного имени или slug не заменяет
+marker. Marker без protected binding также не доказывает ownership.
+
+Backup оператора включает CR metadata/status, binding state, input Secrets и Telegram queue.
+Восстановление только из Git не доказывает ownership. В этом случае оператор
+переходит в OwnershipRecoveryRequired и read-only. Admin flow сверяет managed marker,
+owner name и backup binding, показывает понятные имена и URL и выполняет manager handoff
+в target project.create CR по протоколу 5.2. После CAS target reconcile потребляет handoff
+authorization, подтверждает marker/binding и только затем получает Manage.
+Если доказательств Managed origin нет, объект остаётся External; adoption отсутствует.
+
+7.4. Security boundary
+
+Только platform admin может менять:
+
+- Sentry URL и organization;
+- API token и CA;
+- allowed namespaces и teams;
+- доступные integrations;
+- Telegram bot token;
+- dangerous recovery/finalizer operations.
+
+Требования:
+
+- HTTPS-only для SaaS и внешних endpoints;
+- нет user-controlled insecureSkipVerify;
+- Authorization не пересылается на другой origin при redirect;
+- лимиты response size и decompression;
+- connection-scoped rate limiter и concurrency;
+- отдельные ServiceAccount/RBAC для controller, admission и registration writer;
+- Telegram public receiver без Kubernetes RBAC и без automounted Kubernetes token;
+- registration writer с mTLS-only ingress, uncached read SentryProject/SentryConnection,
+  patch только registration fences в обоих status subresources и CAS-доступом к
+  protected Telegram binding; у него нет права менять spec и нет Sentry token;
+- registration API отделён от public webhook receiver и проверяет Kubernetes auth + SAR;
+- same-namespace для user-owned Secret refs;
+- NetworkPolicy для egress/ingress;
+- redaction secret, dsn.secret, bot token, Authorization и event data;
+- запрет произвольных webhook URL в SentryProject.
+
+Namespace-policy SentryConnection проверяется до чтения DSN и до любой мутации. Знание
+slug, team или destination name само по себе не даёт доступ.
+
+7.5. Compatibility
+
+Целевые среды:
+
+- Sentry self-hosted 24.7.1;
+- одна выбранная современная self-hosted версия;
+- Sentry SaaS с датой проверки.
+
+Kubernetes release target на дату этого плана:
+
+- Kubernetes 1.35 и 1.36, последние patch versions на момент теста;
+- Kubernetes 1.37 имеет статус Unknown и не заявляется поддержанным до отдельного T00 test;
+- CRD/CEL/webhook/RBAC/PDB/NetworkPolicy используют только возможности нижней границы 1.35.
+
+Исходный toolchain baseline для проверки: Go 1.26, Kubebuilder 4.16.0,
+controller-runtime 0.24.1 и controller-tools 0.21.0. Это не автоматическое доказательство
+совместимости. T00 обязан закрепить exact patch/digest, generated dependency set, envtest
+assets и результаты на реальных 1.35/1.36 clusters в docs/kubernetes-compatibility.txt.
+T01 нельзя начинать до этого freeze. Смена baseline требует ADR и повторной матрицы.
+
+Каждая capability имеет статус:
+
+- Verified: проверено на реальной Sentry;
+- ContractTested: проверено только на fixture/HTTP contract;
+- Unsupported;
+- Unknown.
+
+Выбор адаптера не делается только по строке версии. 403 означает проблему
+доступа, а не доказанное отсутствие capability.
+
+
+8. TELEGRAM: ОТДЕЛЬНЫЙ НАДЁЖНЫЙ КОМПОНЕНТ
+
+Оператор Sentry не вычисляет условия алерта. Это делает Sentry. Telegram receiver
+принимает подписанный webhook и доставляет сообщение.
+
+Public receiverURL и webhookAuthSecretRef задаются только в SentryConnection. Registration
+API — отдельный authenticated route для kubectl plugin; public receiver не выдаёт binding
+codes и не имеет Kubernetes credentials.
+
+Обязательно:
+
+- проверять raw-body signature или другой подтверждённый Sentry mechanism;
+- отклонять запрос до parsing/routing при неверной подписи;
+- не доверять destination из webhook payload;
+- привязывать source organization/project/integration к разрешённому target;
+- сохранять event/idempotency key в durable queue до HTTP 2xx;
+- гарантировать at-least-once, но не обещать exactly-once;
+- иметь bounded retries, jitter, DLQ, retention и backpressure;
+- учитывать Telegram rate limits;
+- экранировать text и ограничивать размер;
+- по умолчанию не включать сырой event payload и PII;
+- иметь readiness, metrics, queue-age и delivery-failure alerts;
+- переживать restart и смену leader/replica;
+- описать storage, backup и recovery очереди.
+
+Если T00 не подтверждает криптографически проверяемую аутентификацию webhook для целевой
+модели Sentry, Telegram для неё получает Unsupported. Секрет в query string, доверие IP,
+project slug или имени alert не считаются аутентификацией.
+
+Пока durable backend не выбран и не проверен, Telegram не считается готовым.
+
+
+9. ОЧЕРЁДНОСТЬ И КОНТРОЛЬНЫЕ ТОЧКИ
+
+Волна 1: T00 → T01.
+
+Сначала проверить API и name resolution. Затем зафиксировать схему. Создавать Go-типы
+до первых выводов T00 нельзя.
+
+Волна 2: T02 → T03 → T04.
+
+Клиент, connection, project и DSN дают первый полезный vertical slice.
+
+Волна 3: T05, T06 и T07.
+
+Settings и destinations можно делать параллельно после стабильного контракта. Alerts требуют
+готовые destinations для сквозной проверки.
+
+Волна 4: T08 и T09.
+
+Telegram и общий lifecycle/security/recovery.
+
+Волна 5: T10.
+
+Реальная сквозная приёмка, upgrade и упаковка.
+
+Контрольные точки:
+
+M0. Приняты golden YAML и name-resolution matrix.
+M1. Managed manager выдаёт DSN; любой project.use reader выдаёт его только с
+ConsumeDSN grant.
+M2. Settings и alerts работают с Slack и PagerDuty.
+M3. Telegram прошёл надёжную сквозную проверку.
+M4. Все целевые среды прошли acceptance и upgrade tests.
+
+
+10. ЗАДАЧИ РАЗРАБОТКИ
+
+T00. ПРОВЕРКА API, ИМЁН И TELEGRAM-МАРШРУТА
+
+Зависимости: нет.
+
+Сделать:
+
+- поднять тестовую 24.7.1, выбрать современную self-hosted версию, подключить SaaS;
+- проверить toolchain baseline, envtest и real-cluster e2e на Kubernetes 1.35/1.36;
+- проверить CEL validations, admission/defaulting webhook, conversion strategy, leader
+  election, PDB, RBAC и NetworkPolicy на нижней границе Kubernetes;
+- проверить CRUD project, async deletion и lost POST;
+- проверить create без platform и нейтральное значение, если backend требует platform;
+- доказать, что Managed create атомарно отключает Sentry default alert rules;
+- доказать, что после create автоматически появляется usable active client key;
+- для каждого создаваемого типа проверить атомарный owner/managed-by marker через
+  labels/annotations/metadata, служебное поле и reserved name fallback;
+- подтвердить, что обычное имя без marker и binding не используется как ownership proof;
+- проверить list/read client keys, labels, active state и pagination;
+- проверить filters, PII, grouping и fingerprinting;
+- подтвердить immutable golden-состав recommended-v1 во всех заявленных средах либо
+  удалить profile из alpha public API до T01;
+- проверить legacy issue, legacy metric, detectors и workflows;
+- составить каталог условий, фильтров, actions и единиц;
+- проверить поиск по project slug, team name/slug, client-key name/label;
+- проверить поиск Slack workspace/channel и PagerDuty account/service по имени;
+- зафиксировать права token для каждой операции;
+- проверить Telegram webhook signature, формат, retries и binding command;
+- проверить receiverURL/webhookAuthSecretRef и негативный тест неподписанного webhook;
+- провести реальную тестовую доставку.
+
+Результат:
+
+- docs/compatibility.txt;
+- docs/kubernetes-compatibility.txt с exact Kubernetes/toolchain versions и digests;
+- docs/name-resolution.txt;
+- docs/telegram-design.txt;
+- обезличенные HTTP fixtures;
+- точный перечень полей presets и advanced.
+
+Приёмка:
+
+- каждое имя либо однозначно разрешается, либо имеет описанный name-based disambiguator;
+- external ID не предлагается как публичный workaround;
+- project.create получает Verified только при atomic default-rules=false и usable active key;
+- каждое утверждение о поддержке имеет среду, версию/дату и результат;
+- Kubernetes 1.35/1.36 matrix и toolchain freeze приняты до генерации Go/CRD scaffold;
+- пробелы помечены Unknown, а не считаются успехом.
+
+
+T01. ФИКСАЦИЯ UX И CRD КОНТРАКТА
+
+Зависимости: первые выводы T00 и принятый docs/kubernetes-compatibility.txt. Схема и
+scaffold не создаются до них.
+
+Сделать:
+
+- создать Go/Kubebuilder каркас;
+- создать SentryConnection и SentryProject v1alpha1;
+- реализовать structural OpenAPI, CEL и минимальный validating/defaulting webhook;
+- запретить create + use, DeleteProject + use и destination с несколькими типами;
+- запретить settings/destinations/alerts с use;
+- не допускать user-settable owner/manager и зафиксировать Manage/ReadOnly semantics;
+- задать defaults;
+- зафиксировать access destination grants и точные ключи platform Secrets;
+- выбрать окончательный API group вместо sentry.example.io;
+- задать map limits и size limits;
+- задать status, conditions и printer columns;
+- описать immutable-after-bind поля;
+- создать ровно пять positive golden scenarios и CI-проверку против generated CRD:
+  1) минимальный Managed create только с team;
+  2) External observe без ConsumeDSN и без Secret;
+  3) External observe с policy ConsumeDSN и ожидаемым Secret;
+  4) полный Managed settings + destinations + common alerts;
+  5) Managed adapter-neutral advanced alert;
+- создать negative fixtures: create+use, use+settings, user owner/ID field,
+  dangling notify, удаление используемого destination, destination с несколькими типами,
+  DeleteProject+use, duplicate readable names и запрещённый destination grant;
+- зафиксировать API evolution и conversion strategy в ADR.
+
+Приёмка:
+
+- минимальный new-project YAML не имеет лишних полей;
+- обычная полная конфигурация умещается в один SentryProject;
+- ни один публичный spec/sample не содержит external ID;
+- все golden YAML проходят server-side validation;
+- false, "", [] и omitted сохраняют разную семантику;
+- advanced не может переопределить identity и destinations;
+- use проходит только как ReadOnly; owner нельзя задать в SentryProject;
+- common alert не имеет raw query и конфликтующих способов задать threshold/filter;
+
+
+T02. SENTRY CLIENT, CONNECTION И NAME RESOLVERS
+
+Зависимости: T00, T01.
+
+Сделать:
+
+- auth, HTTPS, custom CA, timeout и safe redirect policy;
+- pagination, rate limit, jittered backoff и connection-scoped concurrency;
+- классификацию 400/401/403/404/409/429/5xx/timeout;
+- redaction на границе декодирования;
+- capability discovery;
+- generic exact-name resolver с NotFound/Ambiguous;
+- access-policy evaluator с owner, observe и ConsumeDSN grants;
+- resolvers из T00;
+- watch/reload tokenSecretRef, caBundleSecretRef и botTokenSecretRef без пересоздания project;
+- watch/reload webhookAuthSecretRef и проверку receiverURL;
+- operation journal interfaces.
+
+Приёмка:
+
+- pagination и все классы ошибок покрыты HTTP-тестами;
+- неоднозначное имя не выбирается;
+- timeout creating POST не вызывает слепой повтор POST; доказательный read-only GET probe
+  по marker разрешён и не считается повтором POST;
+- token, dsn.secret и API response body не попадают в logs/status;
+- ротация input Secrets подхватывается без ручной перезагрузки.
+
+
+T03. PROJECT, BINDING И OWNERSHIP
+
+Зависимости: T02.
+
+Сделать:
+
+- create по metadata.name и use по slug;
+- проверку connection/namespace/team policy;
+- классификацию External/Managed до mutation;
+- preflight отсутствия target до Managed create;
+- назначение owner из access rule и атомарный marker в create request;
+- наследование marker создаваемыми alert/workflow/delivery resources;
+- deterministic cross-connection manager claim, Create/CAS и admin-only handoff;
+- one-time handoff authorization для target project.create UID/generation/slug без POST;
+- read-only reconcile для External и любого явно разрешённого Managed reader;
+- обязательный default rules = false в create request;
+- получение и закрепление external identity;
+- origin created/reference;
+- unique writer claim;
+- finalizer до первой мутации;
+- lost POST recovery;
+- external rename/delete/replacement detection;
+- DeleteProject только при доказанном ownership и current manager authorization, в том
+  числе после admin-only handoff.
+
+Приёмка:
+
+- повторная сверка не создаёт дубликат;
+- совпавший slug не присваивает External или чужой Managed project;
+- второй create/writer, пытающийся получить тот же manager claim, получает
+  OwnershipConflict; project.use claim не запрашивает;
+- два конкурентных create через разные connection aliases дают ровно один manager claim
+  и не успевают выполнить два внешних POST;
+- admin handoff в target project.create атомарно лишает source права записи; target
+  reconcile не делает POST, получает Manage, выполняет обычную mutation и затем может
+  пройти DeleteProject при всех ownership checks;
+- existing slug без protected handoff authorization всегда остаётся ProjectAlreadyExists;
+- новый project с прежним slug не подхватывается;
+- restart на каждом шаге не теряет intent и identity;
+- use никогда не удаляет внешний project;
+- use корректно показывает origin External или Managed, но всегда остаётся ReadOnly;
+- foreign owner не выполняет create/update/delete и без ConsumeDSN не получает DSN;
+- External не получает owner задним числом и никогда не мутируется;
+- marker без binding и binding без marker не дают права mutation;
+- потеря owner evidence переводит reconciliation в OwnershipLost без мутации;
+- среда без атомарного default-rules=false или автоматического usable client key получает
+  ManagedCreateUnsupported и не заявляет поддержку project.create;
+
+
+T04. DSN И OUTPUT SECRET
+
+Зависимости: T02, T03.
+
+Сделать:
+
+- чтение всех страниц client keys;
+- выбор единственного active или dsn.clientKey по имени;
+- проверку observe + ConsumeDSN для любого project.use до чтения client keys;
+- повторную authorization непосредственно перед каждым create/update/delete output Secret;
+- закрепление key identity;
+- output Secret и owner marker;
+- восстановление Secret;
+- двухфазное изменение имени Secret;
+- пример Deployment с обязательным secretKeyRef.
+
+Приёмка:
+
+- до появления Secret контейнер приложения не стартует;
+- после появления Secret стартует;
+- оператор не делает create/update/delete client keys;
+- при нескольких keys пользователь выбирает по имени, не ID;
+- use без ConsumeDSN не читает keys и не создаёт Secret независимо от origin/owner;
+- project.use с observe + ConsumeDSN создаёт свой Secret, но не разрешает mutation в Sentry;
+- competing create/writer не читает keys и не создаёт/обновляет Secret; same-owner reader
+  получает DSN только как явный project.use с ConsumeDSN;
+- доказанный AccessRevoked или отзыв ConsumeDSN удаляет managed Secret, временная policy
+  error или ошибка Sentry сохраняет его;
+- исчезновение observe grant делает оставшийся consumeDSN недействительным;
+- authorization, изменённая между Plan и записью Secret, отменяет запись;
+- rename Secret создаёт new, ждёт confirm annotation и только затем удаляет old;
+- чужой Secret не перезаписывается;
+- временная ошибка не удаляет прежний рабочий Secret;
+- в логах нет public и secret DSN.
+
+Контрольная точка M1.
+
+
+T05. FILTERS, PII И GROUPING
+
+Зависимости: T02, T03, поля из T00/T01.
+
+Сделать:
+
+- typed stable fields;
+- typed fingerprintRules map без raw Sentry DSL;
+- versioned settings profiles и immutable golden fixtures их состава;
+- узкий settings.advanced;
+- fresh GET -> merge managed fields -> update;
+- conditional update/ETag, если поддерживается;
+- whole-list semantics;
+- explicit clear/reset;
+- drift correction;
+- preflight validation;
+- partial component status.
+
+Приёмка:
+
+- соседние ручные settings не сбрасываются;
+- recommended-v1 даёт документированный результат, а explicit field перекрывает profile;
+- invalid rule не заменяет рабочую конфигурацию;
+- на синтетических events подтверждены filter, scrubbing и grouping;
+- удаление блока прекращает управление, а не делает скрытый reset;
+- историческая перегруппировка не заявляется.
+
+
+T06. DESTINATIONS: SLACK, PAGERDUTY И TELEGRAM BINDING
+
+Зависимости: T00, T02, T03.
+
+Сделать:
+
+- валидацию destinations map;
+- Slack workspace/channel resolver;
+- PagerDuty account/service resolver;
+- destination grant checks до resolver/API lookup;
+- revoke tombstones и монотонную cleanup operator-owned actions при отзыве grant;
+- закрепление internal integration identity;
+- Telegram alias, kubectl plugin и authenticated registration API с SAR;
+- internal mTLS handoff receiver -> registration writer, uncached generation/policy read,
+  ordered Connection-policy -> Project-destination fences, CAS redemption и outbox publish;
+- status каждого local destination;
+- повторную проверку внешнего destination без скрытого переключения;
+- referential-integrity plan: alerts удаляются раньше destination bindings;
+- rename/remove lifecycle для Slack, PagerDuty и Telegram, включая revoke routing и DLQ.
+
+Приёмка:
+
+- в SentryProject есть только channel/service/target names;
+- ноль или несколько matches дают actionable error;
+- новый внешний объект с прежним именем не подхватывается;
+- Telegram chat/topic ID отсутствуют в spec, status и status message;
+- одноразовая bot-команда отсутствует в status, Events и logs;
+- одноразовый binding code не позволяет привязать чужой namespace/project;
+- dangling notify и удаление ещё используемого destination отклоняются до API call;
+- одновременное удаление alert и destination сначала подтверждает удаление alert;
+- rename Telegram destination требует новую registration и не доставляет в старый target;
+- две конкурентные redemption одного challenge дают ровно один target; restart между CAS
+  и routing publish безопасно завершает тот же operation;
+- challenge generation N после изменения/удаления destination в generation N+1 всегда
+  отклоняется и не создаёт active binding/routing; race commit vs spec update имеет один
+  доказуемый порядок, а не stale success;
+- конкурентные policy revoke и redemption дают ровно один порядок: revoke-first не
+  создаёт routing; registration-first завершается, после чего revoke cleanup его снимает;
+- доказанный revoke блокирует новые действия сразу, очищает owned actions/routing и не
+  удаляет внешний Slack channel/PagerDuty service;
+- revoke сохраняет protected pinned identity в состоянии Revoked; restore grant проверяет
+  именно её, а не заново выбирает объект только по имени;
+- временная ошибка policy не считается revoke; недоступная Sentry оставляет
+  DestinationRevokePending с явным предупреждением о возможной продолжающейся доставке.
+
+
+T07. ALERTS: PRESETS, LEGACY И MODERN ADAPTERS
+
+Зависимости: T00, T02, T03, T06.
+
+Сделать:
+
+- alerts map и stable local keys;
+- подтверждённые presets;
+- ограниченный adapter-neutral advanced AST;
+- adapter selection и pinning;
+- legacy issue adapter;
+- legacy metric adapter;
+- modern detector/workflow adapter;
+- creation/update/enable/disable/delete;
+- normalization без endless diff;
+- binding каждого external child;
+- tombstones для удалённых ключей;
+- per-alert status;
+- authoritative semantics отсутствующего alerts и alerts: {};
+- dependency plan для same-generation удаления alerts и destinations;
+- create-before-delete или явный downtime для изменений, требующих recreate;
+- защиту от двойных уведомлений при replacement.
+
+Приёмка:
+
+- обычный alert не содержит API model и external ID;
+- create/read/update/disable/delete проходят на целевых стендах;
+- каждый опубликованный common preset проходит disable/enable без delete/recreate;
+- ошибка одного alert не удаляет project, DSN и другие alerts;
+- ручные alerts не импортируются и не меняются;
+- удаление одного map key удаляет только его objects;
+- alerts: {} после ранее применённых правил удаляет все и только Managed alerts;
+- dangling notify не проходит admission, а same-generation cleanup соблюдает зависимости;
+- advanced не может обойти project/destination policy;
+- advanced не принимает adapter family/model или raw native payload;
+- неподдерживаемое поле даёт UnsupportedField, а не тихо исчезает.
+
+Контрольная точка M2 после доставки в Slack и PagerDuty.
+
+
+T08. TELEGRAM RECEIVER И DELIVERY
+
+Зависимости: маршрут T00, T02, T06, T07.
+
+Сделать:
+
+- приём и проверку webhook;
+- platform receiverURL/webhookAuthSecretRef и rotation tests;
+- отдельный registration API без credentials в public receiver;
+- отдельный registration writer с минимальным RBAC, uncached live-read, ordered policy +
+  project status fences, mTLS handoff, CAS и outbox;
+- Telegram registration command;
+- durable queue и dedupe store;
+- retries, DLQ, retention и backpressure;
+- bounded message rendering без PII по умолчанию;
+- delivery metrics/status;
+- HA receiver/worker;
+- manifests, ingress/gateway, TLS и NetworkPolicy;
+- backup/recovery очереди.
+
+Приёмка:
+
+- реальные тестовые alerts из 24.7.1 и современной модели дошли в Telegram;
+- fake/replayed webhook отклоняется или безопасно deduplicated;
+- invalid/missing signature отклоняется до routing и queue write;
+- после HTTP 2xx restart не теряет сообщение;
+- временная ошибка Telegram повторяется в рамках policy;
+- постоянная ошибка попадает в DLQ/status;
+- дубли ограничены, exactly-once не обещается;
+- tokens, chat identity и event payload не утекают;
+- receiver pod не имеет Kubernetes token/RBAC; writer не имеет Sentry token и недоступен
+  извне кластера;
+- crash/retry в каждой точке registration не создаёт вторую binding и не теряет pending target;
+- stale challenge после generation/policy change не становится Ready и не активирует routing;
+- одновременный revoke grant и registration не оставляет Ready routing под revoked policy.
+
+Контрольная точка M3.
+
+
+T09. ОБЩИЙ LIFECYCLE, SECURITY, HA И RECOVERY
+
+Зависимости: T03–T08.
+
+Сделать:
+
+- periodic reconcile с jitter;
+- единый ObserveLocal -> Authorize -> ObserveExternalAllowed -> Normalize -> Plan ->
+  Journal -> Apply -> Verify -> Report;
+- повторную owner/manager-проверку перед каждым Apply;
+- pause/resume/resync;
+- component retries без потери полезного результата;
+- finalizers и tombstones;
+- двухфазный destination-grant revoke и восстановление после partial cleanup;
+- lifecycle protected revoked-identity records до удаления destination или explicit rebind;
+- приоритет полного access-rule revoke: Deny normal operations + scoped
+  RevokeCleanupOnly либо AccessRevokePendingAdmin;
+- Retain/DeleteProject;
+- admin-only orphan/ownership recovery/manager handoff без External adoption;
+- crash-safe CAS handoff source/orphan -> target project.create и consumption one-time authorization;
+- leader election, 2+ replicas, PDB, probes, graceful shutdown;
+- controller/receiver/admission RBAC separation;
+- metrics, Events, audit log и runbooks;
+- scale/load test и thundering-herd protection;
+- upgrade/rollback с pending operations;
+- CRD storage/conversion strategy;
+- supply-chain/deployment hardening.
+
+Приёмка:
+
+- restart/leader failover на каждом внешнем шаге не даёт дубли и потерю ownership;
+- delete не блокируется pause;
+- DeleteProject/destructive finalizer не снимается автоматически по timeout/403;
+- Retain завершается локально без Sentry API и сохраняет orphan Telegram routing;
+- break-glass показывает оставшиеся external resources до действия;
+- Git-only restore останавливает destructive mutations до ownership recovery;
+- один namespace не может использовать чужой connection/team/project/Telegram binding;
+- явно разрешённый foreign owner видит только безопасный ReadOnly status;
+- полный отзыв access rule немедленно запрещает normal operations; при целых ownership
+  evidence cleanup затрагивает только ранее bound actions, а при их потере не делает
+  внешний call и требует admin recovery;
+- External всегда остаётся без owner и read-only;
+- controller upgrade не меняет pinned adapters и canonical form без явного решения.
+
+
+T10. СКВОЗНАЯ ПРИЁМКА, УПАКОВКА И ПЕРЕДАЧА
+
+Зависимости: T03–T09.
+
+Сделать:
+
+- прогнать раздел 11 на реальных целевых системах;
+- проверить старт приложения с обязательным Secret в настоящем Kubernetes;
+- проверить failure injection: 429, 5xx, timeout, lost response, partial success;
+- обновить оператор с живыми CR и pending operations;
+- подготовить container, Helm/manifests, CRD, RBAC, NetworkPolicy и политики;
+- дать quick start из одного SentryProject;
+- дать полный пример settings + destinations + alerts;
+- опубликовать compatibility matrix, troubleshooting, deletion/recovery и Telegram runbook;
+- проверить инструкцию на человеке, который не знает Sentry API.
+
+Приёмка:
+
+- все обязательные сценарии имеют среду, версию/дату, шаги и результат;
+- fixture/mock не выдаётся за реальный тест;
+- все sample YAML валидируются в CI против реальной CRD;
+- ни одна user guide не советует копировать external ID;
+- неработающий обязательный канал блокирует полный релиз.
+
+Контрольная точка M4.
+
+
+11. ОБЯЗАТЕЛЬНЫЕ ПРИЁМОЧНЫЕ СЦЕНАРИИ
+
+A01. Минимальный new-project YAML только с project.create.team, без platform, создаёт
+Managed project, отключает default rules и получает usable Secret <name>-sentry.
+
+A02. Existing project подключается только по slug как External/ReadOnly. Owner ему не
+назначается; settings и внешние ресурсы не захватываются. DSN требует ConsumeDSN grant.
+
+A03. Ни один публичный manifest/sample не содержит external ID.
+
+A04. Отсутствующее или неоднозначное имя останавливает mutation и даёт actionable error.
+
+A05. Повторная сверка, restart и leader failover не создают дубликаты.
+
+A06. Lost POST восстанавливается доказуемо или переходит в CreationOutcomeUnknown.
+
+A07. Один active client key выбирается. Несколько требуют читаемое dsn.clientKey.
+Managed create получает DSN только как active manager с действующим owner grant. Любой
+project.use reader — External, same-owner Managed или foreign Managed — получает DSN
+только при observe + ConsumeDSN. Competing writer не становится reader автоматически.
+Отзыв grant удаляет только Secret соответствующего CR после доказанного policy change;
+при ошибке policy/Sentry рабочий Secret сохраняется.
+
+A08. Без Secret контейнер приложения не стартует. С Secret — стартует.
+
+A09. Временная ошибка API сохраняет прежний рабочий DSN Secret.
+
+A10. Filters, PII и grouping меняют только явно управляемые поля. Версионированный
+settings profile имеет неизменяемый golden-состав, а typed override перекрывает profile.
+
+A11. Удаление settings block прекращает управление, а не сбрасывает значение.
+
+A12. Alert preset создаётся, меняется, выключается, включается и удаляется по local name.
+
+A13. Порядок map entries не меняет identity. Отсутствующий alerts/destinations и пустая
+карта означают ноль desired entries. Удаление одного ключа не затрагивает остальные;
+alert удаляется до destination, на который он ссылался.
+
+A14. Advanced выражает подтверждённые условия/фильтры, но не меняет target и ownership.
+
+A15. Slack channel и PagerDuty service разрешаются и тестируются по имени только после
+destination grant совпавшего owner policy. Доказанный revoke сразу запрещает новые
+действия, удаляет/выключает только operator-owned actions и завершается лишь после Verify;
+временная ошибка policy revoke не доказывает. Revoke сохраняет protected pinned identity;
+restore не переключается на новый одноимённый объект.
+
+A16. Telegram target привязывается одноразовой командой без chat/topic ID в YAML.
+Bearer-код выдаётся только authenticated caller с update permission и не хранится в status.
+Writer live-read проверяет UID/generation/spec/policy и CAS fence; stale challenge после
+изменения или удаления destination не создаёт binding и routing. Конкурентный revoke
+policy либо выигрывает до registration, либо выполняет cleanup сразу после него.
+
+A17. Реальный тестовый alert доходит в Slack, PagerDuty и Telegram.
+
+A18. Ошибка/CreationOutcomeUnknown одного alert блокирует только его; ошибка destination
+блокирует только ссылающиеся alerts. Project, DSN, settings и независимые alerts продолжают reconcile.
+
+A19. Pause, alert.enabled и resync работают как три разные операции.
+
+A20. Retain при удалении CR не меняет внешнюю Sentry. DeleteProject удаляет только
+Managed project при совпавших marker, binding, current manager и authorization; admin-only
+handoff не лишает нового manager этого права.
+
+A21. Новый объект с прежним именем не принимается за прежний.
+
+A22. Две конкурентные попытки manager claim, включая разные connection aliases одной
+Sentry, атомарно дают одного manager и один OwnershipConflict. Read-only readers
+сосуществуют и claim не создают.
+
+A23. Git-only restore не выполняет destructive mutation до ownership recovery. External
+adoption отсутствует. Admin handoff в target project.create переносит один manager claim
+по CAS; target без create POST проходит reconcile, mutation и проверяемый DeleteProject,
+а source больше не может писать.
+
+A24. Ротация API token, CA и Telegram bot token подхватывается без пересоздания CR.
+
+A25. Upgrade/rollback controller с pending operation сохраняет identity, ownership и pinned adapter.
+
+A26. Только доказанно новый Managed project получает owner marker из trusted access rule.
+External остаётся без owner и read-only. Foreign owner не мутирует Sentry; DSN возможен
+только по отдельному ConsumeDSN grant. Marker и binding проверяются перед каждой внешней
+mutation, а authorization — также непосредственно перед каждой записью output Secret.
+Полный отзыв access rule даёт Deny для normal operations и только строго scoped cleanup
+ранее bound destination actions; без ownership evidence требуется admin recovery.
+
+A27. Сценарии A01–A26 имеют явную матрицу для 24.7.1, современной self-hosted и SaaS.
+
+A28. Generated CRD, CEL, webhooks, controller HA, PDB, RBAC и NetworkPolicy проходят
+envtest и real-cluster e2e на зафиксированных Kubernetes 1.35/1.36 с pinned toolchain.
+
+
+12. ГОТОВНОСТЬ ЗАДАЧИ И РЕЛИЗА
+
+Каждая задача завершается отчётом:
+
+1. Что изменено.
+2. Какие файлы и интерфейсы затронуты.
+3. Какие проверки выполнены.
+4. На какой Sentry/Kubernetes версии они выполнены.
+5. Что проверено только fixture/mock.
+6. Что не проверено и почему.
+7. Какие ограничения и риски остались.
+
+Релиз готов, если:
+
+- команда сервиса работает с одним коротким SentryProject;
+- в публичном spec и user guides нет external ID;
+- create создаёт Managed; use всегда ReadOnly, а origin определяет по marker + binding;
+- DSN создаётся и восстанавливается без управления client keys;
+- filters, PII, grouping и fingerprinting проверены;
+- обычные alerts короткие, advanced покрывает подтверждённые редкие случаи;
+- Slack, PagerDuty и Telegram прошли реальную тестовую доставку;
+- Retain защищает от случайного GitOps prune;
+- origin, marker, ownership, owner/manager authorization, lost POST, restart, leader failover и restore
+  не решаются только совпадением имени;
+- примеры валидируются CI;
+- матрица совместимости честно отличает Verified, ContractTested, Unsupported и Unknown;
+- пользователь может исправить ошибку по status без изучения Sentry API.
+
+
+13. ШАБЛОН ЗАДАНИЯ ДЛЯ ИИ-АГЕНТА
+
+Ты разрабатываешь Sentry Configuration Operator.
+
+Прочитай разделы 1–9, выполни задачу TXX из раздела 10, связанные Axx из раздела 11,
+Definition of Done раздела 12 и version-specific sources раздела 14. Зависимости задачи
+должны быть завершены или предоставлены как стабильные контракты.
+
+Сохраняй решения D01–D22. Публичный spec не принимает external ID. Не добавляй новый CRD,
+если задачу можно решить без ухудшения понятности основного SentryProject.
+
+Не придумывай endpoint, поле, permission, совместимость или результат доставки. Если
+нет стенда или доступа, заверши независимую часть и укажи точную непроведённую проверку.
+
+Используй только тестовые Sentry projects, channels и recipients. Не пиши реальные secrets, events и PII
+в fixtures и logs.
+
+Перед сдачей:
+
+1. Запусти проверки из критериев задачи.
+2. Проверь idempotency, owner/manager authorization, errors и restart для своего модуля.
+3. Проверь, что примеры не содержат ID и secret data.
+4. Обнови документацию и executable samples.
+5. Передай отчёт по шаблону из раздела 12.
+
+
+14. ИСТОЧНИКИ ДЛЯ ПРОВЕРКИ
+
+Официальные источники проверяются по целевой версии. Актуальная документация
+не доказывает наличие поля в Sentry 24.7.1.
+
+Sentry API overview and versioning:
+https://docs.sentry.io/api/
+
+Projects:
+https://docs.sentry.io/api/projects/
+
+Create project:
+https://docs.sentry.io/api/projects/create-a-new-project/
+
+List client keys:
+https://docs.sentry.io/api/projects/list-a-projects-client-keys/
+
+Delete project:
+https://docs.sentry.io/api/projects/delete-a-project/
+
+Update project settings:
+https://docs.sentry.io/api/projects/update-a-project/
+
+Inbound filters:
+https://docs.sentry.io/api/projects/update-an-inbound-data-filter/
+
+Current Alerts API index/examples (доказательство только для текущей SaaS/API, не 24.7.1):
+https://docs.sentry.io/api/monitors/
+
+Fetch alerts:
+https://docs.sentry.io/api/monitors/fetch-alerts/
+
+Create alert:
+https://docs.sentry.io/api/monitors/create-an-alert-for-an-organization/
+
+Update alert:
+https://docs.sentry.io/api/monitors/update-an-alert-by-id/
+
+Delete alert:
+https://docs.sentry.io/api/monitors/delete-an-alert/
+
+Mutate alerts:
+https://docs.sentry.io/api/monitors/mutate-an-organizations-alerts/
+
+Sentry source tag 24.7.1 — исходная точка version-pinned проверки:
+https://github.com/getsentry/sentry/tree/24.7.1
+
+Current endpoint source example (не доказательство для 24.7.1):
+https://github.com/getsentry/sentry/blob/master/src/sentry/api/endpoints/project_rule_details.py
+
+Current OpenAPI snapshot (не доказательство для 24.7.1):
+https://github.com/getsentry/sentry/blob/master/api-docs/openapi.json
+
+Для каждого project/settings/legacy issue/legacy metric/detector/workflow adapter T00
+обязан записать точный URL файла в tag/commit целевой версии, route, permission, request/
+response fixture и результат реального вызова. Ссылка на master или latest docs не может
+перевести capability 24.7.1 из Unknown в Verified.
+
+Telegram Bot API:
+https://core.telegram.org/bots/api
+
+Kubernetes CRD:
+https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/
+
+Kubernetes releases and supported minors:
+https://kubernetes.io/releases/
+
+Kubernetes version skew policy:
+https://kubernetes.io/releases/version-skew-policy/
+
+Kubernetes finalizers:
+https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers/
+
+Kubebuilder:
+https://book.kubebuilder.io/
+
+Kubebuilder 4.16.0 release:
+https://github.com/kubernetes-sigs/kubebuilder/releases/tag/v4.16.0
+
+Controller Runtime 0.24.1 release:
+https://github.com/kubernetes-sigs/controller-runtime/releases/tag/v0.24.1

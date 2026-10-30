@@ -1,0 +1,12 @@
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryProject
+metadata:
+  name: invalid-advanced
+  namespace: checkout-prod
+spec:
+  project:
+    create:
+      team: payments
+  settings:
+    advanced:
+      native: forbidden

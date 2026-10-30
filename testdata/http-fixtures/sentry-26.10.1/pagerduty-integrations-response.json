@@ -1,0 +1,13 @@
+[
+  {
+    "id": "1001",
+    "name": "Primary",
+    "provider": {"key": "pagerduty", "name": "PagerDuty"},
+    "configData": {
+      "service_table": [
+        {"id": "2001", "service": "Checkout"},
+        {"id": "2002", "service": "Payments"}
+      ]
+    }
+  }
+]

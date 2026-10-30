@@ -1,0 +1,9 @@
+apiVersion: v2
+name: sentry-kubernetes-operator
+description: Alpha Sentry configuration operator with optional isolated Telegram components
+type: application
+version: 0.1.0-alpha.1
+appVersion: "0.1.0-alpha.1"
+kubeVersion: ">=1.35.0-0 <1.37.0-0"
+annotations:
+  sentryconfiguration.io/evidence: source-and-kind-tested-no-live-sentry

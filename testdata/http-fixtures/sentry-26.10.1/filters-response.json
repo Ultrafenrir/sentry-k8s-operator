@@ -1,0 +1,14 @@
+[
+  {
+    "id": "browser-extensions",
+    "active": true
+  },
+  {
+    "id": "localhost",
+    "active": false
+  },
+  {
+    "id": "web-crawlers",
+    "active": true
+  }
+]

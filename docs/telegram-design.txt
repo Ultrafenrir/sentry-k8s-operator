@@ -1,0 +1,176 @@
+SENTRY CONFIGURATION OPERATOR — T00 TELEGRAM DELIVERY DESIGN
+Дата: 2026-10-30
+Статус: design + source contract; production readiness Unknown.
+
+1. Выбранная source authentication для Sentry 24.7.1 и 26.10.1
+
+Project service hook — единственный version-pinned механизм, для которого подтверждены:
+- per-hook random secret;
+- HMAC-SHA256 точного JSON body;
+- X-ServiceHook-Signature header;
+- X-ServiceHook-Timestamp и X-ServiceHook-GUID;
+- Celery retry policy max_retries=5, default delay=5 minutes;
+- event.alert/event.created payload family.
+
+Создание:
+POST /api/0/projects/{org}/{project}/hooks/
+body: {"url": receiverURL, "events": ["event.alert"]}
+
+Source:
+https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/project_servicehooks.py
+https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/models/servicehook.py
+https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/tasks/servicehooks.py
+https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/api/endpoints/project_servicehooks.py
+https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/sentry_apps/models/servicehook.py
+https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/sentry_apps/tasks/service_hooks.py
+
+26.10.1 сохраняет HMAC и v0 payload, но endpoints помечены PRIVATE, feature выключен по
+умолчанию, retry policy равна трём повторам с delay 5m. Возможность использования обычным
+API token остаётся Unknown до real call; это не supported public integration contract.
+
+webhookAuthSecretRef в SentryConnection хранит полученный secret. Secret нельзя помещать
+в SentryProject, status, Event или logs. Если platform admin заранее управляет service
+hook вне оператора, ref содержит тот же shared secret и operator остаётся read-only к hook.
+
+2. Receiver validation order
+
+1) Ограничить method, Content-Length и decompressed size.
+2) Считать raw body без JSON parsing.
+3) Требовать signature/timestamp/GUID headers.
+4) Проверить timestamp skew; timestamp/GUID не считать криптографически signed.
+5) Вычислить HMAC-SHA256 raw body и constant-time compare.
+6) Только после успеха разобрать JSON.
+7) Из signed body получить source project/event identity; header routing не доверять.
+8) Найти protected routing binding source -> local destination.
+9) Записать sanitized delivery envelope в durable queue с dedupe, не зависящим от
+   изменяемых timestamp/GUID headers.
+10) Ответить 2xx только после durable commit.
+
+Неверная/отсутствующая подпись отклоняется до parse/routing. Query-string secret, source IP,
+project slug и alert name не считаются authentication.
+
+3. TLS blocker
+
+Sentry 24.7.1 и 26.10.1 workers вызывают safe_urlopen с verify_ssl=False для service hooks.
+Это нарушает требование HTTPS verification на внешнем endpoint и требует отдельного
+security решения: reverse proxy/mTLS на доверенной сети, подтверждённый patched Sentry,
+либо другой signed integration mechanism с TLS verification. Пока решение не проверено,
+Telegram для 24.7.1 не может получить Verified/production-ready статус.
+
+4. Registration plane
+
+Public webhook receiver не имеет Kubernetes token и не выдаёт challenge.
+Отдельный Kubernetes-authenticated endpoint kubectl plugin:
+- выполняет SubjectAccessReview на update конкретного SentryProject;
+- создаёт one-time challenge, bound to namespace/project UID/generation/destination hash;
+- возвращает bot command только terminal caller;
+- хранит только hash, expiry и policy generation.
+
+Bot update receiver проверяет Telegram update, затем mTLS вызывает internal registration
+writer. Writer делает uncached GET SentryConnection/SentryProject, ставит fences строго
+Connection -> Project, повторно читает оба объекта, CAS пишет protected binding/outbox и
+снимает fences после durable publish. Numeric chat/topic identity не попадает в CR/status.
+
+Реализованный receiver проверяет setWebhook secret-token header до JSON, не получает
+Kubernetes token и передаёт writer только 256-bit one-time code и numeric chat/topic.
+Immutable hash(code) index в protected namespace даёт writer точечный lookup без list/watch;
+project UID и destination не покидают writer boundary. Handoff требует TLS 1.3, exact URI
+SAN и подпись operation envelope тем же leaf key. Opt-in manifests ещё требуют от установки
+публичный certificate/Ingress/DNS и фактический вызов Telegram setWebhook.
+
+Telegram source contracts:
+- https://core.telegram.org/bots/api#setwebhook — HTTPS POST Update, повтор для non-2xx,
+  secret_token header и допустимый alphabet/length;
+- https://core.telegram.org/bots/api#message — chat.id и optional message_thread_id;
+- https://core.telegram.org/bots/api#messageentity — entity offset/length в UTF-16 units.
+
+5. Delivery plane
+
+Envelope содержит только необходимые sanitized fields:
+- operator event key/idempotency key;
+- source binding key;
+- local destination key;
+- locally configured project/alert/environment/severity (без event title/URL);
+- attempt count and timestamps.
+
+Raw Sentry event, stack trace, request data, user data and tags не включаются по умолчанию.
+Delivery is at-least-once. Worker использует bounded exponential backoff + jitter, honours
+Telegram 429 retry_after, max attempts, retention и DLQ. Per-chat/global scheduler поверх
+официального retry_after ещё не реализован.
+DestinationRemoved и DestinationAccessRevoked немедленно блокируют новые/queued sends.
+
+Contract-tested verifier принимает exact raw body с single-value X-ServiceHook headers,
+проверяет HMAC до JSON parsing и выдаёт только local source binding key плюс canonical
+SHA-256 dedupe key от local source binding и authenticated event ID. HMAC service hook
+покрывает body, но не timestamp/GUID. Поэтому dedupe
+строится из local binding и authenticated event ID из проверенного body, а не из signature
+или изменяемых headers; смена HMAC key не создаёт второй queue item. Clock skew
+не заявляется полноценной replay protection для captured signed body. PII-minimal renderer
+принимает только локальные имена project/alert/environment и фиксированную severity; поля
+для raw payload/title/URL/user/stack trace в нём отсутствуют.
+
+Producer-core запрашивает delivery set только по local source binding у protected resolver,
+полностью валидирует/renderит batch до первого enqueue и детерминированно сортирует routes.
+Per-route dedupe = SHA-256(event dedupe, route key), поэтому повтор после частичного enqueue
+переиспользует exact keys. Resolver/workload ещё не опубликованы до появления доказанного
+T07 alert binding; destination из webhook payload никогда не принимается.
+
+6. Durable storage decision
+
+Для текущего alpha ContractTested core выбран Kubernetes Secret backend в отдельном
+sentry-kubernetes-operator-delivery namespace. Каждый dedupe key имеет deterministic
+record, claim/ack выполняются ResourceVersion CAS, expired lease восстанавливается, success
+заменяет payload на dedupe tombstone, max attempts переводит payload в DLQ, а terminal
+retention удаляется exact ResourceVersion precondition. Capacity перепроверяется после
+Create и при гонке консервативно отклоняет новую запись.
+
+Routing records вынесены в отдельный sentry-kubernetes-operator-routing namespace:
+worker имеет там только get и не может удалить route при queue sweep. Queue namespace не
+содержит project bindings или Sentry credentials. Encryption-at-rest, backup/restore и
+capacity/load acceptance остаются обязанностями установки/следующих задач.
+
+Сохранённые требования:
+- atomic enqueue before HTTP 2xx;
+- idempotent claim/ack;
+- visible retry schedule and DLQ reason;
+- backup/restore and multi-replica failover;
+- bounded retention and backpressure;
+- encryption/access control for routing identity.
+
+До producer atomic enqueue, Kubernetes failure injection и backup/restore acceptance
+Telegram readiness остаётся Unknown, хотя queue/worker core = ContractTested.
+
+7. Contract test fixtures
+
+testdata/http-fixtures/sentry-24.7.1/service-hook-create-request.json
+testdata/http-fixtures/sentry-24.7.1/service-hook-create-response.json
+testdata/http-fixtures/sentry-24.7.1/service-hook-event-alert.body.json
+testdata/http-fixtures/sentry-24.7.1/service-hook-event-alert.headers.json
+testdata/http-fixtures/sentry-26.10.1/service-hook-create-request.json
+testdata/http-fixtures/sentry-26.10.1/service-hook-create-response.json
+testdata/http-fixtures/sentry-26.10.1/service-hook-event-alert.body.json
+testdata/http-fixtures/sentry-26.10.1/service-hook-event-alert.headers.json
+
+Fixtures обезличены и source-derived; это не captured real delivery. verify-t00 проверяет
+JSON и deterministic HMAC test vector. make verify-webhook-contract выполняет отдельный
+непроизводственный receiver-contract probe для обеих версий: valid raw body, обязательные
+headers, timestamp skew, replay и 401 для отсутствующей подписи/изменённого body. Тест с
+unsigned malformed JSON подтверждает authentication-before-parse. Это не проверяет
+production HTTP server, durable queue или реальную доставку Sentry.
+
+make verify-t08-core отдельно проверяет signed-hook auth-before-parse и sink retry на обоих
+fixtures, PII-minimal renderer, queue CAS state machine, safe sendMessage adapter, worker
+retry/DLQ, namespace/RBAC isolation и HA manifests. Это не public receiver и не captured
+delivery.
+
+8. Не выполнено
+
+- real Sentry signature delivery and byte-for-byte body test;
+- live retry/timeout behavior under 429/5xx/network loss;
+- servicehooks feature enablement on all target environments;
+- SaaS signing mechanism and secret rotation;
+- supported public-token access/feature enablement for modern self-hosted;
+- real Telegram setWebhook registration и delivery;
+- public receiver/authenticated producer/source-to-route binding, per-chat/global
+  scheduling, metrics/status, backup and restore;
+- public ingress/rotation/real-cluster HA acceptance.
