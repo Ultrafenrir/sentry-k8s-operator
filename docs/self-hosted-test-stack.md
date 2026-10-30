@@ -141,42 +141,34 @@ The preflight enforces the official minimums before running the installer:
 | 26.10.1 errors-only | 7 GB | 2 |
 | 26.10.1 feature-complete | 14 GB | 4 |
 
-On 2026-10-30 both pinned feature-complete stacks were installed from fresh volumes on the
-local Docker Desktop VM, completed their upstream migrations, became healthy, answered
-`/_health/`, and were removed with no managed containers or volumes left behind. Both
-versions also created the managed local acceptance user and user token and successfully
-authenticated a Bearer request to `/api/0/organizations/`; token mode and removal were
-verified. Docker exposed 15.6 GiB and 12 CPUs; the four local kind control-plane containers
-were stopped for the sequential runs and restored afterwards. The 24.7.1 run also
-confirmed that a missing MaxMind license only stops the optional `geoipupdate` service.
-Both versions also passed real project create/read/key/delete acceptance: platform was
-omitted, the marker round-tripped, one active Default key had a local DSN, and deletion
-became a 404. The 24.7.1 run additionally observed zero default legacy rules. Settings,
-filters and PII fields passed HTTP round-trip on both versions. Both versions then accepted
-a synthetic event through the Default DSN and returned its sensitive extras scrubbed while
-preserving the control value. Localhost rejected a loopback-IP event; browser-extension and
-web-crawler matching events were readable with filters disabled and rejected in a fresh
-project configured before first ingestion. A discarded project-create response was recovered
-by exact slug/marker without a second POST. Controller/journal recovery also passed on both
-versions through the TLS fault proxy and a real Kubernetes Secret journal, including a fresh
-store/client/engine recovery, no duplicate POST, and guarded deletion. Detector families beyond
-the verified metric detector, external actions, integrations, delivery and SaaS remain
-unverified. Full-controller filter/PII drift repair also passed on both versions with real
-envtest resources, exact mutation counts, idempotent follow-up, true readiness conditions, and
-guarded deletion. Legacy issue/metric CRUD and attached modern metric detector/workflow
-toggle/lifecycle are verified.
+On 2026-10-30 the clean 24.7.1 feature-complete stack completed its upstream migrations and
+became API-ready on a Docker Desktop VM exposing 15.6 GiB and 12 CPUs. Its configuration-only
+gate passed project/default-rule/key/settings plus legacy issue and metric alert
+create/read/update/delete, followed by controller lost-response recovery and settings drift
+repair. The same run exposed an important ingestion boundary: Relay reported system memory
+above its 95% health threshold and rejected the first synthetic envelope with 503. This is
+configuration lifecycle evidence only, not event ingestion, filter behavior, or delivery
+acceptance.
 
-A later clean 24.7.1 rerun on the same date exposed an important resource boundary. With
-Docker still limited to 15.6 GiB and other local containers running, Relay reported system
-memory above its 95% health threshold and rejected the first synthetic envelope with 503,
-even though the Sentry control API and all Compose health checks were ready. The new
-configuration-only gate then passed project/default-rule/key/settings plus legacy issue and
-metric alert create/read/update/delete, followed by full-controller lost-response recovery
-and settings drift repair. The stack and every managed volume were removed afterwards.
-This result is configuration lifecycle evidence only; it is deliberately not recorded as
-event ingestion, filter behavior, or delivery acceptance. For the full ingestion run, free
-other Docker workloads or allocate enough headroom that Relay remains below its memory
-health threshold.
+A clean 26.10.1 feature-complete attempt completed the upstream ClickHouse and PostgreSQL
+migrations, but the web and Snuba API health checks did not stabilize within the practical
+10–12 minute local limit. Snuba initialization took 479 seconds under memory pressure. The
+attempt was stopped and all version-scoped volumes were removed instead of waiting for the
+30-minute emergency timeout.
+
+The subsequent clean 26.10.1 `errors-only` run became fully healthy. It created the managed
+local acceptance user and token, authenticated against the API, and passed real
+project/default-rule/key/settings CRUD plus legacy issue/metric alert and attached modern
+metric detector/workflow create/read/update/toggle/delete acceptance. The live controller
+also passed lost-response recovery and settings-drift repair. The token, runtime, and every
+managed volume were removed afterwards. `errors-only` is sufficient evidence for these
+configuration APIs, but it must not be represented as feature-complete ingestion or delivery
+acceptance. Detector families beyond the verified metric detector, external actions,
+integrations, delivery, and SaaS remain unverified.
+
+For a full ingestion run, stop other Docker workloads or allocate enough headroom that Relay
+remains below its memory health threshold. For 26.10.1 feature-complete, the 14 GB preflight
+minimum is necessary but not sufficient on a 15.6 GiB Docker VM.
 
 Allocate at least 14 GB to Docker Desktop before running the full matrix. CI runners need
 the same resources plus enough disk for the official images. Put a job-level timeout around
