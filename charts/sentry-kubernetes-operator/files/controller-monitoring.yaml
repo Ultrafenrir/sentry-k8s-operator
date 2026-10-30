@@ -30,6 +30,16 @@ spec:
       for: 5m
       labels:
         severity: warning
+    - alert: SentryOperatorSynchronizationBlocked
+      annotations:
+        description: Inspect the reported mechanism and redacted SentryProject conditions;
+          resource names and external identities are intentionally not metric labels.
+        summary: Sentry project synchronization is blocked
+      expr: sum by (mechanism) (sentry_operator_sync_resources{state="blocked"}) >
+        0
+      for: 10m
+      labels:
+        severity: warning
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor

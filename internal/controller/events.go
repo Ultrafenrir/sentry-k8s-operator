@@ -35,6 +35,11 @@ func emitConditionChangesObserved(recorder events.EventRecorder, observer *Metri
 	if object == nil {
 		return
 	}
+	if observer != nil && controller == controllerProject {
+		if accessor, err := meta.Accessor(object); err == nil {
+			observer.ObserveProjectSynchronization(accessor.GetNamespace()+"/"+accessor.GetName(), after)
+		}
+	}
 	for _, condition := range after {
 		previous := meta.FindStatusCondition(before, condition.Type)
 		if previous != nil && previous.Status == condition.Status && previous.Reason == condition.Reason && previous.Message == condition.Message {

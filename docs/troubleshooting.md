@@ -155,3 +155,16 @@ kubectl -n sentry-kubernetes-operator-system get lease c4d7095e.io -o json \
 
 Controller logs are designed to omit credentials, DSNs and response bodies, but they are
 still operational data. Restrict access and redact local names before external sharing.
+
+Prometheus exposes the current number of observed projects per synchronization mechanism
+without namespace, resource-name, Sentry-ID, or error-message labels:
+
+```promql
+sum by (mechanism) (sentry_operator_sync_resources{state="blocked"})
+```
+
+The fixed mechanisms are `project`, `dsn`, `settings`, `destinations`, and `alerts`; states
+are `ready`, `blocked`, and `inactive`. `SentryOperatorSynchronizationBlocked` fires when a
+mechanism remains blocked for ten minutes. Use the metric to select the failing mechanism,
+then use the redacted Kubernetes conditions and Events above to locate the resource and
+reason.

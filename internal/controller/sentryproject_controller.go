@@ -98,6 +98,9 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}()
 	resource := &sentryconfigurationv1alpha1.SentryProject{}
 	if err := r.Get(ctx, req.NamespacedName, resource); err != nil {
+		if apierrors.IsNotFound(err) {
+			r.Metrics.ForgetProjectSynchronization(req.String())
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if r.Registry == nil || r.Bindings == nil || r.ManagedBy == "" {
@@ -1036,43 +1039,6 @@ func (r *SentryProjectReconciler) reportAccessRevoked(ctx context.Context, resou
 	return ctrl.Result{RequeueAfter: jitterDuration(30 * time.Second)}, nil
 }
 
-func (r *SentryProjectReconciler) reportDSNRevoked(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject) (ctrl.Result, error) {
-	return r.reportDSNRemoved(ctx, resource, "DSNAccessRevoked", "The managed DSN Secret was removed after current policy denial was verified.", string(policy.ErrorAccessDenied), "Connection policy currently denies access to this project.")
-}
-
-func (r *SentryProjectReconciler) reportDSNKeyRevoked(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject) (ctrl.Result, error) {
-	return r.reportDSNRemoved(ctx, resource, "DSNKeyRevoked", "The managed DSN Secret was removed after the pinned client key was proven missing or inactive.", "DSNKeyRevoked", "The pinned Sentry client key is no longer usable.")
-}
-
-func (r *SentryProjectReconciler) reportDSNRemoved(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, dsnReason, dsnMessage, readyReason, readyMessage string) (ctrl.Result, error) {
-	base := resource.DeepCopy()
-	resource.Status.ObservedGeneration = resource.Generation
-	resource.Status.DSNSecret = ""
-	resource.Status.DSNClientKey = ""
-	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-		Type:               "DSNReady",
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: resource.Generation,
-		Reason:             dsnReason,
-		Message:            dsnMessage,
-	})
-	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: resource.Generation,
-		Reason:             readyReason,
-		Message:            readyMessage,
-	})
-	if err := r.Status().Patch(ctx, resource, client.MergeFrom(base)); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, err
-		}
-	} else {
-		emitConditionChangesObserved(r.Recorder, r.Metrics, controllerProject, resource, base.Status.Conditions, resource.Status.Conditions)
-	}
-	return ctrl.Result{RequeueAfter: jitterDuration(30 * time.Second)}, nil
-}
-
 func (r *SentryProjectReconciler) outputSecrets() client.Client {
 	if r.OutputSecrets != nil {
 		return r.OutputSecrets
@@ -1147,6 +1113,13 @@ func (r *SentryProjectReconciler) resolveConnection(ctx context.Context, resourc
 func (r *SentryProjectReconciler) reportFailure(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, reason, message string) (ctrl.Result, error) {
 	base := resource.DeepCopy()
 	resource.Status.ObservedGeneration = resource.Generation
+	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+		Type:               "ProjectReady",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: resource.Generation,
+		Reason:             reason,
+		Message:            message,
+	})
 	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
 		Status:             metav1.ConditionFalse,

@@ -26,3 +26,11 @@ spec:
       annotations:
         summary: Sentry operator resources are entering failed conditions repeatedly
         description: Use condition reason and the redacted admin report to identify the affected component without exposing external identities.
+    - alert: SentryOperatorSynchronizationBlocked
+      expr: sum by (mechanism) (sentry_operator_sync_resources{state="blocked"}) > 0
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: Sentry project synchronization is blocked
+        description: Inspect the reported mechanism and redacted SentryProject conditions; resource names and external identities are intentionally not metric labels.

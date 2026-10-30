@@ -276,7 +276,7 @@ test "$product_series" -ge 1
 
 rules=$(curl --silent --show-error --fail --noproxy '*' --connect-timeout 2 --max-time 10 \
   "$api/api/v1/rules?type=alert")
-for alert in SentryOperatorReconcileErrors SentryOperatorConditionFailureBurst; do
+for alert in SentryOperatorReconcileErrors SentryOperatorConditionFailureBurst SentryOperatorSynchronizationBlocked; do
   test "$(printf '%s' "$rules" | jq --arg alert "$alert" \
     '[.data.groups[].rules[] | select(.name == $alert)] | length')" = 1
 done

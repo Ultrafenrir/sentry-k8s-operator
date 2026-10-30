@@ -56,7 +56,7 @@ func (c *FenceCoordinator) Begin(ctx context.Context, challenge binding.Telegram
 	if c.Client == nil || !validOperationHash(operationHash) || challenge.Project.Namespace == "" || challenge.Project.Name == "" || challenge.Project.UID == "" || challenge.Project.Generation <= 0 || challenge.Destination == "" || challenge.Connection == "" || challenge.PolicyGeneration <= 0 || challenge.PolicyResourceVersion == "" || !c.now().Before(challenge.ExpiresAt) {
 		return ErrFenceStale
 	}
-	project, connection, err := c.readAndValidate(ctx, challenge, true)
+	_, connection, err := c.readAndValidate(ctx, challenge, true)
 	if err != nil {
 		return err
 	}
@@ -71,7 +71,7 @@ func (c *FenceCoordinator) Begin(ctx context.Context, challenge binding.Telegram
 
 	// Read the project again only after the policy fence is visible. This closes the
 	// window between the initial checks and the destination fence.
-	project = &sentryv1alpha1.SentryProject{}
+	project := &sentryv1alpha1.SentryProject{}
 	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: challenge.Project.Namespace, Name: challenge.Project.Name}, project); err != nil {
 		return errors.Join(ErrFenceStale, c.clearConnection(ctx, challenge, operationHash))
 	}

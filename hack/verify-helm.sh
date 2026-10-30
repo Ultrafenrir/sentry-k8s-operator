@@ -76,6 +76,7 @@ test "$(rg -c '^kind: ServiceMonitor$' "$tmp_dir/all.yaml")" = 2
 test "$(rg -c '^kind: PrometheusRule$' "$tmp_dir/all.yaml")" = 2
 rg -q 'sentry_operator_reconciles_total' "$tmp_dir/all.yaml"
 rg -q 'sentry_operator_condition_transitions_total' "$tmp_dir/all.yaml"
+rg -q 'sentry_operator_sync_resources' "$tmp_dir/all.yaml"
 rg -q 'insecureSkipVerify: false' "$tmp_dir/all.yaml"
 ! rg -q 'insecureSkipVerify: true' "$tmp_dir/all.yaml"
 rg -q 'name: sentry-kubernetes-operator-controller-metrics-reader' "$tmp_dir/all.yaml"

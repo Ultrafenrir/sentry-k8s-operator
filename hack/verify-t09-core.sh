@@ -58,6 +58,7 @@ rg -q 'TestExportFailsClosedOnSemanticallyInvalidStateRecord' internal/stateback
 rg -q 'TestRestoreRejectsChecksumValidSemanticCorruptionBeforeWrite' internal/statebackup/backup_test.go
 rg -q 'TestExportFailsClosedOnInvalidChallengeRouteHookSourceAndDeliveryPayloads' internal/statebackup/backup_test.go
 rg -q 'sentry_operator_condition_transitions_total' internal/controller/metrics.go
+rg -q 'sentry_operator_sync_resources' internal/controller/metrics.go
 rg -q 'Metrics accepts only closed enum labels' internal/controller/metrics.go
 sh -n hack/verify-t09-kind-multinode-failover.sh
 rg -q 'unique | length' hack/verify-t09-kind-multinode-failover.sh
@@ -111,6 +112,7 @@ rg -q 'name: sentry-kubernetes-operator-allow-metrics-traffic' "$tmp_dir/default
 kubectl kustomize config/controller-monitoring >"$tmp_dir/controller-monitoring.yaml"
 rg -q 'sentry_operator_reconciles_total' "$tmp_dir/controller-monitoring.yaml"
 rg -q 'sentry_operator_condition_transitions_total' "$tmp_dir/controller-monitoring.yaml"
+rg -q 'sentry_operator_sync_resources' "$tmp_dir/controller-monitoring.yaml"
 rg -q 'sentry-kubernetes-operator-controller-manager-metrics-service.sentry-kubernetes-operator-system.svc.cluster.local' "$tmp_dir/controller-monitoring.yaml"
 rg -q 'insecureSkipVerify: false' "$tmp_dir/controller-monitoring.yaml"
 ! rg -q 'insecureSkipVerify: true' "$tmp_dir/controller-monitoring.yaml"
@@ -138,7 +140,7 @@ rg -q 'refusing to reuse or delete existing kind cluster' hack/verify-t09-kind-c
 rg -q 'lastError.*contains.*403' hack/verify-t09-kind-controller-monitoring.sh
 rg -q 'manage-controller-monitoring-access.sh.*deploy' hack/verify-t09-kind-controller-monitoring.sh
 rg -q 'sentry_operator_reconciles_total' hack/verify-t09-kind-controller-monitoring.sh
-rg -q 'SentryOperatorReconcileErrors SentryOperatorConditionFailureBurst' hack/verify-t09-kind-controller-monitoring.sh
+rg -q 'SentryOperatorReconcileErrors SentryOperatorConditionFailureBurst SentryOperatorSynchronizationBlocked' hack/verify-t09-kind-controller-monitoring.sh
 
 kubectl kustomize config/prometheus >"$tmp_dir/legacy-monitoring.yaml"
 rg -q 'insecureSkipVerify: false' "$tmp_dir/legacy-monitoring.yaml"

@@ -38,6 +38,7 @@ func TestControllerMetricsExposeOnlyFixedLabels(t *testing.T) {
 	metrics.ObserveReconcile(controllerProject, ctrl.Result{RequeueAfter: time.Second}, nil, 1500*time.Millisecond)
 	metrics.ObserveReconcile(controllerConnection, ctrl.Result{}, errors.New("private-error-SHOULD-NOT-LEAK"), -time.Second)
 	metrics.ObserveCondition(controllerProject, "Ready", metav1.ConditionTrue)
+	metrics.ObserveCondition(controllerProject, "AlertsReady", metav1.ConditionFalse)
 	metrics.ObserveCondition("private-controller-SHOULD-NOT-LEAK", "private-condition-SHOULD-NOT-LEAK", "private-status-SHOULD-NOT-LEAK")
 
 	families, err := registry.Gather()
@@ -52,11 +53,64 @@ func TestControllerMetricsExposeOnlyFixedLabels(t *testing.T) {
 		"controller=project outcome=requeue",
 		"controller=connection outcome=error",
 		"condition=Ready controller=project status=True",
+		"condition=AlertsReady controller=project status=False",
 		"condition=unknown controller=unknown status=unknown",
 	} {
 		if !strings.Contains(encoded, expected) {
 			t.Fatalf("metrics missing %q: %s", expected, encoded)
 		}
+	}
+}
+
+func TestSynchronizationMetricsAggregateWithoutResourceLabels(t *testing.T) {
+	t.Parallel()
+	registry := prometheus.NewRegistry()
+	metrics, err := NewMetrics(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics.ObserveProjectSynchronization("private/team-a", []metav1.Condition{
+		{Type: "ProjectReady", Status: metav1.ConditionTrue},
+		{Type: "DSNReady", Status: metav1.ConditionFalse},
+		{Type: "SettingsReady", Status: metav1.ConditionUnknown},
+	})
+	metrics.ObserveProjectSynchronization("private/team-b", []metav1.Condition{
+		{Type: "ProjectReady", Status: metav1.ConditionTrue},
+		{Type: "DSNReady", Status: metav1.ConditionFalse},
+		{Type: "AlertsReady", Status: metav1.ConditionFalse},
+	})
+	assertGaugeValue(t, metrics.synchronizations.WithLabelValues(syncDSN, syncBlocked), 2)
+	assertGaugeValue(t, metrics.synchronizations.WithLabelValues(syncAlerts, syncBlocked), 1)
+	assertGaugeValue(t, metrics.synchronizations.WithLabelValues(syncSettings, syncInactive), 1)
+
+	metrics.ObserveProjectSynchronization("private/team-a", []metav1.Condition{
+		{Type: "ProjectReady", Status: metav1.ConditionTrue},
+		{Type: "DSNReady", Status: metav1.ConditionTrue},
+	})
+	assertGaugeValue(t, metrics.synchronizations.WithLabelValues(syncDSN, syncBlocked), 1)
+	assertGaugeValue(t, metrics.synchronizations.WithLabelValues(syncDSN, syncReady), 1)
+	metrics.ForgetProjectSynchronization("private/team-b")
+	assertGaugeValue(t, metrics.synchronizations.WithLabelValues(syncDSN, syncBlocked), 0)
+	assertGaugeValue(t, metrics.synchronizations.WithLabelValues(syncAlerts, syncBlocked), 0)
+
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := controllerMetricText(families)
+	if strings.Contains(encoded, "private") || strings.Contains(encoded, "team-a") || strings.Contains(encoded, "team-b") {
+		t.Fatalf("metrics leaked an internal resource key: %s", encoded)
+	}
+}
+
+func assertGaugeValue(t *testing.T, gauge prometheus.Gauge, expected float64) {
+	t.Helper()
+	metric := &dto.Metric{}
+	if err := gauge.Write(metric); err != nil {
+		t.Fatal(err)
+	}
+	if metric.GetGauge().GetValue() != expected {
+		t.Fatalf("gauge value = %v, want %v", metric.GetGauge().GetValue(), expected)
 	}
 }
 
