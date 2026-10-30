@@ -163,6 +163,34 @@ func TestTelegramRequiresRegistrationAndRemovalKeepsCleanupTombstone(t *testing.
 	}
 }
 
+func TestProviderDestinationRemovalKeepsPinnedIdentityUntilAlertCleanup(t *testing.T) {
+	t.Parallel()
+
+	project, connection := destinationInput()
+	project.Destinations = map[string]sentryv1alpha1.DestinationSpec{}
+	current := map[string]binding.DestinationBinding{
+		"ops": {
+			Kind: "slack", SelectorHash: "selector", IntegrationIdentity: "workspace-id",
+			ResourceIdentity: "channel-id", ResourceName: "incidents", State: StateActive,
+		},
+		"oncall": {
+			Kind: "pagerduty", SelectorHash: "selector", IntegrationIdentity: "account-id",
+			ResourceIdentity: "service-id", ResourceName: "checkout", State: StateActive,
+		},
+	}
+	result := (&Engine{}).Reconcile(context.Background(), Input{
+		Namespace: "payments", Project: project, Connection: connection, Current: current,
+	})
+	for _, name := range []string{"ops", "oncall"} {
+		if result.Bindings[name].State != StateCleanupPending || result.Bindings[name].ResourceIdentity != current[name].ResourceIdentity {
+			t.Fatalf("%s cleanup binding=%#v", name, result.Bindings[name])
+		}
+		if result.Statuses[name].Reason != "DestinationRemoved" {
+			t.Fatalf("%s cleanup status=%#v", name, result.Statuses[name])
+		}
+	}
+}
+
 func TestTelegramSelectorChangeRequiresOldRouteRevocationBeforeNewRegistration(t *testing.T) {
 	t.Parallel()
 

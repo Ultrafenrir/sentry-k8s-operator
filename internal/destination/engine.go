@@ -173,12 +173,15 @@ func (e *Engine) Reconcile(ctx context.Context, input Input) Result {
 		if _, desired := input.Project.Destinations[name]; desired {
 			continue
 		}
-		if current.Kind == "telegram" {
-			current.State = StateCleanupPending
-			current.Reason = "DestinationRemoved"
-			result.Bindings[name] = current
-			result.Statuses[name] = Status{Kind: current.Kind, State: StateCleanupPending, Reason: "DestinationRemoved"}
-		}
+		// Preserve the pinned identity until every alert which references the
+		// destination has been successfully updated or deleted in Sentry.  This
+		// applies to provider integrations as well as operator-owned Telegram
+		// routes: dropping a Slack/PagerDuty binding early would make a failed
+		// alert cleanup impossible to authorize and retry safely.
+		current.State = StateCleanupPending
+		current.Reason = "DestinationRemoved"
+		result.Bindings[name] = current
+		result.Statuses[name] = Status{Kind: current.Kind, State: StateCleanupPending, Reason: "DestinationRemoved"}
 	}
 	return result
 }

@@ -113,7 +113,7 @@ func TestProjectControllerRevokesAndRestoresExactTelegramRoute(t *testing.T) {
 		}},
 		Statuses: map[string]destination.Status{"telegram": {Kind: "telegram", State: destination.StateRevoked}},
 	}
-	if err := reconciler.reconcileTelegramRoutes(context.Background(), resource, nil, &result); err != nil {
+	if err := reconciler.reconcileTelegramRoutes(context.Background(), resource, nil, &result, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(routes.revoked) != 1 || routes.revoked[0] != key || !result.Bindings["telegram"].Telegram.RouteRevoked {
@@ -123,14 +123,14 @@ func TestProjectControllerRevokesAndRestoresExactTelegramRoute(t *testing.T) {
 	restore := result.Bindings["telegram"]
 	restore.State = destination.StateRestorePending
 	result.Bindings["telegram"] = restore
-	if err := reconciler.reconcileTelegramRoutes(context.Background(), resource, nil, &result); err != nil {
+	if err := reconciler.reconcileTelegramRoutes(context.Background(), resource, nil, &result, nil); err != nil {
 		t.Fatal(err)
 	}
 	got := result.Bindings["telegram"]
 	if len(routes.published) != 1 || routes.published[0] != key || got.State != destination.StateActive || got.Telegram.RouteRevoked || *got.Telegram.Target != target {
 		t.Fatalf("routes=%#v binding=%#v", routes, got)
 	}
-	if err := reconciler.reconcileTelegramRoutes(context.Background(), resource, nil, &result); err != nil {
+	if err := reconciler.reconcileTelegramRoutes(context.Background(), resource, nil, &result, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(routes.published) != 2 || routes.published[1] != key {
@@ -146,7 +146,7 @@ func TestProjectControllerFailsClosedWhenLegacyActiveRouteKeyIsMissing(t *testin
 		Kind: "telegram", State: destination.StateCleanupPending,
 		Telegram: &binding.TelegramBinding{Target: &binding.TelegramTarget{ChatIdentity: "-100123"}},
 	}}}
-	if err := reconciler.reconcileTelegramRoutes(context.Background(), nil, nil, &result); !errors.Is(err, registration.ErrRouteIdentityLost) {
+	if err := reconciler.reconcileTelegramRoutes(context.Background(), nil, nil, &result, map[string]bool{"telegram": true}); !errors.Is(err, registration.ErrRouteIdentityLost) {
 		t.Fatalf("error=%v", err)
 	}
 }
@@ -180,7 +180,7 @@ func TestProjectControllerDeletesExactChallengeIndexBeforeRevokedBindingCAS(t *t
 		Telegram: &binding.TelegramBinding{Challenge: challenge},
 	}}}
 	reconciler := &SentryProjectReconciler{RegistrationIndexes: indexes}
-	if err := reconciler.reconcileTelegramRoutes(context.Background(), nil, current, &result); err != nil {
+	if err := reconciler.reconcileTelegramRoutes(context.Background(), nil, current, &result, nil); err != nil {
 		t.Fatal(err)
 	}
 	if result.Bindings["telegram"].Telegram.Challenge != nil {
@@ -208,7 +208,7 @@ func TestProjectControllerDestinationCleanupAuditFailsClosedAndRecoversDeletedRo
 	}
 
 	result := newResult()
-	if err := reconciler.reconcileTelegramRoutes(context.Background(), resource, nil, &result); !errors.Is(err, errDestinationAuditUnavailable) {
+	if err := reconciler.reconcileTelegramRoutes(context.Background(), resource, nil, &result, map[string]bool{"telegram": true}); !errors.Is(err, errDestinationAuditUnavailable) {
 		t.Fatalf("pre-mutation audit error=%v", err)
 	}
 	if routes.revokeCalls != 0 || result.Bindings["telegram"].Telegram.RouteRevoked {
@@ -219,7 +219,7 @@ func TestProjectControllerDestinationCleanupAuditFailsClosedAndRecoversDeletedRo
 	auditSink.calls = 0
 	auditSink.events = nil
 	result = newResult()
-	if err := reconciler.reconcileTelegramRoutes(context.Background(), resource, nil, &result); !errors.Is(err, errDestinationAuditUnavailable) {
+	if err := reconciler.reconcileTelegramRoutes(context.Background(), resource, nil, &result, map[string]bool{"telegram": true}); !errors.Is(err, errDestinationAuditUnavailable) {
 		t.Fatalf("post-mutation audit error=%v", err)
 	}
 	if routes.revokeCalls != 1 || routes.routes[key] != (binding.TelegramTarget{}) || result.Bindings["telegram"].Telegram.RouteRevoked {
@@ -229,7 +229,7 @@ func TestProjectControllerDestinationCleanupAuditFailsClosedAndRecoversDeletedRo
 	auditSink.failAt = 0
 	auditSink.calls = 0
 	auditSink.events = nil
-	if err := reconciler.reconcileTelegramRoutes(context.Background(), resource, nil, &result); err != nil {
+	if err := reconciler.reconcileTelegramRoutes(context.Background(), resource, nil, &result, map[string]bool{"telegram": true}); err != nil {
 		t.Fatal(err)
 	}
 	if routes.revokeCalls != 1 || !result.Bindings["telegram"].Telegram.RouteRevoked || len(auditSink.events) != 1 || auditSink.events[0].Outcome != audit.OutcomeRecovered || auditSink.events[0].Reason != audit.ReasonResultRecovered {

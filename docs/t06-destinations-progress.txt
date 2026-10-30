@@ -41,10 +41,13 @@ Controller публикует только map local key -> {type,state,reason}.
 
 3. Authoritative lifecycle
 
-Slack/PagerDuty local key removal удаляет только local binding: внешний объект оператору
-не принадлежит. Telegram target создаётся как RegistrationRequired без numeric lookup.
-Удаление Telegram сохраняет CleanupPending/DestinationRemoved tombstone: routing нельзя
-молча забыть до T08 cleanup ack.
+Slack/PagerDuty local key removal не удаляет внешний channel/service, которыми оператор
+не владеет. При этом pinned local binding теперь сначала сохраняется как
+CleanupPending/DestinationRemoved: он удаляется только после подтверждённого update/delete
+всех ссылающихся alert rules в Sentry. Ошибка Sentry оставляет alert binding и destination
+identity для безопасного retry. Telegram target создаётся как RegistrationRequired без
+numeric lookup; его удаление использует тот же dependency gate и только после освобождения
+alert engine выполняет exact route revoke с audit, а затем CAS-удаляет binding.
 
 При revoke controller повторно читает exact Project UID/generation, Connection policy и
 protected binding перед CAS. Revoked identity не стирается. Restore grant должен будет
@@ -102,7 +105,9 @@ internal/registration реализует transport-neutral protected core:
   остаётся `PendingFenceRelease`; следующий Resume пишет `Recovered` и активирует тот же
   route без второй уникальной publication.
 
-Telegram route cleanup имеет отдельную closed-schema audit boundary. После повторной
+Telegram route cleanup имеет отдельную closed-schema audit boundary. CleanupPending route
+не отзывается на ранней destination-фазе: controller сначала получает от alert engine
+доказательство отсутствия desired и surviving protected references. После повторной
 authorization, но до exact-target revoke controller пишет
 `destinations/delete/started/CleanupAuthorized`; audit outage даёт zero route mutation.
 После delete пишется `succeeded/MutationVerified` до binding CAS. Если sink упал именно в
@@ -110,6 +115,10 @@ authorization, но до exact-target revoke controller пишет
 пишет `recovered/ResultRecovered` и только затем фиксирует RouteRevoked. Event содержит
 только local namespace/project/destination и generation; target, route key и raw error не
 представимы. Slack/PagerDuty cleanup остаётся незакрытым до появления реальных adapters.
+
+Same-generation removal проверен controller envtest: временная ошибка удаления alert в
+Sentry сохраняет alert и CleanupPending destination, а следующий успешный reconcile
+удаляет alert, фиксирует tombstone и только затем освобождает destination binding.
 
 Numeric chat/topic identities остаются только в protected binding. HTTP/SAR и internal
 mTLS handlers подключены к отдельным opt-in workloads, но production ingress/DNS и
@@ -289,10 +298,9 @@ expired event-time probe удалил только elected leader. Все runtim
 7. До T06 Complete остаётся
 
 - versioned Slack channel catalog/capability discovery и live PagerDuty round-trip;
-- Sentry action ownership markers и monotonic cleanup/verify;
+- live Sentry action ownership/cleanup acceptance для Slack и PagerDuty;
 - DestinationRevokePending vs AccessRevokePendingAdmin на реальном cleanup;
 - plugin discovery/distribution и audience-token UX, public Ingress/DNS/setWebhook
   automation, internal CA distribution/CA overlap rotation, real-cluster HA/expiry index
   garbage collection и durable delivery queue;
-- dangling alert referential integrity (alerts schema пока Unsupported по T00);
 - live duplicate/revoke/delivery acceptance.

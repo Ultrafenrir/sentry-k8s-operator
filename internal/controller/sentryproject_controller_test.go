@@ -543,7 +543,18 @@ var _ = Describe("SentryProject Controller", func() {
 
 			emptyAlerts := map[string]sentryconfigurationv1alpha1.AlertSpec{}
 			resource.Spec.Alerts = &emptyAlerts
+			resource.Spec.Destinations = map[string]sentryconfigurationv1alpha1.DestinationSpec{}
 			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
+			alertAdapter.deleteErr = errors.New("temporary Sentry delete failure")
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			record, err = reconciler.Bindings.GetBinding(ctx, string(resource.UID))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(record.Binding.Alerts).To(HaveKey("new-errors"))
+			Expect(record.Binding.Destinations["ops"].State).To(Equal(destination.StateCleanupPending))
+			Expect(alertAdapter.deleteCalls).To(Equal(0))
+
+			alertAdapter.deleteErr = nil
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(k8sClient.Get(ctx, key, resource)).To(Succeed())
@@ -552,6 +563,7 @@ var _ = Describe("SentryProject Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(record.Binding.Alerts).To(BeEmpty())
 			Expect(record.Binding.Tombstones).To(HaveKey("new-errors"))
+			Expect(record.Binding.Destinations).To(BeEmpty())
 			Expect(alertAdapter.deleteCalls).To(Equal(1))
 		})
 
@@ -633,6 +645,7 @@ type controllerFakeAlertAdapter struct {
 	mu          sync.Mutex
 	objects     map[string]alertsruntime.Observed
 	deleteCalls int
+	deleteErr   error
 }
 
 func (a *controllerFakeAlertAdapter) Ensure(_ context.Context, adapter, _, _, _ string, desired alertsruntime.Desired, marker binding.Marker) (alertsruntime.Observed, error) {
@@ -675,6 +688,9 @@ func (a *controllerFakeAlertAdapter) SetEnabled(_ context.Context, _, _, _, iden
 func (a *controllerFakeAlertAdapter) Delete(_ context.Context, _, _, _, identity string, marker binding.Marker) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.deleteErr != nil {
+		return a.deleteErr
+	}
 	value, found := a.objects[identity]
 	if !found {
 		return nil

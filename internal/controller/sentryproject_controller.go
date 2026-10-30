@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -171,8 +172,11 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	settingsResult := r.reconcileSettings(ctx, resource, connection, apiClient, result)
 	settingsErr := settingsResult.Err()
 	destinationResult := r.reconcileDestinations(ctx, resource, connection, apiClient, result)
+	alertResult := r.reconcileAlerts(ctx, resource, connection, apiClient, result, destinationCleanupKeys(destinationResult))
+	if err := r.finalizeDestinationCleanup(ctx, resource, connection, &destinationResult, alertResult.ReleasableDestinations); err != nil {
+		destinationResult.PolicyErr = errors.Join(destinationResult.PolicyErr, err)
+	}
 	destinationErr := destinationResult.Err()
-	alertResult := r.reconcileAlerts(ctx, resource, connection, apiClient, result)
 	alertErr := alertResult.Err()
 	base := resource.DeepCopy()
 	resource.Status.ObservedGeneration = resource.Generation
@@ -520,7 +524,7 @@ func (r *SentryProjectReconciler) reconcileDestinations(ctx context.Context, res
 		result.PolicyErr = err
 		return result
 	}
-	if err := r.reconcileTelegramRoutes(ctx, resource, record.Binding.Destinations, &result); err != nil {
+	if err := r.reconcileTelegramRoutes(ctx, resource, record.Binding.Destinations, &result, nil); err != nil {
 		result.PolicyErr = err
 		return result
 	}
@@ -532,7 +536,7 @@ func (r *SentryProjectReconciler) reconcileDestinations(ctx context.Context, res
 	return result
 }
 
-func (r *SentryProjectReconciler) reconcileAlerts(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, apiClient *sentryapi.Client, projectResult projectruntime.Result) alertsruntime.Result {
+func (r *SentryProjectReconciler) reconcileAlerts(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, apiClient *sentryapi.Client, projectResult projectruntime.Result, destinationCleanup []string) alertsruntime.Result {
 	if projectResult.AccessMode != binding.AccessManage {
 		if resource.Spec.Alerts == nil {
 			return alertsruntime.Result{}
@@ -583,13 +587,14 @@ func (r *SentryProjectReconciler) reconcileAlerts(ctx context.Context, resource 
 		marker = *record.Binding.Marker
 	}
 	result := (&alertsruntime.Engine{Adapter: adapter, Journal: r.Bindings, Audit: r.Audit}).Reconcile(ctx, alertsruntime.Input{
-		Organization: connection.Spec.Organization,
-		ProjectSlug:  record.Binding.Slug,
-		Manage:       resource.Spec.Alerts != nil,
-		Desired:      desired,
-		Current:      record.Binding.Alerts,
-		Tombstones:   record.Binding.Tombstones,
-		Destinations: record.Binding.Destinations,
+		Organization:       connection.Spec.Organization,
+		ProjectSlug:        record.Binding.Slug,
+		Manage:             resource.Spec.Alerts != nil,
+		Desired:            desired,
+		Current:            record.Binding.Alerts,
+		Tombstones:         record.Binding.Tombstones,
+		Destinations:       record.Binding.Destinations,
+		DestinationCleanup: destinationCleanup,
 		PinnedAdapter: func() string {
 			if record.Binding.PinnedAdapters == nil {
 				return ""
@@ -673,7 +678,68 @@ func cloneStringMap(input map[string]string) map[string]string {
 	return result
 }
 
-func (r *SentryProjectReconciler) reconcileTelegramRoutes(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, current map[string]binding.DestinationBinding, result *destination.Result) error {
+func destinationCleanupKeys(result destination.Result) []string {
+	keys := make([]string, 0)
+	for name, current := range result.Bindings {
+		if current.State == destination.StateCleanupPending {
+			keys = append(keys, name)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// finalizeDestinationCleanup releases protected destination identities only after
+// the alert engine has proven that no desired or still-bound Sentry alert refers
+// to them. Telegram additionally requires a verified route revoke before the
+// protected binding can be removed.
+func (r *SentryProjectReconciler) finalizeDestinationCleanup(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, result *destination.Result, releasable []string) error {
+	if result == nil || len(releasable) == 0 {
+		return nil
+	}
+	record, err := r.Bindings.GetBinding(ctx, string(resource.UID))
+	if err != nil {
+		return err
+	}
+	allowed := make(map[string]bool, len(releasable))
+	for _, name := range releasable {
+		current, found := result.Bindings[name]
+		if !found || current.State != destination.StateCleanupPending {
+			return destination.ErrInvalidDestination
+		}
+		allowed[name] = true
+	}
+	if err := r.destinationAuthorizer(resource, connection, record.Binding, *result)(ctx); err != nil {
+		return err
+	}
+	if err := r.reconcileTelegramRoutes(ctx, resource, record.Binding.Destinations, result, allowed); err != nil {
+		return err
+	}
+
+	nextDestinations := make(map[string]binding.DestinationBinding, len(result.Bindings))
+	for name, current := range result.Bindings {
+		nextDestinations[name] = current
+	}
+	for _, name := range releasable {
+		current := nextDestinations[name]
+		if current.Kind == "telegram" && (current.Telegram == nil || !current.Telegram.RouteRevoked) {
+			return registration.ErrPublishPending
+		}
+		delete(nextDestinations, name)
+	}
+	next := record.Binding
+	next.Destinations = nextDestinations
+	if _, err := r.Bindings.UpdateBinding(ctx, record, next); err != nil {
+		return err
+	}
+	for _, name := range releasable {
+		delete(result.Bindings, name)
+		delete(result.Statuses, name)
+	}
+	return nil
+}
+
+func (r *SentryProjectReconciler) reconcileTelegramRoutes(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, current map[string]binding.DestinationBinding, result *destination.Result, cleanupAllowed map[string]bool) error {
 	if result == nil {
 		return nil
 	}
@@ -719,6 +785,9 @@ func (r *SentryProjectReconciler) reconcileTelegramRoutes(ctx context.Context, r
 				return err
 			}
 		case destination.StateRevoked, destination.StateCleanupPending:
+			if next.State == destination.StateCleanupPending && !cleanupAllowed[name] {
+				continue
+			}
 			if telegram.RouteRevoked {
 				continue
 			}
@@ -996,7 +1065,7 @@ func (r *SentryProjectReconciler) revokeDestinationsIfDenied(ctx context.Context
 	if err != nil || latestRecord.Binding.ExternalIdentity != record.Binding.ExternalIdentity || latestRecord.Binding.Connection != record.Binding.Connection || !reflect.DeepEqual(latestRecord.Binding.Destinations, expected) {
 		return destination.Result{}, false, dsn.ErrAuthorization
 	}
-	if err := r.reconcileTelegramRoutes(ctx, latest, latestRecord.Binding.Destinations, &result); err != nil {
+	if err := r.reconcileTelegramRoutes(ctx, latest, latestRecord.Binding.Destinations, &result, nil); err != nil {
 		return destination.Result{}, false, err
 	}
 	next := latestRecord.Binding

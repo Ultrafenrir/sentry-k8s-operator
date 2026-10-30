@@ -137,8 +137,11 @@ Evidence boundary and remaining work:
 - The project controller now resolves destinations first, reconciles alerts through the
   protected operation journal and audit sink, reauthorizes every mutation against current
   project policy/profile/bindings, CAS-persists alert bindings/pin/tombstones, and publishes
-  redacted per-rule status. Envtest covers create, safe status, protected identity/pin,
-  explicit-empty deletion and tombstone persistence.
+  redacted per-rule status. Destination removal is first persisted as CleanupPending and
+  passed to the alert engine; only its ReleasableDestinations proof can remove the protected
+  destination identity or revoke a Telegram route. Envtest covers create, safe status,
+  protected identity/pin, same-generation alert+destination removal, a failed Sentry delete
+  which preserves both bindings, successful retry, and tombstone persistence.
 - Live Slack/PagerDuty delivery acceptance and additional portable trigger mappings remain
   outside the verified boundary; they do not block the implemented configuration lifecycle.
 - The closed audit core now covers managed project create/delete, internal alert mutations,
