@@ -161,8 +161,11 @@ development installation.
 mutating POST, marker-based lost-response recovery without a second POST, competing-writer
 serialization, independent component progress after partial failure, authorization changes
 before mutation, two-phase DSN cutover, and preservation of a working Secret on denial. It
-runs the focused packages under the race detector. All servers/adapters are httptest or
-fakes; this is repeatable failure-contract evidence, not target Sentry acceptance.
+runs the focused packages under the race detector. The gate also drops the connection after
+a modern detector POST has committed, then proves that the composite workflow/detector
+identity is recovered without another workflow or detector POST; foreign ownership markers
+are rejected before either child DELETE. All servers/adapters are httptest or fakes; this is
+repeatable failure-contract evidence, not target Sentry acceptance.
 
 Production deploy aliases now require `cosign verify` of the exact image digest against one
 exact GitHub release workflow identity at a version tag and the fixed GitHub Actions OIDC
