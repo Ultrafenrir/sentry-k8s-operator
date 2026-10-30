@@ -172,7 +172,10 @@ injection, uppercase aliases, nested marker и overflow отклоняются �
 make verify-name-resolution проверяет formatter/parser и обязательную связку marker +
 protected binding + matching manager claim. Это снимает неопределённость grammar/bounds,
 а live self-hosted acceptance подтверждает transport recovery path. Полный controller-to-
-Sentry recovery с реальным Kubernetes journal остаётся отдельной end-to-end проверкой.
+Sentry recovery также Verified на обеих версиях: TLS fault proxy передал POST в Sentry и
+закрыл connection после успешного upstream response, реальный envtest Kubernetes API сохранил
+Submitted journal в protected Secret, а новый store/client/engine восстановил exact marker
+через GET без второго POST и выполнил guarded delete проекта и binding.
 
 Legacy issue/metric alert name и modern workflow name допускают тот же reserved suffix.
 Для modern detector/workflow наличие лучшего metadata механизма пока Unknown; fallback
@@ -418,10 +421,9 @@ modern workflow read/write       alerts:read / alerts:write согласно cur
 
 11. Обязательные следующие проверки
 
-1) 24.7.1/26.10.1: controller-level lost-response recovery с реальным Kubernetes journal.
-2) 24.7.1/26.10.1: controller-level filter/settings drift repair с live Sentry.
-3) 24.7.1: public non-destructive disable для issue/metric rule остаётся опровергнут source.
-4) 26.10.1: feature flags и detector families кроме проверенного metric detector.
-5) SaaS: те же calls с зафиксированной датой и очищенными fixtures.
-6) Slack/PagerDuty: duplicate readable names, pagination, revoked integration и delivery.
-7) Service hook/Sentry App: signed raw-body positive/negative/replay tests и TLS verification.
+1) 24.7.1/26.10.1: controller-level filter/settings drift repair с live Sentry.
+2) 24.7.1: public non-destructive disable для issue/metric rule остаётся опровергнут source.
+3) 26.10.1: feature flags и detector families кроме проверенного metric detector.
+4) SaaS: те же calls с зафиксированной датой и очищенными fixtures.
+5) Slack/PagerDuty: duplicate readable names, pagination, revoked integration и delivery.
+6) Service hook/Sentry App: signed raw-body positive/negative/replay tests и TLS verification.

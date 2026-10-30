@@ -88,7 +88,10 @@ PUT/GET round-trip трёх inbound filters и пяти typed PII fields. Synthe
 для двух pattern-based filters matching controls были читаемы при active=false. Отдельный
 project-create response был намеренно отброшен, после чего identity/marker восстановлены
 безопасным GET без второго POST. Alert delivery, external action lifecycle и SaaS calls ещё
-не выполнялись. 24.7.1 legacy issue/metric CRUD и 26.10.1 workflow плюс
+не выполнялись. Controller-level вариант этого сбоя также Verified на обеих версиях: TLS
+fault proxy закрыл connection после успешного upstream POST, real Kubernetes Secret сохранил
+Submitted journal, а новый store/client/engine восстановил marker без второго POST и выполнил
+guarded delete. 24.7.1 legacy issue/metric CRUD и 26.10.1 workflow плюс
 attached events/count() metric detector CRUD/toggle проверены live; external actions нет.
 Kubernetes: постоянный dev smoke работает на v1.35.5; exact v1.35.9/v1.36.5 release
 matrix выполнена на локально построенных arm64 kind images. Тот же probe set ранее
@@ -105,9 +108,8 @@ Sentry feature flags, permissions, transport, retries или delivery.
 
 - Sentry 24.7.1/26.10.1: project/settings и частичный alert lifecycle выполнены;
   synthetic PII scrubbing, semantics трёх опубликованных filters и API-level lost-response
-  recovery выполнены, modern metric detector/workflow lifecycle также выполнен, но
-  controller+journal recovery с live Sentry, actions, integrations, delivery и SaaS calls
-  не выполнены;
+  recovery выполнены, controller+journal recovery и modern metric detector/workflow lifecycle
+  также выполнены, но actions, integrations, delivery и SaaS calls не выполнены;
 - Kubernetes matrix: envtest и exact-patch real-cluster probe matrix пройдены;
   project-side prototype registration fence и resourceVersion CAS проверены только в
   envtest, а двухресурсный Connection -> Project protocol и multi-node HA отсутствуют;

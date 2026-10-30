@@ -95,8 +95,12 @@ a separate disposable project, enables both filters before its first ingestion s
 cache timing cannot affect the result, and requires both matching event IDs to remain 404.
 A separate project-create request deliberately discards its successful response; acceptance
 recovers it only through GET by slug plus the exact marker, without a second POST, and deletes
-all three projects. The matrix runs this acceptance after bootstrap and before removing the
-entire stack.
+all three projects. The following controller acceptance passes the create through a local TLS
+fault proxy and closes the connection after Sentry accepts it. A real envtest Kubernetes API
+stores the Submitted operation in a protected Secret; a newly constructed store, API client,
+and engine then recover the exact marker by GET without a second POST, clear the journal, and
+complete guarded deletion of the Sentry project and binding. The matrix runs both acceptance
+layers after bootstrap and before removing the entire stack.
 
 `make sentry-clean` additionally removes the selected managed upstream checkout.
 `make sentry-matrix` performs the clean start/smoke/removal cycle for both versions in
@@ -141,10 +145,12 @@ a synthetic event through the Default DSN and returned its sensitive extras scru
 preserving the control value. Localhost rejected a loopback-IP event; browser-extension and
 web-crawler matching events were readable with filters disabled and rejected in a fresh
 project configured before first ingestion. A discarded project-create response was recovered
-by exact slug/marker without a second POST. Controller/journal recovery with live Sentry,
-detector families beyond the verified metric detector, external actions, integrations,
-delivery and SaaS remain unverified. Legacy issue/metric CRUD and attached modern metric
-detector/workflow toggle/lifecycle are verified.
+by exact slug/marker without a second POST. Controller/journal recovery also passed on both
+versions through the TLS fault proxy and a real Kubernetes Secret journal, including a fresh
+store/client/engine recovery, no duplicate POST, and guarded deletion. Detector families beyond
+the verified metric detector, external actions, integrations, delivery and SaaS remain
+unverified. Legacy issue/metric CRUD and attached modern metric detector/workflow
+toggle/lifecycle are verified.
 
 Allocate at least 14 GB to Docker Desktop before running the full matrix. CI runners need
 the same resources plus enough disk for the official images. Put a job-level timeout around

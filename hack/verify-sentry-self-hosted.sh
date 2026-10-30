@@ -8,10 +8,12 @@ runbook=$root_dir/docs/self-hosted-test-stack.md
 makefile=$root_dir/Makefile
 matrix=$root_dir/hack/verify-sentry-self-hosted-matrix.sh
 live_api=$root_dir/hack/verify-sentry-live-api.sh
+controller_live=$root_dir/hack/verify-sentry-controller-live.sh
 
 sh -n "$manager"
 sh -n "$matrix"
 sh -n "$live_api"
+sh -n "$controller_live"
 
 legacy=$(SENTRY_VERSION=24.7.1 SENTRY_PROFILE=feature-complete sh "$manager" metadata)
 printf '%s\n' "$legacy" | grep -q '^commit=f330f3040d3ab81055f92b4ac4265fbbfe17487c$'
@@ -61,6 +63,8 @@ grep -q '^sentry-matrix:' "$makefile"
 grep -q '^sentry-bootstrap:' "$makefile"
 grep -q '^sentry-live-api:' "$makefile"
 grep -q 'verify-sentry-live-api.sh' "$matrix"
+grep -q 'verify-sentry-controller-live.sh' "$matrix"
+grep -q 'ginkgo.label-filter=live-sentry' "$controller_live"
 grep -q '/api/0/organizations/' "$live_api"
 grep -q '/api/0/teams/' "$live_api"
 grep -q '/keys/' "$live_api"

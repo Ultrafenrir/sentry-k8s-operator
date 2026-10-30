@@ -17,6 +17,7 @@ for current_version in $versions; do
   SENTRY_VERSION="$current_version" sh "$manager" up
   SENTRY_VERSION="$current_version" sh "$manager" bootstrap
   SENTRY_VERSION="$current_version" sh "$root_dir/hack/verify-sentry-live-api.sh"
+  SENTRY_VERSION="$current_version" sh "$root_dir/hack/verify-sentry-controller-live.sh"
   SENTRY_VERSION="$current_version" sh "$manager" smoke
   SENTRY_VERSION="$current_version" sh "$manager" down
   current_version=
