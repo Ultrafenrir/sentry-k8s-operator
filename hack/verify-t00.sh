@@ -90,7 +90,7 @@ jq -e '
   .legacyMetric.errorCountMapping == {"queryType": 0, "dataset": "events", "aggregate": "count()"} and
   .legacyMetric.timeWindow == {"unit": "minutes", "minimum": 1, "maximum": 1440} and
   .legacyMetric.crashRateTimeWindows.values == [30, 60, 120, 240, 720, 1440] and
-  .modern.status == "source-catalogued-runtime-availability-unknown" and
+  .modern.status == "source-catalogued-metric-issue-lifecycle-verified" and
   (.modern.conditionEnum | length) == 38 and
   (.modern.actionEnum | length) == 16 and
   .modern.legacyConditionsHiddenByDiscoveryEndpoint == [
@@ -108,6 +108,11 @@ jq -e '
   .modern.releasedDetectorTypesWithHandler == [
     "error", "metric_issue", "uptime_domain_failure"
   ] and
+  .modern.runtimeLifecycleClassification == {
+    "verifiedGenericCreateUpdateToggleDelete": ["metric_issue"],
+    "existingProjectDetectorCreateForbidden": ["error"],
+    "separateSubscriptionQuotaSeatLifecycle": ["uptime_domain_failure"]
+  } and
   .modern.featureGatedDetectorTypesWithHandler == [
     "sourcemap_configuration", "preprod_size_analysis"
   ] and

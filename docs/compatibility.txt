@@ -426,7 +426,8 @@ modern workflow read/write       alerts:read / alerts:write согласно cur
 11. Обязательные следующие проверки
 
 1) 24.7.1: public non-destructive disable для issue/metric rule остаётся опровергнут source.
-2) 26.10.1: feature flags и detector families кроме проверенного metric detector.
+2) 26.10.1: отдельный uptime subscription/quota/seat lifecycle и update существующего error
+   detector; generic create для error source-запрещён и не должен тестироваться как preset.
 3) SaaS: те же calls с зафиксированной датой и очищенными fixtures.
 4) Slack/PagerDuty: duplicate readable names, pagination, revoked integration и delivery.
 5) Service hook/Sentry App: signed raw-body positive/negative/replay tests и TLS verification.

@@ -1,7 +1,8 @@
 SENTRY CONFIGURATION OPERATOR — T00 ALERT CATALOG
 Дата source review: 2026-10-29
-Статус: legacy 24.7.1 и modern 26.10.1 source catalogs complete; runtime availability
-modern registry остаётся Unknown; ничего из каталога не опубликовано в alpha API.
+Статус: legacy 24.7.1 и modern 26.10.1 source catalogs complete; metric_issue generic
+lifecycle Verified на self-hosted 26.10.1, остальные modern families классифицированы
+source-only; ничего из каталога не опубликовано в alpha API.
 Machine-readable copy: testdata/contracts/t00-alert-catalog.json
 
 1. Правило использования
@@ -87,9 +88,14 @@ visibility. monitor_check_in_failure и issue_stream зарегистриров�
 feature visibility.
 
 Discovery endpoints detector types, data conditions и available actions имеют status
-EXPERIMENTAL. Следовательно source catalog complete не означает adapter lifecycle support:
-machine-readable status = source-catalogued-runtime-availability-unknown, и никакой
-inferred common/advanced mapping не публикуется.
+EXPERIMENTAL. Live self-hosted acceptance подтвердил generic create/read/update/toggle/delete
+только для metric_issue с events/count() data source. `error` при этом не является вторым
+generic create adapter: его validator прямо запрещает create и разрешает менять только
+существующий project detector, включая grouping/resolve project options. `uptime_domain_failure`
+имеет отдельный URL/subscription validator, quota/seat accounting, фиксированные conditions и
+собственный cleanup. Поэтому machine-readable status =
+source-catalogued-metric-issue-lifecycle-verified; error и uptime нельзя автоматически
+подставлять вместо metric_issue, и никакой inferred common/advanced mapping не публикуется.
 
 5. Source identities
 
@@ -106,3 +112,5 @@ https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/regi
 https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/organization_detector_types.py
 https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/organization_data_condition_index.py
 https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/organization_available_action_index.py
+https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/validators/error_detector.py
+https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/uptime/endpoints/validators.py

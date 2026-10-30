@@ -88,8 +88,11 @@ Evidence boundary and remaining work:
   This proves a usable local detector/workflow lifecycle, but not actions or delivery.
 - `spec.alerts` intentionally remains absent from v1alpha1. The source catalog records that
   Sentry 24.7.1 lacks a confirmed non-destructive disable lifecycle and that the modern
-  action registry and external integrations remain organization/feature dependent. One
-  accepted metric-count detector does not yet prove all published preset mappings.
+  action registry and external integrations remain organization/feature dependent. Pinned
+  26.10.1 source also proves that `error` create is forbidden and only updates the existing
+  project detector, while `uptime_domain_failure` owns a separate subscription/quota/seat
+  lifecycle. Neither may be selected as a generic fallback for the verified `metric_issue`
+  lifecycle, and one accepted metric-count detector does not prove all preset mappings.
 - Concrete legacy issue, legacy metric and modern detector/workflow adapters, controller
   wiring to the protected Store/status and destination release signal, action lifecycle
   and notification delivery remain required before T07 can be Complete.

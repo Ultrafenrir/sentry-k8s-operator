@@ -114,7 +114,7 @@
   },
   "modern": {
     "version": "26.10.1",
-    "status": "source-catalogued-runtime-availability-unknown",
+    "status": "source-catalogued-metric-issue-lifecycle-verified",
     "conditionEnum": [
       "eq",
       "gte",
@@ -206,6 +206,11 @@
       "metric_issue",
       "uptime_domain_failure"
     ],
+    "runtimeLifecycleClassification": {
+      "verifiedGenericCreateUpdateToggleDelete": ["metric_issue"],
+      "existingProjectDetectorCreateForbidden": ["error"],
+      "separateSubscriptionQuotaSeatLifecycle": ["uptime_domain_failure"]
+    },
     "featureGatedDetectorTypesWithHandler": [
       "sourcemap_configuration",
       "preprod_size_analysis"
