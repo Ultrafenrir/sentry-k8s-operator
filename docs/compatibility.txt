@@ -10,11 +10,11 @@ ContractTested — контракт подтверждён version-pinned исх
 Unsupported    — подтверждённый контракт не позволяет сохранить обязательную семантику.
 Unknown        — реальный вызов или достаточный version-pinned контракт отсутствует.
 
-На 2026-10-30 ни одна Sentry capability не имеет статуса Verified. Для 24.7.1 и
-26.10.1 воспроизводимая обёртка над официальным self-hosted Compose прошла fresh install,
-полные миграции, health-check и удаление всех managed volumes. Реальные авторизованные
-API-вызовы ещё не зафиксированы, поэтому статусы capability не повышаются. SaaS token также
-пока отсутствует. Это сознательное ограничение первого этапа.
+На 2026-10-30 обе self-hosted версии прошли fresh install, полные миграции, health-check,
+Bearer authentication и реальный public-API lifecycle create/read/key/delete на полностью
+одноразовых volumes. В 24.7.1 дополнительно подтверждено отсутствие legacy rules после
+default_rules=false. В 26.10.1 GET project detectors не опубликован и отвечает 403,
+поэтому эффект default_rules=false остаётся ContractTested. SaaS token отсутствует.
 
 2. Зафиксированные среды
 
@@ -37,13 +37,13 @@ Snapshot: testdata/contracts/sentry-26.10.1-image.json. Это identity опуб
 3. Сводная capability matrix
 
 Capability                         24.7.1             26.10.1            SaaS 2026-10-29
-project list/read by slug           ContractTested      ContractTested*     ContractTested*
-project create                      ContractTested      ContractTested      ContractTested*
-create without platform             ContractTested      ContractTested      Unknown
-atomic default_rules=false           ContractTested      ContractTested      ContractTested*
-automatic usable active key         ContractTested      ContractTested      Unknown
+project list/read by slug           Verified            Verified            ContractTested*
+project create                      Verified            Verified            ContractTested*
+create without platform             Verified            Verified            Unknown
+atomic default_rules=false           Verified            ContractTested      ContractTested*
+automatic usable active key         Verified            Verified            Unknown
 project update                       ContractTested      ContractTested*     ContractTested*
-async project delete                ContractTested      ContractTested*     ContractTested*
+async project delete                Verified            Verified            ContractTested*
 lost-POST recovery by marker         ContractTested      ContractTested*     Unknown
 client-key list/pagination           ContractTested      ContractTested      ContractTested*
 inbound filters                      ContractTested      ContractTested      ContractTested*

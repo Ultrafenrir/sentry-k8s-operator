@@ -332,6 +332,19 @@ wait_http() {
   return 1
 }
 
+configure_public_url() {
+  config_file="$work_dir/sentry/config.yml"
+  temporary_config="$config_file.sko.tmp.$$"
+  sed "s|^# system.url-prefix:.*|system.url-prefix: 'http://127.0.0.1:$port'|" \
+    "$config_file" >"$temporary_config"
+  if ! grep -Fqx "system.url-prefix: 'http://127.0.0.1:$port'" "$temporary_config"; then
+    rm -f -- "$temporary_config"
+    echo 'failed to configure the local Sentry public URL' >&2
+    exit 1
+  fi
+  mv -f -- "$temporary_config" "$config_file"
+}
+
 accept_optional_geoip_exit() {
   runtime_states=$(docker ps -a --filter "label=com.docker.compose.project=$project" \
     --format '{{.Label "com.docker.compose.service"}}|{{.State}}|{{.Status}}')
@@ -371,10 +384,14 @@ bootstrap_access() {
 
   if [ "$version" = 24.7.1 ]; then
     user_import='from sentry.models.user import User'
+    provision_setup="user=User.objects.get(username='$bootstrap_email')"
+    provision_call="organization_provisioning_service.provision_organization_in_region(region_name=settings.SENTRY_REGION or settings.SENTRY_MONOLITH_REGION, provisioning_options=OrganizationProvisioningOptions(provision_options=OrganizationOptions(name='SKO live API acceptance', slug='sko-live-$version_slug', owning_user_id=user.id, create_default_team=False), post_provision_options=PostProvisionOptions(getsentry_options=None, sentry_options=None)))"
   else
     user_import='from sentry.users.models.user import User'
+    provision_setup="from sentry.users.services.user.serial import serialize_generic_user; user=User.objects.get(username='$bootstrap_email'); rpc_owner=serialize_generic_user(user); assert rpc_owner"
+    provision_call="organization_provisioning_service.provision_organization_in_cell(cell_name=settings.SENTRY_FALLBACK_CELL, provisioning_options=OrganizationProvisioningOptions(provision_options=OrganizationOptions(name='SKO live API acceptance', slug='sko-live-$version_slug', owner=rpc_owner, create_default_team=False), post_provision_options=PostProvisionOptions()))"
   fi
-  python_code="$user_import; from django.conf import settings; from sentry.models.apitoken import ApiToken; from sentry.types.token import AuthTokenType; user=User.objects.get(username='$bootstrap_email'); desired={'org:read','org:write','org:admin','org:integrations','member:read','team:read','team:write','team:admin','project:read','project:write','project:admin','alerts:read','alerts:write'}; missing=desired-set(settings.SENTRY_SCOPES); assert not missing, 'required acceptance scopes unavailable'; [item.delete() for item in ApiToken.objects.filter(user=user, application__isnull=True, name='sko-local-acceptance')]; created=ApiToken.objects.create(user=user, name='sko-local-acceptance', token_type=AuthTokenType.USER, scope_list=sorted(desired), expires_at=None); print('SKO_TOKEN='+created.plaintext_token)"
+  python_code="$user_import; from django.conf import settings; from sentry.models.apitoken import ApiToken; from sentry.models.organization import Organization; from sentry.models.organizationmember import OrganizationMember; from sentry.models.organizationmemberteam import OrganizationMemberTeam; from sentry.models.team import Team; from sentry.services.organization import OrganizationOptions, OrganizationProvisioningOptions, PostProvisionOptions; from sentry.services.organization.provisioning import organization_provisioning_service; from sentry.types.token import AuthTokenType; $provision_setup; org=Organization.objects.filter(slug='sko-live-$version_slug').first() or Organization.objects.get(id=$provision_call.id); member=OrganizationMember.objects.get(user_id=user.id, organization=org); team,_=Team.objects.get_or_create(organization=org, slug='sko-live', defaults={'name':'SKO live API acceptance'}); OrganizationMemberTeam.objects.get_or_create(team=team, organizationmember=member, defaults={'is_active':True}); desired={'org:read','org:write','org:admin','org:integrations','member:read','team:read','team:write','team:admin','project:read','project:write','project:admin','alerts:read','alerts:write'}; missing=desired-set(settings.SENTRY_SCOPES); assert not missing, 'required acceptance scopes unavailable'; [item.delete() for item in ApiToken.objects.filter(user=user, application__isnull=True, name='sko-local-acceptance')]; created=ApiToken.objects.create(user=user, name='sko-local-acceptance', token_type=AuthTokenType.USER, scope_list=sorted(desired), expires_at=None); print('SKO_TOKEN='+created.plaintext_token)"
   if ! token_output=$(compose run --rm -T web shell -c "$python_code" 2>/dev/null); then
     echo "failed to create local Sentry API token for $version" >&2
     exit 1
@@ -442,6 +459,7 @@ case "$action" in
     fi
     (cd "$work_dir" && PATH="$bash_dir:$PATH" REPORT_SELF_HOSTED_ISSUES=0 SKIP_USER_CREATION=1 \
       "$bash_bin" ./install.sh $install_args)
+    configure_public_url
     if ! compose up --detach --wait --wait-timeout "$wait_timeout"; then
       accept_optional_geoip_exit
     fi

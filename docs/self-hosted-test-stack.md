@@ -57,11 +57,30 @@ Start one clean feature-complete stack, inspect it, and remove all of its state:
 
 ```sh
 make sentry-up SENTRY_VERSION=24.7.1
+make sentry-bootstrap SENTRY_VERSION=24.7.1
+make sentry-live-api SENTRY_VERSION=24.7.1
 make sentry-smoke SENTRY_VERSION=24.7.1
 make sentry-status SENTRY_VERSION=24.7.1
 make sentry-logs SENTRY_VERSION=24.7.1
 make sentry-down SENTRY_VERSION=24.7.1
 ```
+
+`make sentry-bootstrap` creates or updates the fixed local acceptance user and its
+version-scoped organization/team fixture through Sentry's internal provisioning service,
+replaces only its managed user token, verifies Bearer authentication against
+`/api/0/organizations/`, and stores the token at
+`.cache/sentry-self-hosted/tokens/<version>.token` with mode `0600`. The token directory
+is ignored by Git. `sentry-down`, `sentry-reset`, and `sentry-clean` remove the managed
+token file together with the selected runtime.
+
+`make sentry-live-api` is destructive and is intended only for the disposable local stack.
+It verifies the bootstrapped organization/team and creates a marker-bearing project through
+Sentry's public HTTP API, omits `platform`, sends `default_rules=false`, verifies the project
+round-trip and the single active Default client key, confirms on 24.7.1 that no legacy
+default rule was created, deletes the project, and requires it to become unreadable. On
+26.10.1 that alert effect remains source/contract-tested because only POST, not GET, is
+published on the project-detectors endpoint.
+The matrix runs this acceptance after bootstrap and before removing the entire stack.
 
 `make sentry-clean` additionally removes the selected managed upstream checkout.
 `make sentry-matrix` performs the clean start/smoke/removal cycle for both versions in
@@ -92,19 +111,23 @@ The preflight enforces the official minimums before running the installer:
 
 On 2026-10-30 both pinned feature-complete stacks were installed from fresh volumes on the
 local Docker Desktop VM, completed their upstream migrations, became healthy, answered
-`/_health/`, and were removed with no managed containers or volumes left behind. Docker
-exposed 15.6 GiB and 12 CPUs; the four local kind control-plane containers were stopped for
-the sequential run and restored afterwards. The 24.7.1 run also confirmed that a missing
-MaxMind license only stops the optional `geoipupdate` service. This is runtime-health
-evidence, not authenticated Sentry API evidence, so it does not by itself raise any
-capability in `docs/compatibility.txt` to `Verified`.
+`/_health/`, and were removed with no managed containers or volumes left behind. Both
+versions also created the managed local acceptance user and user token and successfully
+authenticated a Bearer request to `/api/0/organizations/`; token mode and removal were
+verified. Docker exposed 15.6 GiB and 12 CPUs; the four local kind control-plane containers
+were stopped for the sequential runs and restored afterwards. The 24.7.1 run also
+confirmed that a missing MaxMind license only stops the optional `geoipupdate` service.
+Both versions also passed real project create/read/key/delete acceptance: platform was
+omitted, the marker round-tripped, one active Default key had a local DSN, and deletion
+became a 404. The 24.7.1 run additionally observed zero default legacy rules. Settings,
+alert lifecycle, integrations, delivery, lost-response recovery and SaaS remain unverified.
 
 Allocate at least 14 GB to Docker Desktop before running the full matrix. CI runners need
 the same resources plus enough disk for the official images. Put a job-level timeout around
 `make sentry-matrix`; the upstream install phase can otherwise wait on a stalled container
 runtime.
 
-The installer deliberately skips interactive user creation. Local API-user/token
-bootstrap and operator acceptance calls are a separate next step. A future SaaS token is
-independent of these local stacks and must be supplied through a Secret or CI secret, never
-committed to this repository.
+The installer deliberately skips interactive user creation; `sentry-bootstrap` supplies
+the ephemeral local acceptance identity described above. Settings and alert lifecycle
+acceptance calls are the next step. A future SaaS token is independent of these local
+stacks and must be supplied through a Secret or CI secret, never committed to this repository.

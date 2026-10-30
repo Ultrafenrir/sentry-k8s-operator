@@ -6,8 +6,12 @@ manager=$root_dir/hack/manage-sentry-self-hosted.sh
 readme=$root_dir/README.md
 runbook=$root_dir/docs/self-hosted-test-stack.md
 makefile=$root_dir/Makefile
+matrix=$root_dir/hack/verify-sentry-self-hosted-matrix.sh
+live_api=$root_dir/hack/verify-sentry-live-api.sh
 
 sh -n "$manager"
+sh -n "$matrix"
+sh -n "$live_api"
 
 legacy=$(SENTRY_VERSION=24.7.1 SENTRY_PROFILE=feature-complete sh "$manager" metadata)
 printf '%s\n' "$legacy" | grep -q '^commit=f330f3040d3ab81055f92b4ac4265fbbfe17487c$'
@@ -55,6 +59,14 @@ grep -q 'min_feature_memory_mb=14000' "$manager"
 grep -q '^verify-sentry-compose:' "$makefile"
 grep -q '^sentry-matrix:' "$makefile"
 grep -q '^sentry-bootstrap:' "$makefile"
+grep -q '^sentry-live-api:' "$makefile"
+grep -q 'verify-sentry-live-api.sh' "$matrix"
+grep -q '/api/0/organizations/' "$live_api"
+grep -q '/api/0/teams/' "$live_api"
+grep -q '/keys/' "$live_api"
+grep -q 'default_rules: false' "$live_api"
+grep -q "grep -Eq '\^sntryu_" "$live_api"
+grep -q 'OrganizationProvisioningOptions' "$manager"
 grep -q 'docs/self-hosted-test-stack.md' "$readme"
 grep -q 'f330f3040d3ab81055f92b4ac4265fbbfe17487c' "$runbook"
 grep -q '192a826421decd7f8ce6673bb9a299737d0d6916' "$runbook"

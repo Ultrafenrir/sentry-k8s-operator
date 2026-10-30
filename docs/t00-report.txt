@@ -1,8 +1,9 @@
 T00 — ОТЧЁТ ПЕРВОГО ЭТАПА
 Дата: 2026-10-29
-Итог: source/contract часть и Kubernetes/toolchain freeze выполнены; live-Sentry часть
-T00 и M0 не завершены. T01 scaffold разблокирован только на явно опубликованной alpha
-surface; Unknown возможности не считаются поддержанными.
+Итог: source/contract часть и Kubernetes/toolchain freeze выполнены; локальный live-Sentry
+project lifecycle подтверждён для обеих целевых версий. Settings/alerts acceptance и M0
+не завершены. T01 scaffold разблокирован только на явно опубликованной alpha surface;
+Unknown возможности не считаются поддержанными.
 
 1. Что изменено
 
@@ -75,7 +76,11 @@ KUBERNETES_VERSION=<v1.35.9|v1.36.5>
 
 4. Реальные версии
 
-Sentry real calls: не выполнялись.
+Sentry real calls: официальные self-hosted 24.7.1 и 26.10.1 установлены с нуля и прошли
+health-check. В каждой версии local user token выполнил public-API create/read/delete
+marker-bearing project без platform и подтвердил active Default key с DSN. 24.7.1 также
+подтвердил отсутствие legacy rules при default_rules=false. Settings, alert CRUD,
+lost-response recovery и SaaS calls ещё не выполнялись.
 Kubernetes: постоянный dev smoke работает на v1.35.5; exact v1.35.9/v1.36.5 release
 matrix выполнена на локально построенных arm64 kind images. Тот же probe set ранее
 прошёл на временном kind v1.36.1, а envtest subset — на control planes 1.35.0 и 1.36.2.
@@ -89,7 +94,8 @@ Sentry feature flags, permissions, transport, retries или delivery.
 
 6. Не проверено и почему
 
-- Sentry 24.7.1/current/SaaS: нет стенда/доступа по условию первого этапа;
+- Sentry 24.7.1/26.10.1: project create/read/key/delete acceptance выполнена; settings,
+  alerts, integrations, lost-response recovery и SaaS calls не выполнены;
 - Kubernetes matrix: envtest и exact-patch real-cluster probe matrix пройдены;
   project-side prototype registration fence и resourceVersion CAS проверены только в
   envtest, а двухресурсный Connection -> Project protocol и multi-node HA отсутствуют;
@@ -104,7 +110,7 @@ Sentry feature flags, permissions, transport, retries или delivery.
 
 - 24.7.1 public alert API не доказал non-destructive disable; presets заблокированы;
 - service hook source использует verify_ssl=False; Telegram production route заблокирован;
-- usable active key после create не проверен real call;
+- usable active key после create подтверждён только на локальных self-hosted стендах;
 - marker strategy пока reserved display-name suffix, а не native metadata;
 - Kubebuilder 4.16 default dependencies не совпадают с planned controller-runtime 0.24.1;
 - exact kind images являются локальными артефактами с записанными image IDs, не
