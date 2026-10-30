@@ -82,7 +82,7 @@ marker-bearing project без platform и подтвердил active Default ke
 подтвердил отсутствие legacy rules при default_rules=false. Обе версии выполнили точный
 PUT/GET round-trip трёх inbound filters и пяти typed PII fields. Synthetic events, alert
 delivery, detector/action lifecycle, lost-response recovery и SaaS calls ещё не выполнялись.
-24.7.1 legacy issue CRUD и 26.10.1 detached workflow CRUD/toggle проверены live.
+24.7.1 legacy issue/metric CRUD и 26.10.1 detached workflow CRUD/toggle проверены live.
 Kubernetes: постоянный dev smoke работает на v1.35.5; exact v1.35.9/v1.36.5 release
 matrix выполнена на локально построенных arm64 kind images. Тот же probe set ранее
 прошёл на временном kind v1.36.1, а envtest subset — на control planes 1.35.0 и 1.36.2.

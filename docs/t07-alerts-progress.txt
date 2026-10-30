@@ -78,6 +78,9 @@ Evidence boundary and remaining work:
 - Live 24.7.1 verified marker-bearing legacy issue rule create/read/update/delete-to-inactive
   and exclusion from the active list. It also confirmed that delete is scheduled deletion,
   not a non-destructive disable toggle.
+- Live 24.7.1 also verified an events count() legacy metric alert with empty actions:
+  create/read/update by stable ID and delete-to-404. Its public API still has no accepted
+  non-destructive disable/enable route.
 - Live 26.10.1 verified a detached modern workflow create/read/update, bulk disable/enable
   by exact ID and delete-to-404. The workflow deliberately had no detector or actions, so
   this proves the lifecycle/toggle mechanism but not a usable alert or delivery.

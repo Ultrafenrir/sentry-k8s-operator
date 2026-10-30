@@ -232,6 +232,63 @@ if [ "$version" = 24.7.1 ]; then
   assert_json "deleted legacy issue alert is excluded from the active list" \
     'type == "array" and ([.[] | select((.id | tostring) == $id)] | length) == 0' \
     "$rules_response" --arg id "$rule_id"
+
+  metric_request="$temporary_dir/metric-request.json"
+  metric_response="$temporary_dir/metric-response.json"
+  metric_name='Live event count [managed;o=acceptance;m=sko]'
+  jq -n --arg name "$metric_name" --arg project "$project" '{
+    name: $name,
+    aggregate: "count()",
+    query: "",
+    timeWindow: "300",
+    resolveThreshold: 100,
+    thresholdType: 0,
+    triggers: [{label: "critical", alertThreshold: 200, actions: []}],
+    projects: [$project],
+    activations: []
+  }' >"$metric_request"
+  request POST "/api/0/organizations/$organization/alert-rules/" \
+    "$metric_request" "$metric_response"
+  assert_json "legacy metric alert is created with its ownership marker" \
+    '.name == $name and (.id | tostring | test("^[0-9]+$"))' \
+    "$metric_response" --arg name "$metric_name"
+  metric_id=$(jq -r '.id | tostring' "$metric_response")
+
+  request GET "/api/0/organizations/$organization/alert-rules/$metric_id/" '' \
+    "$metric_response"
+  assert_json "legacy metric alert is readable by exact identity" \
+    '(.id | tostring) == $id and .name == $name and .aggregate == "count()"' \
+    "$metric_response" --arg id "$metric_id" --arg name "$metric_name"
+
+  updated_metric_name='Live event count updated [managed;o=acceptance;m=sko]'
+  jq -n --arg name "$updated_metric_name" --arg project "$project" '{
+    name: $name,
+    aggregate: "count()",
+    query: "",
+    timeWindow: "300",
+    resolveThreshold: 100,
+    thresholdType: 0,
+    triggers: [{label: "critical", alertThreshold: 250, actions: []}],
+    projects: [$project],
+    activations: []
+  }' >"$metric_request"
+  request PUT "/api/0/organizations/$organization/alert-rules/$metric_id/" \
+    "$metric_request" "$metric_response"
+  request GET "/api/0/organizations/$organization/alert-rules/$metric_id/" '' \
+    "$metric_response"
+  assert_json "legacy metric alert update round-trips without changing identity" \
+    '(.id | tostring) == $id and .name == $name and .triggers[0].alertThreshold == 250' \
+    "$metric_response" --arg id "$metric_id" --arg name "$updated_metric_name"
+
+  request DELETE "/api/0/organizations/$organization/alert-rules/$metric_id/" '' \
+    "$metric_response"
+  metric_status=$(curl --config "$auth_config" --silent --show-error --noproxy '*' \
+    --connect-timeout 2 --max-time 30 --output "$metric_response" --write-out '%{http_code}' \
+    "$base_url/api/0/organizations/$organization/alert-rules/$metric_id/")
+  if [ "$metric_status" != 404 ]; then
+    echo "deleted legacy metric alert remained readable: HTTP $metric_status" >&2
+    exit 1
+  fi
 else
   # Sentry 26 publishes only POST on the project-detectors endpoint; GET is
   # intentionally forbidden even with alerts:read. The default_rules=false

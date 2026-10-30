@@ -52,7 +52,7 @@ typed fingerprint rules              Unknown             Unknown             Unk
 recommended-v1 profile               Unsupported         Unsupported         Unsupported
 legacy issue alert CRUD              Verified            ContractTested*     Unknown/deprecated
 legacy issue alert disable+enable    Unsupported         Unknown             Unknown/deprecated
-legacy metric alert CRUD             ContractTested      ContractTested*     Unknown/deprecated
+legacy metric alert CRUD             Verified            ContractTested*     Unknown/deprecated
 legacy metric disable+enable         Unsupported         Unknown             Unknown/deprecated
 modern workflow enabled flag         N/A/Unknown         Verified            ContractTested
 modern detector/workflow lifecycle   N/A/Unknown         ContractTested*     ContractTested*
@@ -268,6 +268,11 @@ https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/incidents/serializers
 window choices 1/5/10/15/30/60/120/240/1440 minutes, environment, query and actions.
 Model имеет DISABLED и internal logic, но публичного disable/enable API в 24.7.1 не
 найдено. Следовательно metric adapter также Unsupported для common preset lifecycle.
+
+Live 24.7.1 acceptance подтвердил events count() metric alert с пустыми actions:
+create/read/update сохраняют exact ID и marker, threshold round-trip проходит, DELETE
+делает detail недоступным. Поэтому CRUD повышен до Verified, но disable+enable остаётся
+Unsupported и такой adapter не удовлетворяет общему обязательному lifecycle.
 
 Sentry 26.10.1 source публикует modern workflow API:
 - GET|POST|PUT|DELETE /api/0/organizations/{org}/workflows/;
