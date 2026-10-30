@@ -4,6 +4,12 @@ set -eu
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 version=${SENTRY_VERSION:-26.10.1}
 cache_dir=${SENTRY_SELF_HOSTED_CACHE:-$root_dir/.cache/sentry-self-hosted}
+config_only=${SENTRY_LIVE_CONFIG_ONLY:-false}
+
+case "$config_only" in
+  true|false) ;;
+  *) echo 'SENTRY_LIVE_CONFIG_ONLY must be true or false' >&2; exit 1 ;;
+esac
 
 case "$version" in
   24.7.1) port=${SENTRY_PORT:-24710} ;;
@@ -63,6 +69,7 @@ recovery_project="sko-lost-response"
 recovery_name='Lost response [managed;o=acceptance;m=sko]'
 filter_project="sko-filter-semantics"
 filter_name='Filter semantics [managed;o=acceptance;m=sko]'
+filter_project_created=false
 
 request() {
   method=$1
@@ -97,6 +104,40 @@ assert_json() {
   fi
 }
 
+remove_stale_fixture_project() {
+  stale_slug=$1
+  stale_output="$temporary_dir/stale-$stale_slug.json"
+  stale_status=$(curl --config "$auth_config" --silent --show-error --noproxy '*' \
+    --connect-timeout 2 --max-time 30 --output "$stale_output" --write-out '%{http_code}' \
+    "$base_url/api/0/projects/$organization/$stale_slug/")
+  case "$stale_status" in
+    404) return 0 ;;
+    200) ;;
+    *) echo "stale fixture lookup for $stale_slug returned HTTP $stale_status" >&2; exit 1 ;;
+  esac
+  stale_status=$(curl --config "$auth_config" --silent --show-error --noproxy '*' \
+    --connect-timeout 2 --max-time 30 --request DELETE --output "$stale_output" \
+    --write-out '%{http_code}' "$base_url/api/0/projects/$organization/$stale_slug/")
+  case "$stale_status" in
+    2??|404) ;;
+    *) echo "stale fixture delete for $stale_slug returned HTTP $stale_status" >&2; exit 1 ;;
+  esac
+  stale_attempt=0
+  while [ "$stale_attempt" -lt 30 ]; do
+    stale_attempt=$((stale_attempt + 1))
+    stale_status=$(curl --config "$auth_config" --silent --show-error --noproxy '*' \
+      --connect-timeout 2 --max-time 10 --output "$stale_output" --write-out '%{http_code}' \
+      "$base_url/api/0/projects/$organization/$stale_slug/")
+    case "$stale_status" in
+      404) return 0 ;;
+      200) sleep 1 ;;
+      *) echo "stale fixture verification for $stale_slug returned HTTP $stale_status" >&2; exit 1 ;;
+    esac
+  done
+  echo "stale fixture $stale_slug remained readable after delete" >&2
+  exit 1
+}
+
 organization_response="$temporary_dir/organization-response.json"
 request GET '/api/0/organizations/' '' "$organization_response"
 assert_json "bootstrapped organization is listed" \
@@ -108,6 +149,13 @@ request GET "/api/0/organizations/$organization/teams/" '' "$team_response"
 assert_json "bootstrapped team is listed" \
   'type == "array" and ([.[] | select(.slug == $slug and (.id | type == "string"))] | length) == 1' \
   "$team_response" --arg slug "$team"
+
+# A failed acceptance run may stop before its normal delete phase. These exact
+# fixture slugs belong only to this disposable organization, so make reruns
+# converge instead of requiring another full Sentry installation.
+for stale_project in "$project" "$recovery_project" "$filter_project"; do
+  remove_stale_fixture_project "$stale_project"
+done
 
 project_request="$temporary_dir/project-request.json"
 project_response="$temporary_dir/project-response.json"
@@ -211,6 +259,7 @@ if ! printf '%s\n' "$project_id" | grep -Eq '^[0-9]+$'; then
   exit 1
 fi
 
+if [ "$config_only" = false ]; then
 event_request="$temporary_dir/event-request.json"
 event_response="$temporary_dir/event-response.json"
 ingest_event() {
@@ -358,6 +407,7 @@ jq -n --arg name "$filter_name" --arg slug "$filter_project" \
   '{name: $name, slug: $slug, default_rules: false}' >"$filter_project_request"
 request POST "/api/0/teams/$organization/$team/projects/" \
   "$filter_project_request" "$filter_project_response"
+filter_project_created=true
 assert_json "filter-semantics project preserves its ownership marker" \
   '.slug == $slug and .name == $name and (.id | type == "string")' \
   "$filter_project_response" --arg slug "$filter_project" --arg name "$filter_name"
@@ -422,6 +472,7 @@ assert_event_filtered "$crawler_filtered_id" 'web-crawler enabled filtered event
 project=$primary_project
 project_id=$primary_project_id
 public_key=$primary_public_key
+fi
 
 if [ "$version" = 24.7.1 ]; then
   rules_response="$temporary_dir/rules-response.json"
@@ -684,7 +735,9 @@ fi
 
 delete_response="$temporary_dir/delete-response.json"
 request DELETE "/api/0/projects/$organization/$recovery_project/" '' "$delete_response"
-request DELETE "/api/0/projects/$organization/$filter_project/" '' "$delete_response"
+if [ "$filter_project_created" = true ]; then
+  request DELETE "/api/0/projects/$organization/$filter_project/" '' "$delete_response"
+fi
 request DELETE "/api/0/projects/$organization/$project/" '' "$delete_response"
 
 attempt=0
@@ -723,22 +776,28 @@ if [ "$recovery_status" != 404 ]; then
   exit 1
 fi
 
-filter_delete_attempt=0
-filter_delete_status=
-while [ "$filter_delete_attempt" -lt 30 ]; do
-  filter_delete_attempt=$((filter_delete_attempt + 1))
-  filter_delete_status=$(curl --config "$auth_config" --silent --show-error --noproxy '*' \
-    --connect-timeout 2 --max-time 10 --output "$filter_project_response" --write-out '%{http_code}' \
-    "$base_url/api/0/projects/$organization/$filter_project/")
-  case "$filter_delete_status" in
-    404) break ;;
-    200) sleep 1 ;;
-    *) echo "filter-semantics project delete verification returned HTTP $filter_delete_status" >&2; exit 1 ;;
-  esac
-done
-if [ "$filter_delete_status" != 404 ]; then
-  echo "filter-semantics project remained readable after delete: HTTP $filter_delete_status" >&2
-  exit 1
+if [ "$filter_project_created" = true ]; then
+  filter_delete_attempt=0
+  filter_delete_status=
+  while [ "$filter_delete_attempt" -lt 30 ]; do
+    filter_delete_attempt=$((filter_delete_attempt + 1))
+    filter_delete_status=$(curl --config "$auth_config" --silent --show-error --noproxy '*' \
+      --connect-timeout 2 --max-time 10 --output "$filter_project_response" --write-out '%{http_code}' \
+      "$base_url/api/0/projects/$organization/$filter_project/")
+    case "$filter_delete_status" in
+      404) break ;;
+      200) sleep 1 ;;
+      *) echo "filter-semantics project delete verification returned HTTP $filter_delete_status" >&2; exit 1 ;;
+    esac
+  done
+  if [ "$filter_delete_status" != 404 ]; then
+    echo "filter-semantics project remained readable after delete: HTTP $filter_delete_status" >&2
+    exit 1
+  fi
 fi
 
-echo "Sentry $version live API recovery/settings/filtering/alerts/delete acceptance passed"
+if [ "$config_only" = true ]; then
+  echo "Sentry $version live configuration API recovery/settings/alerts/delete acceptance passed (event ingestion intentionally skipped)"
+else
+  echo "Sentry $version live API recovery/settings/filtering/alerts/delete acceptance passed"
+fi

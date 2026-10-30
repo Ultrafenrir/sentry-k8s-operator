@@ -67,7 +67,7 @@ help: ## Display this help.
 
 ##@ Development
 
-.PHONY: verify-sentry-self-hosted verify-sentry-compose sentry-up sentry-bootstrap sentry-live-api sentry-controller-live sentry-smoke sentry-status sentry-logs sentry-down sentry-reset sentry-clean sentry-matrix
+.PHONY: verify-sentry-self-hosted verify-sentry-compose sentry-up sentry-bootstrap sentry-live-api sentry-live-config-api sentry-controller-live sentry-smoke sentry-status sentry-logs sentry-down sentry-reset sentry-clean sentry-matrix
 verify-sentry-self-hosted: ## Verify pinned versions and safe fresh-volume lifecycle without starting Sentry.
 	sh hack/verify-sentry-self-hosted.sh
 
@@ -82,6 +82,9 @@ sentry-bootstrap: ## Create and verify an ephemeral local API user/token without
 
 sentry-live-api: ## Run destructive live API acceptance against the selected disposable local stack.
 	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" sh hack/verify-sentry-live-api.sh
+
+sentry-live-config-api: ## Verify Sentry configuration object lifecycles without event ingestion/delivery.
+	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" SENTRY_LIVE_CONFIG_ONLY=true sh hack/verify-sentry-live-api.sh
 
 sentry-controller-live: ## Verify controller recovery and settings drift repair against the disposable local stack.
 	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" sh hack/verify-sentry-controller-live.sh

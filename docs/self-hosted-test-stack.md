@@ -58,6 +58,7 @@ Start one clean feature-complete stack, inspect it, and remove all of its state:
 ```sh
 make sentry-up SENTRY_VERSION=24.7.1
 make sentry-bootstrap SENTRY_VERSION=24.7.1
+make sentry-live-config-api SENTRY_VERSION=24.7.1
 make sentry-live-api SENTRY_VERSION=24.7.1
 make sentry-smoke SENTRY_VERSION=24.7.1
 make sentry-status SENTRY_VERSION=24.7.1
@@ -105,6 +106,13 @@ into all three filters and five PII fields, and requires one reconcile to restor
 exactly three filter PUTs and one narrow project PUT. A following reconcile must perform no
 settings mutation, both SettingsReady and Ready must remain true, and guarded deletion must
 complete. The matrix runs both acceptance layers after bootstrap and before removing the stack.
+
+`make sentry-live-config-api` runs the same public API project, key, settings, filter and
+alert object lifecycle checks, but intentionally skips event ingestion and filter-behavior
+events. This is the correct gate when validating configuration creation without external
+delivery or when Relay rejects envelopes because a resource-constrained Docker VM is above
+its memory health threshold. It must not be reported as ingestion, PII/filter behavior, or
+notification-delivery evidence.
 
 `make sentry-clean` additionally removes the selected managed upstream checkout.
 `make sentry-matrix` performs the clean start/smoke/removal cycle for both versions in
@@ -157,6 +165,18 @@ unverified. Full-controller filter/PII drift repair also passed on both versions
 envtest resources, exact mutation counts, idempotent follow-up, true readiness conditions, and
 guarded deletion. Legacy issue/metric CRUD and attached modern metric detector/workflow
 toggle/lifecycle are verified.
+
+A later clean 24.7.1 rerun on the same date exposed an important resource boundary. With
+Docker still limited to 15.6 GiB and other local containers running, Relay reported system
+memory above its 95% health threshold and rejected the first synthetic envelope with 503,
+even though the Sentry control API and all Compose health checks were ready. The new
+configuration-only gate then passed project/default-rule/key/settings plus legacy issue and
+metric alert create/read/update/delete, followed by full-controller lost-response recovery
+and settings drift repair. The stack and every managed volume were removed afterwards.
+This result is configuration lifecycle evidence only; it is deliberately not recorded as
+event ingestion, filter behavior, or delivery acceptance. For the full ingestion run, free
+other Docker workloads or allocate enough headroom that Relay remains below its memory
+health threshold.
 
 Allocate at least 14 GB to Docker Desktop before running the full matrix. CI runners need
 the same resources plus enough disk for the official images. Put a job-level timeout around
