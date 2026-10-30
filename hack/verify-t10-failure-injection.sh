@@ -15,7 +15,7 @@ GOMODCACHE="$product_gomodcache" GOCACHE="$product_gocache" \
 GOMODCACHE="$product_gomodcache" GOCACHE="$product_gocache" \
   "$go_bin" test -race ./internal/project -run 'TestLostPOSTResponseIsRecoveredByMarkerWithoutSecondPOST|TestSubmittedCreateWithoutRecoverableObjectDoesNotRetry|TestCompetingWritersAcrossAliasesGetOneClaimAndOnePOST' -count=1
 GOMODCACHE="$product_gomodcache" GOCACHE="$product_gocache" \
-  "$go_bin" test -race ./internal/alerts -run 'TestSubmittedEnsureRecoversLostResponseWithoutSecondChild|TestModernHTTPAdapterRecoversLostDetectorCreateResponse|TestModernHTTPAdapterFullMetricIssueLifecycle' -count=1
+  "$go_bin" test -race ./internal/alerts -run 'TestSubmittedEnsureRecoversLostResponseWithoutSecondChild|TestModernHTTPAdapterRecoversLostDetectorCreateResponse|TestModernHTTPAdapterFullMetricIssueLifecycle|TestLegacyHTTPAdapterIssueLifecycleAndLostResponseRecovery' -count=1
 GOMODCACHE="$product_gomodcache" GOCACHE="$product_gocache" \
   "$go_bin" test -race ./internal/settings -run 'TestEngineContinuesIndependentPIIAfterFilterComponentFailure|TestEngineAuthorizationChangePreventsMutation' -count=1
 GOMODCACHE="$product_gomodcache" GOCACHE="$product_gocache" \
@@ -25,6 +25,7 @@ rg -q 'Retry-After' internal/sentryapi/client_test.go
 rg -q 'mutating POST was retried' internal/sentryapi/client_test.go
 rg -q 'lost response recovery made' internal/project/engine_test.go
 rg -q 'loseDetectorResponseOnce' internal/alerts/modern_http_adapter_test.go
+rg -q 'loseIssueResponseOnce' internal/alerts/legacy_http_adapter_test.go
 rg -q 'observed\.Marker\.Matches\(marker\)' internal/alerts/modern_http_adapter.go
 rg -q 'partial or missing create capabilities were accepted' internal/project/engine_test.go
 rg -q 'preservation of a working Secret' docs/t10-packaging-progress.txt

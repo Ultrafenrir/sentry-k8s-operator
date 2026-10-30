@@ -164,8 +164,10 @@ before mutation, two-phase DSN cutover, and preservation of a working Secret on 
 runs the focused packages under the race detector. The gate also drops the connection after
 a modern detector POST has committed, then proves that the composite workflow/detector
 identity is recovered without another workflow or detector POST; foreign ownership markers
-are rejected before either child DELETE. All servers/adapters are httptest or fakes; this is
-repeatable failure-contract evidence, not target Sentry acceptance.
+are rejected before either child DELETE. The same gate now drops a legacy issue-rule create
+response after commit and proves exact-name recovery without a second POST. All
+servers/adapters are httptest or fakes; this is repeatable failure-contract evidence, not
+target Sentry acceptance.
 
 Production deploy aliases now require `cosign verify` of the exact image digest against one
 exact GitHub release workflow identity at a version tag and the fixed GitHub Actions OIDC

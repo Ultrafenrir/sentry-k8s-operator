@@ -27,6 +27,11 @@ rg -q 'ModernMetricIssueAdapter' internal/alerts/modern_http_adapter.go
 rg -q 'observed\.Marker\.Matches\(marker\)' internal/alerts/modern_http_adapter.go
 rg -q 'TestModernHTTPAdapterFullMetricIssueLifecycle' internal/alerts/modern_http_adapter_test.go
 rg -q 'TestModernHTTPAdapterRecoversLostDetectorCreateResponse' internal/alerts/modern_http_adapter_test.go
+rg -q 'LegacyIssueAdapter' internal/alerts/legacy_http_adapter.go
+rg -q 'LegacyMetricAdapter' internal/alerts/legacy_http_adapter.go
+rg -q 'ErrLegacyToggleUnsupported' internal/alerts/legacy_http_adapter.go
+rg -q 'TestLegacyHTTPAdapterIssueLifecycleAndLostResponseRecovery' internal/alerts/legacy_http_adapter_test.go
+rg -q 'TestLegacyHTTPAdapterMetricLifecycleAndPayload' internal/alerts/legacy_http_adapter_test.go
 rg -q 'ReasonJournalSubmitted' internal/audit/audit.go
 rg -q 'ReasonResultRecovered' internal/audit/audit.go
 rg -q 'TestAbsentAlertsDoesNotManageExistingChildren' internal/alerts/engine_test.go
@@ -46,4 +51,4 @@ if rg -n 'json:"alerts' api/v1alpha1 config/crd/bases; then
   exit 1
 fi
 
-echo 'T07 protected lifecycle and modern metric HTTP adapter verified; controller wiring and live action delivery remain gated'
+echo 'T07 protected lifecycle and modern/legacy HTTP adapters verified; controller wiring and live action delivery remain gated'

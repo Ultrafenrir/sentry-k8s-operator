@@ -64,6 +64,19 @@ Implemented lifecycle core and its current evidence boundary:
   workflow/detector pair with no second POST. Update is workflow-first and treats the
   detector hash/state as authoritative, so an interrupted pair update/toggle can safely
   converge without changing either identity.
+- `LegacyHTTPAdapter` implements both pinned Sentry 24.7.1 families without pretending that
+  scheduled deletion is a pause operation. The issue adapter renders only first-seen and
+  regression conditions; the metric adapter renders only events/count() above-threshold
+  rules. Both use the same canonical managed name, exact protected Slack/PagerDuty
+  identities, paginated name recovery, stable numeric IDs and ownership checks immediately
+  before DELETE. A repeated Ensure after an uncertain create response finds the exact
+  marker/hash-bearing child instead of issuing a second POST.
+- Legacy create and update require `enabled=true`. Issue enable is implemented for recovery
+  of an already-disabled bound rule, but disabling issue rules and either metric toggle
+  return `ErrLegacyToggleUnsupported`. Legacy capabilities therefore must not advertise
+  `SupportsToggle`; no controller may translate disable into DELETE or silently recreate a
+  rule. This keeps the adapter useful for contract testing and future explicitly constrained
+  profiles without weakening the common lifecycle contract.
 
 Verification:
 
@@ -79,6 +92,10 @@ Verification:
   source-derived Slack/PagerDuty payloads, composite identity stability, idempotent Ensure,
   a connection drop after detector creation, ownership denial before DELETE, unsupported
   Telegram rejection and strict identity decoding.
+- TLS-backed legacy adapter tests cover first-seen/regression and event-count payloads,
+  exact Slack/PagerDuty action identities, idempotent Ensure, update with stable ID,
+  marker denial before DELETE, issue delete-to-disabled, metric delete-to-404 and a dropped
+  connection after an issue-rule POST followed by recovery without another POST.
 - Audit failure injection proves that no adapter call occurs when the start event cannot be
   recorded, and that the protected journal remains Submitted. A separately verified resumed
   operation records `Recovered` and closes without authorization or a second Apply. Sentinel
@@ -114,8 +131,8 @@ Evidence boundary and remaining work:
   project detector, while `uptime_domain_failure` owns a separate subscription/quota/seat
   lifecycle. Neither may be selected as a generic fallback for the verified `metric_issue`
   lifecycle, and one accepted metric-count detector does not prove all preset mappings.
-- Concrete legacy issue and legacy metric adapters, controller wiring to the protected
-  Store/status and destination release signal, live modern Slack/PagerDuty delivery
+- Controller wiring to the protected Store/status and destination release signal, a safe
+  compatibility-profile decision for legacy adapters, live modern Slack/PagerDuty delivery
   acceptance and the remaining trigger mappings are required before T07 can be Complete.
 - The closed audit core now covers managed project create/delete, internal alert mutations,
   Telegram registration, destination cleanup and external Telegram delivery through the
