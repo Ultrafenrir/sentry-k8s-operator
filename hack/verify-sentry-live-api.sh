@@ -458,6 +458,73 @@ else
     '.id == $id and .name == $name and .enabled == true' \
     "$workflow_response" --arg id "$workflow_id" --arg name "$updated_workflow_name"
 
+  detector_request="$temporary_dir/detector-request.json"
+  detector_response="$temporary_dir/detector-response.json"
+  detector_name='Live metric detector [managed;o=acceptance;m=sko]'
+  jq -n --arg name "$detector_name" --argjson workflow_id "$workflow_id" '{
+    name: $name,
+    type: "metric_issue",
+    enabled: true,
+    dataSources: [{
+      queryType: 0,
+      dataset: "events",
+      query: "",
+      aggregate: "count()",
+      timeWindow: 300,
+      environment: null,
+      eventTypes: ["error"]
+    }],
+    conditionGroup: {
+      logicType: "any",
+      conditions: [
+        {type: "gt", comparison: 200, conditionResult: 75},
+        {type: "lte", comparison: 100, conditionResult: 0}
+      ]
+    },
+    config: {thresholdPeriod: 1, detectionType: "static"},
+    workflowIds: [$workflow_id]
+  }' >"$detector_request"
+  request POST "/api/0/organizations/$organization/projects/$project/detectors/" \
+    "$detector_request" "$detector_response"
+  assert_json "modern metric detector is created and attached to the workflow" '
+    .name == $name and .type == "metric_issue" and .enabled == true and
+    (.id | type == "string") and .projectId == $project_id
+  ' "$detector_response" --arg name "$detector_name" --arg project_id "$project_id"
+  detector_id=$(jq -r '.id' "$detector_response")
+  if ! printf '%s\n' "$detector_id" | grep -Eq '^[0-9]+$'; then
+    echo 'modern detector returned an invalid identity' >&2
+    exit 1
+  fi
+
+  request GET "/api/0/organizations/$organization/detectors/$detector_id/" '' \
+    "$detector_response"
+  assert_json "modern metric detector is readable by exact identity" \
+    '.id == $id and .name == $name and .enabled == true' \
+    "$detector_response" --arg id "$detector_id" --arg name "$detector_name"
+
+  jq -n '{enabled: false}' >"$detector_request"
+  request PUT "/api/0/organizations/$organization/detectors/?id=$detector_id" \
+    "$detector_request" "$detector_response"
+  assert_json "modern metric detector can be disabled by exact identity" \
+    'type == "array" and length == 1 and .[0].id == $id and .[0].enabled == false' \
+    "$detector_response" --arg id "$detector_id"
+  jq -n '{enabled: true}' >"$detector_request"
+  request PUT "/api/0/organizations/$organization/detectors/?id=$detector_id" \
+    "$detector_request" "$detector_response"
+  assert_json "modern metric detector can be re-enabled by exact identity" \
+    'type == "array" and length == 1 and .[0].id == $id and .[0].enabled == true' \
+    "$detector_response" --arg id "$detector_id"
+
+  request DELETE "/api/0/organizations/$organization/detectors/$detector_id/" '' \
+    "$detector_response"
+  detector_status=$(curl --config "$auth_config" --silent --show-error --noproxy '*' \
+    --connect-timeout 2 --max-time 10 --output "$detector_response" --write-out '%{http_code}' \
+    "$base_url/api/0/organizations/$organization/detectors/$detector_id/")
+  if [ "$detector_status" != 404 ]; then
+    echo "modern detector remained readable after delete: HTTP $detector_status" >&2
+    exit 1
+  fi
+
   jq -n '{enabled: false}' >"$workflow_request"
   request PUT "/api/0/organizations/$organization/workflows/?id=$workflow_id" \
     "$workflow_request" "$workflow_response"

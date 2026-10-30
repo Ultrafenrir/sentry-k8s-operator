@@ -82,7 +82,8 @@ default rule was created, deletes the project, and requires it to become unreada
 published on the project-detectors endpoint. On both versions it also updates and reads
 back the three published inbound filters and all five typed PII settings fields. On 24.7.1
 it verifies legacy issue and metric alert create/read/update/delete lifecycles; on 26.10.1
-it verifies detached workflow create/read/update/disable/enable/delete.
+it verifies workflow create/read/update/disable/enable/delete plus an attached events/count()
+metric detector create/read/disable/enable/delete lifecycle without external actions.
 On both versions it posts a synthetic event through the active Default DSN, waits for the
 exact event ID through the public event-detail API, requires both configured sensitive
 extras to be `[Filtered]`, preserves a non-sensitive control value, and rejects any response
@@ -134,11 +135,11 @@ became a 404. The 24.7.1 run additionally observed zero default legacy rules. Se
 filters and PII fields passed HTTP round-trip on both versions. Both versions then accepted
 a synthetic event through the Default DSN and returned its sensitive extras scrubbed while
 preserving the control value. The localhost filter also rejected a loopback-IP event, and
-a discarded project-create
-response was recovered by exact slug/marker without a second POST. Browser-extension and
-web-crawler event semantics, controller+journal recovery with live Sentry, detector/action
-lifecycle, integrations, delivery and SaaS remain unverified. Legacy issue/metric CRUD and
-detached modern workflow toggle/lifecycle are verified.
+a discarded project-create response was recovered by exact slug/marker without a second
+POST. Browser-extension and web-crawler event semantics, controller+journal recovery with
+live Sentry, detector families beyond the verified metric detector, external actions,
+integrations, delivery and SaaS remain unverified. Legacy issue/metric CRUD and attached
+modern metric detector/workflow toggle/lifecycle are verified.
 
 Allocate at least 14 GB to Docker Desktop before running the full matrix. CI runners need
 the same resources plus enough disk for the official images. Put a job-level timeout around

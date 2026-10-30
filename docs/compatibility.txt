@@ -57,7 +57,7 @@ legacy issue alert disable+enable    Unsupported         Unknown             Unk
 legacy metric alert CRUD             Verified            ContractTested*     Unknown/deprecated
 legacy metric disable+enable         Unsupported         Unknown             Unknown/deprecated
 modern workflow enabled flag         N/A/Unknown         Verified            ContractTested
-modern detector/workflow lifecycle   N/A/Unknown         ContractTested*     ContractTested*
+modern detector/workflow lifecycle   N/A/Unknown         Verified            ContractTested*
 Slack workspace exact-name lookup    ContractTested      ContractTested*     ContractTested*
 Slack channel exact-name lookup      ContractTested      ContractTested*     ContractTested*
 PagerDuty account/service lookup     ContractTested      ContractTested*     ContractTested*
@@ -295,9 +295,9 @@ Sentry 26.10.1 source публикует modern workflow API:
 Version-pinned tests подтверждают disable/enable по точным IDs и отсутствие изменений у
 невыбранного workflow. Обезличенные request/response fixtures лежат в
 testdata/http-fixtures/sentry-26.10.1/. Live 26.10.1 acceptance создал отдельный workflow
-без detector/actions, прочитал и обновил его с тем же ID, выполнил bulk disable/enable по
+без actions, прочитал и обновил его с тем же ID, выполнил bulk disable/enable по
 exact ID и дождался 404 после individual delete. Поэтому workflow enabled flag получает
-Verified. Это не доказывает detector/action registry или доставку.
+Verified.
 
 Source:
 https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/organization_workflow_index.py
@@ -306,16 +306,19 @@ https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endp
 https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/serializers/workflow_serializer.py
 https://github.com/getsentry/sentry/blob/26.10.1/tests/sentry/workflow_engine/endpoints/test_organization_workflow_index.py
 
-Detector endpoints в 26.10.1 также публикуют GET/PUT/DELETE и имеют enabled boolean,
-но detector type, data source, condition group и action payload зависят от registry,
-feature/plan gates и integration validation. Без живого round-trip нельзя доказать
-переносимое отображение пяти presets и доставку. Поэтому full detector/workflow lifecycle
-остаётся ContractTested* и не входит в alpha schema.
+Live acceptance затем создал `metric_issue` detector с events/count() data source,
+static high/OK thresholds и связью с exact workflow ID. Detector detail GET вернул тот же
+ID/type/name, bulk disable/enable по ID сохранил identity, DELETE сделал detail 404, после
+чего workflow также был удалён. Поэтому modern detector/workflow lifecycle для этого
+adapter-neutral metric-count payload повышен до Verified на 26.10.1. Action payloads,
+integration validation, notification delivery и остальные detector families остаются
+Unknown; это evidence само по себе не публикует пять presets в alpha schema.
 
 Source:
 https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/organization_detector_index.py
 https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/organization_detector_details.py
 https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/validators/base/detector.py
+https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/incidents/metric_issue_detector.py
 
 Current SaaS docs на 2026-10-29 публикуют тот же workflow API и bulk enable/disable.
 Это ContractTested, но не доказывает rolling SaaS feature/plan gates или full

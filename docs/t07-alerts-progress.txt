@@ -81,16 +81,18 @@ Evidence boundary and remaining work:
 - Live 24.7.1 also verified an events count() legacy metric alert with empty actions:
   create/read/update by stable ID and delete-to-404. Its public API still has no accepted
   non-destructive disable/enable route.
-- Live 26.10.1 verified a detached modern workflow create/read/update, bulk disable/enable
-  by exact ID and delete-to-404. The workflow deliberately had no detector or actions, so
-  this proves the lifecycle/toggle mechanism but not a usable alert or delivery.
+- Live 26.10.1 verified workflow create/read/update and bulk disable/enable by exact ID.
+  It then created an attached `metric_issue` detector with an events/count() data source,
+  static high/OK thresholds and no external actions; detector read, bulk disable/enable and
+  delete-to-404 all preserved exact identity. Workflow delete-to-404 completed afterwards.
+  This proves a usable local detector/workflow lifecycle, but not actions or delivery.
 - `spec.alerts` intentionally remains absent from v1alpha1. The source catalog records that
   Sentry 24.7.1 lacks a confirmed non-destructive disable lifecycle and that the modern
-  detector/workflow registry is organization/feature dependent. Publishing presets before
-  runtime acceptance would violate the T00/T01 contract.
+  action registry and external integrations remain organization/feature dependent. One
+  accepted metric-count detector does not yet prove all published preset mappings.
 - Concrete legacy issue, legacy metric and modern detector/workflow adapters, controller
-  wiring to the protected Store/status and destination release signal, detector/action
-  lifecycle and notification delivery remain required before T07 can be Complete.
+  wiring to the protected Store/status and destination release signal, action lifecycle
+  and notification delivery remain required before T07 can be Complete.
 - The closed audit core now covers managed project create/delete, internal alert mutations,
   Telegram registration, destination cleanup and external Telegram delivery through the
   durable immutable export/retention backend. Queue-administration coverage remains required
