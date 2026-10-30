@@ -81,7 +81,8 @@ health-check. В каждой версии local user token выполнил pub
 marker-bearing project без platform и подтвердил active Default key с DSN. 24.7.1 также
 подтвердил отсутствие legacy rules при default_rules=false. Обе версии выполнили точный
 PUT/GET round-trip трёх inbound filters и пяти typed PII fields. Synthetic events, alert
-CRUD, lost-response recovery и SaaS calls ещё не выполнялись.
+delivery, detector/action lifecycle, lost-response recovery и SaaS calls ещё не выполнялись.
+24.7.1 legacy issue CRUD и 26.10.1 detached workflow CRUD/toggle проверены live.
 Kubernetes: постоянный dev smoke работает на v1.35.5; exact v1.35.9/v1.36.5 release
 matrix выполнена на локально построенных arm64 kind images. Тот же probe set ранее
 прошёл на временном kind v1.36.1, а envtest subset — на control planes 1.35.0 и 1.36.2.
@@ -95,8 +96,9 @@ Sentry feature flags, permissions, transport, retries или delivery.
 
 6. Не проверено и почему
 
-- Sentry 24.7.1/26.10.1: project и settings HTTP acceptance выполнена; synthetic events,
-  alerts, integrations, lost-response recovery и SaaS calls не выполнены;
+- Sentry 24.7.1/26.10.1: project/settings и частичный alert lifecycle выполнены;
+  synthetic events, detector/actions, integrations, delivery, lost-response recovery и
+  SaaS calls не выполнены;
 - Kubernetes matrix: envtest и exact-patch real-cluster probe matrix пройдены;
   project-side prototype registration fence и resourceVersion CAS проверены только в
   envtest, а двухресурсный Connection -> Project protocol и multi-node HA отсутствуют;
@@ -116,8 +118,8 @@ Sentry feature flags, permissions, transport, retries или delivery.
 - Kubebuilder 4.16 default dependencies не совпадают с planned controller-runtime 0.24.1;
 - exact kind images являются локальными артефактами с записанными image IDs, не
   опубликованными registry images; повторяемость зависит от pinned official release и base;
-- T01 разблокирован Kubernetes freeze, но M0 и live-Sentry acceptance остаются открыты.
+- T01 разблокирован Kubernetes freeze; M0 и оставшаяся live-Sentry acceptance открыты.
 - ADR 0001 разблокирует source-only T01 с уменьшенной честной alpha surface; исходные
   common/advanced alert golden scenarios перенесены в T07, а не отмечены выполненными.
 - source-only T01 после этого выполнен отдельно: generated CRD/webhooks прошли envtest и
-  exact kind matrix; это не меняет Unknown/live-Sentry статусы T00.
+  exact kind matrix; live evidence меняет только явно перечисленные capability statuses.

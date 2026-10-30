@@ -1,8 +1,9 @@
 SENTRY CONFIGURATION OPERATOR — T07 ALERTS PROGRESS
 Date: 2026-10-30
-Status: In Progress; internal lifecycle core implemented, public API and live adapters gated.
+Status: In Progress; internal lifecycle core implemented, partial public API lifecycle
+Verified locally, concrete controller adapters still gated.
 
-Implemented without claiming live Sentry support:
+Implemented lifecycle core and its current evidence boundary:
 
 - `internal/alerts` defines a narrow adapter-neutral desired model for first-seen,
   regression and event-count rules. It accepts only readable local destination keys; raw
@@ -74,15 +75,19 @@ Verification:
 
 Evidence boundary and remaining work:
 
-- This is code-level lifecycle evidence only. No Sentry HTTP endpoint was called.
+- Live 24.7.1 verified marker-bearing legacy issue rule create/read/update/delete-to-inactive
+  and exclusion from the active list. It also confirmed that delete is scheduled deletion,
+  not a non-destructive disable toggle.
+- Live 26.10.1 verified a detached modern workflow create/read/update, bulk disable/enable
+  by exact ID and delete-to-404. The workflow deliberately had no detector or actions, so
+  this proves the lifecycle/toggle mechanism but not a usable alert or delivery.
 - `spec.alerts` intentionally remains absent from v1alpha1. The source catalog records that
   Sentry 24.7.1 lacks a confirmed non-destructive disable lifecycle and that the modern
   detector/workflow registry is organization/feature dependent. Publishing presets before
   runtime acceptance would violate the T00/T01 contract.
 - Concrete legacy issue, legacy metric and modern detector/workflow adapters, controller
-  wiring to the protected Store/status and destination release signal, and live
-  create/read/update/disable/enable/delete acceptance against all target environments
-  remain required before T07 can be Complete.
+  wiring to the protected Store/status and destination release signal, detector/action
+  lifecycle and notification delivery remain required before T07 can be Complete.
 - The closed audit core now covers managed project create/delete, internal alert mutations,
   Telegram registration, destination cleanup and external Telegram delivery through the
   durable immutable export/retention backend. Queue-administration coverage remains required

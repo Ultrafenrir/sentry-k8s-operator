@@ -50,11 +50,11 @@ inbound filters                      Verified            Verified            Con
 PII typed fields                     Verified            Verified            ContractTested*
 typed fingerprint rules              Unknown             Unknown             Unknown
 recommended-v1 profile               Unsupported         Unsupported         Unsupported
-legacy issue alert CRUD              ContractTested      ContractTested*     Unknown/deprecated
+legacy issue alert CRUD              Verified            ContractTested*     Unknown/deprecated
 legacy issue alert disable+enable    Unsupported         Unknown             Unknown/deprecated
 legacy metric alert CRUD             ContractTested      ContractTested*     Unknown/deprecated
 legacy metric disable+enable         Unsupported         Unknown             Unknown/deprecated
-modern workflow enabled flag         N/A/Unknown         ContractTested      ContractTested
+modern workflow enabled flag         N/A/Unknown         Verified            ContractTested
 modern detector/workflow lifecycle   N/A/Unknown         ContractTested*     ContractTested*
 Slack workspace exact-name lookup    ContractTested      ContractTested*     ContractTested*
 Slack channel exact-name lookup      ContractTested      ContractTested*     ContractTested*
@@ -85,8 +85,8 @@ https://github.com/getsentry/sentry/blob/24.7.1/tests/sentry/api/endpoints/test_
 
 Project post_save receiver синхронно создаёт ProjectKey с label=Default. Key создаётся
 в transaction wrapper, но обработчик специально подавляет ProgrammingError/OperationalError.
-Поэтому source доказывает normal-path auto-create, но usable/active key после реального
-POST остаётся обязательной стендовой проверкой перед статусом Verified.
+Live 24.7.1 acceptance подтвердил один active Default key с непустым локальным DSN сразу
+после реального POST.
 
 Source:
 https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/receivers/core.py
@@ -100,8 +100,7 @@ platform omission и reserved marker transport. Это source-level atomic norma
 
 Modern Project post_save синхронно создаёт Default ProjectKey, а public paginated GET
 project keys фильтрует active/inactive и сериализует name/label, isActive и dsn.public.
-Отдельный fixture снимает звёздочку с modern contract, но usable key непосредственно
-после реального create остаётся Unknown на уровне runtime acceptance.
+Live 26.10.1 acceptance подтвердил usable active Default key непосредственно после create.
 
 Source:
 https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/core/endpoints/team_projects.py
@@ -251,6 +250,11 @@ DELETE переводит его в PENDING_DELETION. Поэтому обяза�
 create/read/update/disable/enable/delete не доказан и legacy issue adapter получает
 Unsupported для common presets на 24.7.1.
 
+Live 24.7.1 acceptance подтвердил create/read/update с сохранением exact ID и marker,
+после DELETE detail стал inactive (`disabled` в legacy serializer), а active list исключил
+правило. Это повышает CRUD до Verified, но не устраняет отсутствие non-destructive disable:
+DELETE является scheduled deletion, а не допустимым toggle.
+
 24.7.1 legacy metric routes:
 GET|POST /api/0/organizations/{org}/alert-rules/
 GET|PUT|DELETE /api/0/organizations/{org}/alert-rules/{alert_rule_id}/
@@ -275,8 +279,10 @@ Sentry 26.10.1 source публикует modern workflow API:
 
 Version-pinned tests подтверждают disable/enable по точным IDs и отсутствие изменений у
 невыбранного workflow. Обезличенные request/response fixtures лежат в
-testdata/http-fixtures/sentry-26.10.1/. Поэтому enabled flag получает ContractTested без
-звёздочки. Individual delete помечает workflow PENDING_DELETION и планирует async deletion.
+testdata/http-fixtures/sentry-26.10.1/. Live 26.10.1 acceptance создал отдельный workflow
+без detector/actions, прочитал и обновил его с тем же ID, выполнил bulk disable/enable по
+exact ID и дождался 404 после individual delete. Поэтому workflow enabled flag получает
+Verified. Это не доказывает detector/action registry или доставку.
 
 Source:
 https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/organization_workflow_index.py
@@ -396,7 +402,7 @@ modern workflow read/write       alerts:read / alerts:write согласно cur
 1) 24.7.1: POST create с marker, platform omitted, default_rules=false; потерять response,
    восстановить identity; доказать один usable active Default key и отсутствие rules.
 2) 24.7.1/26.10.1: synthetic-event filtering/scrubbing и controller-level drift repair.
-3) 24.7.1: найти либо опровергнуть публичный non-destructive disable для issue/metric rule.
+3) 24.7.1: public non-destructive disable для issue/metric rule остаётся опровергнут source.
 4) 26.10.1: feature flags и полный detector/workflow lifecycle, включая enabled=false.
 5) SaaS: те же calls с зафиксированной датой и очищенными fixtures.
 6) Slack/PagerDuty: duplicate readable names, pagination, revoked integration и delivery.

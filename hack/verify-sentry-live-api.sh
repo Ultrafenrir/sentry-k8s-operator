@@ -181,11 +181,134 @@ if [ "$version" = 24.7.1 ]; then
   request GET "/api/0/projects/$organization/$project/rules/" '' "$rules_response"
   assert_json "default_rules=false creates no legacy issue-alert rules" \
     'type == "array" and length == 0' "$rules_response"
+
+  rule_request="$temporary_dir/rule-request.json"
+  rule_response="$temporary_dir/rule-response.json"
+  rule_name='Live first seen [managed;o=acceptance;m=sko]'
+  jq -n --arg name "$rule_name" '{
+    name: $name,
+    actionMatch: "all",
+    filterMatch: "all",
+    conditions: [{id: "sentry.rules.conditions.first_seen_event.FirstSeenEventCondition"}],
+    filters: [],
+    actions: [{id: "sentry.rules.actions.notify_event.NotifyEventAction"}],
+    frequency: 30
+  }' >"$rule_request"
+  request POST "/api/0/projects/$organization/$project/rules/" \
+    "$rule_request" "$rule_response"
+  assert_json "legacy issue alert is created with its ownership marker" \
+    '.name == $name and (.id | tostring | test("^[0-9]+$"))' \
+    "$rule_response" --arg name "$rule_name"
+  rule_id=$(jq -r '.id | tostring' "$rule_response")
+
+  request GET "/api/0/projects/$organization/$project/rules/$rule_id/" '' "$rule_response"
+  assert_json "legacy issue alert is readable by exact identity" \
+    '(.id | tostring) == $id and .name == $name and .frequency == 30' \
+    "$rule_response" --arg id "$rule_id" --arg name "$rule_name"
+
+  updated_rule_name='Live first seen updated [managed;o=acceptance;m=sko]'
+  jq -n --arg name "$updated_rule_name" '{
+    name: $name,
+    actionMatch: "all",
+    filterMatch: "all",
+    conditions: [{id: "sentry.rules.conditions.first_seen_event.FirstSeenEventCondition"}],
+    filters: [],
+    actions: [{id: "sentry.rules.actions.notify_event.NotifyEventAction"}],
+    frequency: 60
+  }' >"$rule_request"
+  request PUT "/api/0/projects/$organization/$project/rules/$rule_id/" \
+    "$rule_request" "$rule_response"
+  request GET "/api/0/projects/$organization/$project/rules/$rule_id/" '' "$rule_response"
+  assert_json "legacy issue alert update round-trips without changing identity" \
+    '(.id | tostring) == $id and .name == $name and .frequency == 60' \
+    "$rule_response" --arg id "$rule_id" --arg name "$updated_rule_name"
+
+  request DELETE "/api/0/projects/$organization/$project/rules/$rule_id/" '' "$rule_response"
+  request GET "/api/0/projects/$organization/$project/rules/$rule_id/" '' "$rule_response"
+  assert_json "legacy issue alert delete marks the exact rule inactive" \
+    '(.id | tostring) == $id and .status == "disabled"' \
+    "$rule_response" --arg id "$rule_id"
+  request GET "/api/0/projects/$organization/$project/rules/" '' "$rules_response"
+  assert_json "deleted legacy issue alert is excluded from the active list" \
+    'type == "array" and ([.[] | select((.id | tostring) == $id)] | length) == 0' \
+    "$rules_response" --arg id "$rule_id"
 else
   # Sentry 26 publishes only POST on the project-detectors endpoint; GET is
   # intentionally forbidden even with alerts:read. The default_rules=false
   # effect remains covered by the source/contract test for this version.
-  :
+  workflow_request="$temporary_dir/workflow-request.json"
+  workflow_response="$temporary_dir/workflow-response.json"
+  workflow_name='Live workflow [managed;o=acceptance;m=sko]'
+  jq -n --arg name "$workflow_name" '{
+    name: $name,
+    enabled: true,
+    config: {},
+    triggers: {logicType: "any", conditions: []},
+    actionFilters: []
+  }' >"$workflow_request"
+  request POST "/api/0/organizations/$organization/workflows/" \
+    "$workflow_request" "$workflow_response"
+  assert_json "modern workflow is created with its ownership marker" \
+    '.name == $name and .enabled == true and (.id | type == "string")' \
+    "$workflow_response" --arg name "$workflow_name"
+  workflow_id=$(jq -r '.id' "$workflow_response")
+  if ! printf '%s\n' "$workflow_id" | grep -Eq '^[0-9]+$'; then
+    echo 'modern workflow returned an invalid identity' >&2
+    exit 1
+  fi
+
+  request GET "/api/0/organizations/$organization/workflows/$workflow_id/" '' \
+    "$workflow_response"
+  assert_json "modern workflow is readable by exact identity" \
+    '.id == $id and .name == $name and .enabled == true' \
+    "$workflow_response" --arg id "$workflow_id" --arg name "$workflow_name"
+
+  updated_workflow_name='Live workflow updated [managed;o=acceptance;m=sko]'
+  jq -n --arg name "$updated_workflow_name" '{
+    name: $name,
+    enabled: true,
+    config: {},
+    triggers: {logicType: "any", conditions: []},
+    actionFilters: []
+  }' >"$workflow_request"
+  request PUT "/api/0/organizations/$organization/workflows/$workflow_id/" \
+    "$workflow_request" "$workflow_response"
+  assert_json "modern workflow update round-trips without changing identity" \
+    '.id == $id and .name == $name and .enabled == true' \
+    "$workflow_response" --arg id "$workflow_id" --arg name "$updated_workflow_name"
+
+  jq -n '{enabled: false}' >"$workflow_request"
+  request PUT "/api/0/organizations/$organization/workflows/?id=$workflow_id" \
+    "$workflow_request" "$workflow_response"
+  assert_json "modern workflow can be disabled by exact identity" \
+    'type == "array" and length == 1 and .[0].id == $id and .[0].enabled == false' \
+    "$workflow_response" --arg id "$workflow_id"
+  jq -n '{enabled: true}' >"$workflow_request"
+  request PUT "/api/0/organizations/$organization/workflows/?id=$workflow_id" \
+    "$workflow_request" "$workflow_response"
+  assert_json "modern workflow can be re-enabled by exact identity" \
+    'type == "array" and length == 1 and .[0].id == $id and .[0].enabled == true' \
+    "$workflow_response" --arg id "$workflow_id"
+
+  request DELETE "/api/0/organizations/$organization/workflows/$workflow_id/" '' \
+    "$workflow_response"
+  workflow_attempt=0
+  workflow_status=
+  while [ "$workflow_attempt" -lt 30 ]; do
+    workflow_attempt=$((workflow_attempt + 1))
+    workflow_status=$(curl --config "$auth_config" --silent --show-error --noproxy '*' \
+      --connect-timeout 2 --max-time 10 --output "$workflow_response" --write-out '%{http_code}' \
+      "$base_url/api/0/organizations/$organization/workflows/$workflow_id/")
+    case "$workflow_status" in
+      404) break ;;
+      200) sleep 1 ;;
+      *) echo "modern workflow delete verification returned HTTP $workflow_status" >&2; exit 1 ;;
+    esac
+  done
+  if [ "$workflow_status" != 404 ]; then
+    echo 'modern workflow remained readable after delete' >&2
+    exit 1
+  fi
 fi
 
 delete_response="$temporary_dir/delete-response.json"

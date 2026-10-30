@@ -42,4 +42,4 @@ if rg -n 'json:"alerts' api/v1alpha1 config/crd/bases; then
   exit 1
 fi
 
-echo 'T07 adapter-neutral protected lifecycle core verified; public API and live adapters remain gated (T07 In Progress)'
+echo 'T07 protected lifecycle core verified; concrete controller adapters and usable detector/action delivery remain gated'
