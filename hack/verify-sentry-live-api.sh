@@ -59,6 +59,8 @@ organization="sko-live-$version_slug"
 team="sko-live"
 project="sko-live-api"
 managed_name='Live API [managed;o=acceptance;m=sko]'
+recovery_project="sko-lost-response"
+recovery_name='Lost response [managed;o=acceptance;m=sko]'
 
 request() {
   method=$1
@@ -119,6 +121,26 @@ request GET "/api/0/projects/$organization/$project/" '' "$project_get"
 assert_json "created project is readable by slug" \
   '.slug == $slug and .name == $name and (.id | type == "string")' \
   "$project_get" --arg slug "$project" --arg name "$managed_name"
+
+recovery_request="$temporary_dir/recovery-request.json"
+recovery_response="$temporary_dir/recovery-response.json"
+jq -n --arg name "$recovery_name" --arg slug "$recovery_project" \
+  '{name: $name, slug: $slug, default_rules: false}' >"$recovery_request"
+# Deliberately discard the successful create response. Recovery must use a safe GET
+# keyed by the intended slug and must verify the complete ownership marker.
+recovery_create_status=$(curl --config "$auth_config" --silent --show-error --noproxy '*' \
+  --connect-timeout 2 --max-time 30 --request POST \
+  --header 'Content-Type: application/json' --data-binary "@$recovery_request" \
+  --output /dev/null --write-out '%{http_code}' \
+  "$base_url/api/0/teams/$organization/$team/projects/")
+case "$recovery_create_status" in
+  2??) ;;
+  *) echo "discarded project create returned HTTP $recovery_create_status" >&2; exit 1 ;;
+esac
+request GET "/api/0/projects/$organization/$recovery_project/" '' "$recovery_response"
+assert_json "lost project-create response is recovered by slug and exact marker" \
+  '.slug == $slug and .name == $name and (.id | type == "string")' \
+  "$recovery_response" --arg slug "$recovery_project" --arg name "$recovery_name"
 
 keys_response="$temporary_dir/keys-response.json"
 request GET "/api/0/projects/$organization/$project/keys/" '' "$keys_response"
@@ -242,6 +264,41 @@ assert_json "ingested event is returned by exact identity with sensitive extras 
   (tostring | contains("sko-sensitive-authorization") | not) and
   (tostring | contains("sko-sensitive-password") | not)
 ' "$event_response" --arg event_id "$event_id"
+
+case "$version" in
+  24.7.1) filtered_event_id=24710000000000000000000000000002 ;;
+  26.10.1) filtered_event_id=26101000000000000000000000000002 ;;
+esac
+jq -n --arg event_id "$filtered_event_id" '{
+  event_id: $event_id,
+  platform: "other",
+  logger: "sko-live",
+  level: "error",
+  message: "Synthetic localhost filter acceptance",
+  environment: "sko-live",
+  user: {ip_address: "127.0.0.1"}
+}' >"$event_request"
+filtered_ingest_status=$(curl --silent --show-error --noproxy '*' \
+  --connect-timeout 2 --max-time 30 --request POST \
+  --header 'Content-Type: application/json' --data-binary "@$event_request" \
+  --output "$event_response" --write-out '%{http_code}' \
+  "$base_url/api/$project_id/store/?sentry_key=$public_key&sentry_version=7")
+case "$filtered_ingest_status" in
+  2??) ;;
+  *) echo "filtered synthetic event ingestion returned HTTP $filtered_ingest_status" >&2; exit 1 ;;
+esac
+filtered_attempt=0
+while [ "$filtered_attempt" -lt 20 ]; do
+  filtered_attempt=$((filtered_attempt + 1))
+  filtered_status=$(curl --config "$auth_config" --silent --show-error --noproxy '*' \
+    --connect-timeout 2 --max-time 10 --output "$event_response" --write-out '%{http_code}' \
+    "$base_url/api/0/projects/$organization/$project/events/$filtered_event_id/")
+  case "$filtered_status" in
+    404) sleep 1 ;;
+    200) echo 'localhost-filtered synthetic event became readable' >&2; exit 1 ;;
+    *) echo "filtered synthetic event lookup returned HTTP $filtered_status" >&2; exit 1 ;;
+  esac
+done
 
 if [ "$version" = 24.7.1 ]; then
   rules_response="$temporary_dir/rules-response.json"
@@ -436,6 +493,7 @@ else
 fi
 
 delete_response="$temporary_dir/delete-response.json"
+request DELETE "/api/0/projects/$organization/$recovery_project/" '' "$delete_response"
 request DELETE "/api/0/projects/$organization/$project/" '' "$delete_response"
 
 attempt=0
@@ -456,4 +514,22 @@ if [ "$status" != 404 ]; then
   exit 1
 fi
 
-echo "Sentry $version live API project/settings/ingestion/alerts/delete acceptance passed"
+recovery_delete_attempt=0
+recovery_status=
+while [ "$recovery_delete_attempt" -lt 30 ]; do
+  recovery_delete_attempt=$((recovery_delete_attempt + 1))
+  recovery_status=$(curl --config "$auth_config" --silent --show-error --noproxy '*' \
+    --connect-timeout 2 --max-time 10 --output "$recovery_response" --write-out '%{http_code}' \
+    "$base_url/api/0/projects/$organization/$recovery_project/")
+  case "$recovery_status" in
+    404) break ;;
+    200) sleep 1 ;;
+    *) echo "recovered project delete verification returned HTTP $recovery_status" >&2; exit 1 ;;
+  esac
+done
+if [ "$recovery_status" != 404 ]; then
+  echo "recovered project remained readable after delete: HTTP $recovery_status" >&2
+  exit 1
+fi
+
+echo "Sentry $version live API recovery/settings/filtering/alerts/delete acceptance passed"

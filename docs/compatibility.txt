@@ -46,7 +46,7 @@ atomic default_rules=false           Verified            ContractTested      Con
 automatic usable active key         Verified            Verified            Unknown
 project update                       ContractTested      ContractTested*     ContractTested*
 async project delete                Verified            Verified            ContractTested*
-lost-POST recovery by marker         ContractTested      ContractTested*     Unknown
+lost-POST recovery by marker         Verified            Verified            Unknown
 client-key list/pagination           ContractTested      ContractTested      ContractTested*
 inbound filters                      Verified            Verified            ContractTested*
 PII typed fields                     Verified            Verified            ContractTested*
@@ -152,7 +152,9 @@ fragment в display name при отдельном человекочитаем�
 POST protected binding хранит create intent, owner, manager UID, slug,
 expected display name и operation hash. Lost response восстанавливается только GET по
 slug + точное совпадение expected marker + pre-existing create intent. Имя без binding
-не даёт ownership. Реальный lost-POST test всё ещё Unknown.
+не даёт ownership. Live acceptance на обеих self-hosted версиях сделал один POST,
+намеренно отбросил успешный response и восстановил точный identity только GET по slug с
+полным marker match; второй POST не выполнялся.
 
 Project name в 24.7.1 и 26.10.1 ограничен 50 Unicode characters. Exact grammar probe:
 
@@ -169,7 +171,8 @@ Budget обязан быть >=1. Пример занимает 49 и остав
 injection, uppercase aliases, nested marker и overflow отклоняются до POST. Команда
 make verify-name-resolution проверяет formatter/parser и обязательную связку marker +
 protected binding + matching manager claim. Это снимает неопределённость grammar/bounds,
-но real lost-POST recovery остаётся Unknown.
+а live self-hosted acceptance подтверждает transport recovery path. Полный controller-to-
+Sentry recovery с реальным Kubernetes journal остаётся отдельной end-to-end проверкой.
 
 Legacy issue/metric alert name и modern workflow name допускают тот же reserved suffix.
 Для modern detector/workflow наличие лучшего metadata механизма пока Unknown; fallback
@@ -208,8 +211,10 @@ version-pinned endpoint tests подтверждают false и list round-trip.
 round-trip. Затем Default DSN принял synthetic event с sensitive extras, event detail GET
 вернул оба sensitive значения как [Filtered], сохранил несекретное контрольное значение
 и не содержал исходных sentinels. Поэтому self-hosted PII строка Verified включает
-фактическую обработку нового события. Inbound filter rejection, historical reprocessing
-и rolling SaaS behavior этим не доказаны.
+фактическую обработку нового события. Обе версии также отбросили отдельный event с
+user.ip_address=127.0.0.1 при localhost=true: event остался 404 в контрольном окне, тогда
+как preceding control event был читаем. Event semantics browser-extensions/web-crawlers,
+historical reprocessing и rolling SaaS behavior этим не доказаны.
 
 fingerprintingRules в обеих версиях остаётся одной raw newline-delimited DSL string.
 Одинаковая простая grammar подтверждается source tests, однако 26.10.1 parser уже имеет
@@ -409,8 +414,8 @@ modern workflow read/write       alerts:read / alerts:write согласно cur
 
 11. Обязательные следующие проверки
 
-1) 24.7.1/26.10.1: потерять project-create response и восстановить identity по marker.
-2) 24.7.1/26.10.1: synthetic-event inbound-filter rejection и controller-level drift repair.
+1) 24.7.1/26.10.1: controller-level lost-response recovery с реальным Kubernetes journal.
+2) 24.7.1/26.10.1: browser-extension/web-crawler event rejection и controller drift repair.
 3) 24.7.1: public non-destructive disable для issue/metric rule остаётся опровергнут source.
 4) 26.10.1: feature flags и полный detector/workflow lifecycle, включая enabled=false.
 5) SaaS: те же calls с зафиксированной датой и очищенными fixtures.

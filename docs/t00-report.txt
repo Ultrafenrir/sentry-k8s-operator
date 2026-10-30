@@ -82,9 +82,11 @@ marker-bearing project без platform и подтвердил active Default ke
 подтвердил отсутствие legacy rules при default_rules=false. Обе версии выполнили точный
 PUT/GET round-trip трёх inbound filters и пяти typed PII fields. Synthetic events
 с настроенными sensitive extras приняты через Default DSN обеих версий и прочитаны по
-точному event ID: secrets заменены на [Filtered], control value сохранён. Inbound-filter
-event rejection, alert delivery, detector/action lifecycle, lost-response recovery и SaaS
-calls ещё не выполнялись.
+точному event ID: secrets заменены на [Filtered], control value сохранён. При localhost=true
+обе версии отбросили event с loopback user IP. Отдельный project-create response был
+намеренно отброшен, после чего identity/marker восстановлены безопасным GET без второго
+POST. Browser-extension/web-crawler rejection, alert delivery, detector/action lifecycle
+и SaaS calls ещё не выполнялись.
 24.7.1 legacy issue/metric CRUD и 26.10.1 detached workflow CRUD/toggle проверены live.
 Kubernetes: постоянный dev smoke работает на v1.35.5; exact v1.35.9/v1.36.5 release
 matrix выполнена на локально построенных arm64 kind images. Тот же probe set ранее
@@ -100,8 +102,9 @@ Sentry feature flags, permissions, transport, retries или delivery.
 6. Не проверено и почему
 
 - Sentry 24.7.1/26.10.1: project/settings и частичный alert lifecycle выполнены;
-  synthetic PII scrubbing выполнен, но inbound-filter rejection, detector/actions,
-  integrations, delivery, lost-response recovery и SaaS calls не выполнены;
+  synthetic PII scrubbing, localhost rejection и API-level lost-response recovery выполнены,
+  но controller+journal recovery с live Sentry, остальные filters, detector/actions,
+  integrations, delivery и SaaS calls не выполнены;
 - Kubernetes matrix: envtest и exact-patch real-cluster probe matrix пройдены;
   project-side prototype registration fence и resourceVersion CAS проверены только в
   envtest, а двухресурсный Connection -> Project protocol и multi-node HA отсутствуют;

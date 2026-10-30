@@ -1,8 +1,10 @@
 T03 — PROJECT, BINDING И OWNERSHIP
-Дата: 2026-10-29
-Статус: Complete для source-derived/mock scope, достаточен как контракт T04. Live Sentry
-остаётся Unknown. Production admin command для handoff и marker inheritance в ещё не
-реализованных child adapters остаются открытыми интеграционными пунктами T06/T07/T09.
+Дата: 2026-10-30
+Статус: Complete для source-derived/mock scope, достаточен как контракт T04. Live public
+API create/read/key/delete и lost-response GET recovery Verified на self-hosted 24.7.1 и
+26.10.1. Полный controller-to-Sentry recovery с реальным Kubernetes journal не выполнен.
+Production admin command для handoff и marker inheritance в child adapters остаются
+открытыми интеграционными пунктами T06/T07/T09.
 
 1. Protected state
 
@@ -150,10 +152,13 @@ evidence проверяет остальной vertical slice, но не счи�
   replacement, marker loss, External/Managed readers, handoff, Retain/DeleteProject и audit
   outages до/после create/delete;
 - local TLS HTTP adapter: exact route/body/marker decode, без живого Sentry.
+- live disposable 24.7.1/26.10.1: один project-create POST с отброшенным response,
+  последующий GET по slug с exact marker/identity recovery без второго POST и async delete.
 
 9. Оставшиеся риски
 
-- ни create, ни async delete, ни automatic active key не Verified на Sentry;
+- create, async delete, automatic active key и GET recovery Verified через public API;
+  controller+journal end-to-end path с real Sentry пока не выполнен;
 - protected state отделён от namespace с Sentry/Telegram credential Secrets; manager cache
   явно ограничен этими двумя namespace, а registration writer получает только state Role;
 - manager всё ещё имеет cluster-wide Secret CRUD для DSN output в project namespaces;
