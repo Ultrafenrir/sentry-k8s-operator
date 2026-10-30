@@ -46,8 +46,8 @@ project update                       ContractTested      ContractTested*     Con
 async project delete                Verified            Verified            ContractTested*
 lost-POST recovery by marker         ContractTested      ContractTested*     Unknown
 client-key list/pagination           ContractTested      ContractTested      ContractTested*
-inbound filters                      ContractTested      ContractTested      ContractTested*
-PII typed fields                     ContractTested      ContractTested      ContractTested*
+inbound filters                      Verified            Verified            ContractTested*
+PII typed fields                     Verified            Verified            ContractTested*
 typed fingerprint rules              Unknown             Unknown             Unknown
 recommended-v1 profile               Unsupported         Unsupported         Unsupported
 legacy issue alert CRUD              ContractTested      ContractTested*     Unknown/deprecated
@@ -202,8 +202,10 @@ https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/ingest/inbound_filter
 browser-extensions, localhost и web-crawlers. Public Project Details PUT сохраняет поля
 dataScrubber, dataScrubberDefaults, scrubIPAddresses, sensitiveFields и safeFields; его
 version-pinned endpoint tests подтверждают false и list round-trip. Для обоих contracts
-добавлены отдельные обезличенные fixtures, поэтому modern строки повышены до
-ContractTested, но не Verified.
+добавлены отдельные обезличенные fixtures. Live acceptance на свежих 24.7.1 и 26.10.1
+дополнительно выполнил PUT/GET всех трёх filter IDs и пяти typed PII fields с точным
+round-trip, поэтому self-hosted строки повышены до Verified. Это не доказывает обработку
+реального события, historical reprocessing или rolling SaaS behavior.
 
 fingerprintingRules в обеих версиях остаётся одной raw newline-delimited DSL string.
 Одинаковая простая grammar подтверждается source tests, однако 26.10.1 parser уже имеет
@@ -393,7 +395,7 @@ modern workflow read/write       alerts:read / alerts:write согласно cur
 
 1) 24.7.1: POST create с marker, platform omitted, default_rules=false; потерять response,
    восстановить identity; доказать один usable active Default key и отсутствие rules.
-2) 24.7.1: полный settings round-trip и drift test.
+2) 24.7.1/26.10.1: synthetic-event filtering/scrubbing и controller-level drift repair.
 3) 24.7.1: найти либо опровергнуть публичный non-destructive disable для issue/metric rule.
 4) 26.10.1: feature flags и полный detector/workflow lifecycle, включая enabled=false.
 5) SaaS: те же calls с зафиксированной датой и очищенными fixtures.

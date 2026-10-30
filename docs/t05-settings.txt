@@ -1,6 +1,7 @@
 T05 — FILTERS, PII И GROUPING
 Дата: 2026-10-29
-Статус: Complete для опубликованной source-derived alpha surface (filters + PII).
+Статус: Complete для опубликованной alpha surface (filters + PII); HTTP round-trip
+Verified на локальных self-hosted 24.7.1 и 26.10.1.
 Profile, grouping/fingerprintRules, advanced и reset остаются Unsupported по T00/ADR 0001;
 live synthetic-event semantics остаются Unknown без Sentry.
 
@@ -76,6 +77,7 @@ body и отсутствие blind retry.
   envtest с partial settings + независимым DSN;
 - make test-matrix: весь набор на Kubernetes envtest 1.35.0 и 1.36.2.
 
-Без live Sentry нельзя подтвердить реальное event filtering, data scrubbing, grouping или
-историческую перегруппировку. Оператор их не заявляет. После появления стенда grouping и
-profiles требуют отдельного adapter-neutral design/round-trip, а не передачи raw DSL.
+Live disposable Sentry подтвердил transport и точный read-after-write для трёх filters и
+пяти PII fields. Synthetic event filtering/scrubbing, grouping и историческая
+перегруппировка ещё не проверены. Grouping и profiles требуют отдельного adapter-neutral
+design/round-trip, а не передачи raw DSL.

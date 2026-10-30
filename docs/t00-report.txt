@@ -79,8 +79,9 @@ KUBERNETES_VERSION=<v1.35.9|v1.36.5>
 Sentry real calls: официальные self-hosted 24.7.1 и 26.10.1 установлены с нуля и прошли
 health-check. В каждой версии local user token выполнил public-API create/read/delete
 marker-bearing project без platform и подтвердил active Default key с DSN. 24.7.1 также
-подтвердил отсутствие legacy rules при default_rules=false. Settings, alert CRUD,
-lost-response recovery и SaaS calls ещё не выполнялись.
+подтвердил отсутствие legacy rules при default_rules=false. Обе версии выполнили точный
+PUT/GET round-trip трёх inbound filters и пяти typed PII fields. Synthetic events, alert
+CRUD, lost-response recovery и SaaS calls ещё не выполнялись.
 Kubernetes: постоянный dev smoke работает на v1.35.5; exact v1.35.9/v1.36.5 release
 matrix выполнена на локально построенных arm64 kind images. Тот же probe set ранее
 прошёл на временном kind v1.36.1, а envtest subset — на control planes 1.35.0 и 1.36.2.
@@ -94,7 +95,7 @@ Sentry feature flags, permissions, transport, retries или delivery.
 
 6. Не проверено и почему
 
-- Sentry 24.7.1/26.10.1: project create/read/key/delete acceptance выполнена; settings,
+- Sentry 24.7.1/26.10.1: project и settings HTTP acceptance выполнена; synthetic events,
   alerts, integrations, lost-response recovery и SaaS calls не выполнены;
 - Kubernetes matrix: envtest и exact-patch real-cluster probe matrix пройдены;
   project-side prototype registration fence и resourceVersion CAS проверены только в

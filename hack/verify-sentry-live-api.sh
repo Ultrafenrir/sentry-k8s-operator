@@ -132,6 +132,50 @@ assert_json "project has one active Default client key with a local DSN" '
   )] | length) == 1
 ' "$keys_response"
 
+filters_response="$temporary_dir/filters-response.json"
+request GET "/api/0/projects/$organization/$project/filters/" '' "$filters_response"
+assert_json "published inbound filters are listed" '
+  type == "array" and
+  ([.[] | select(.id == "browser-extensions" and (.active | type == "boolean"))] | length) == 1 and
+  ([.[] | select(.id == "localhost" and (.active | type == "boolean"))] | length) == 1 and
+  ([.[] | select(.id == "web-crawlers" and (.active | type == "boolean"))] | length) == 1
+' "$filters_response"
+
+filter_request="$temporary_dir/filter-request.json"
+filter_response="$temporary_dir/filter-response.json"
+for filter_state in 'browser-extensions false' 'localhost true' 'web-crawlers false'; do
+  filter_id=${filter_state% *}
+  filter_active=${filter_state#* }
+  jq -n --argjson active "$filter_active" '{active: $active}' >"$filter_request"
+  request PUT "/api/0/projects/$organization/$project/filters/$filter_id/" \
+    "$filter_request" "$filter_response"
+done
+request GET "/api/0/projects/$organization/$project/filters/" '' "$filters_response"
+assert_json "inbound filter boolean updates round-trip" '
+  ([.[] | select(.id == "browser-extensions" and .active == false)] | length) == 1 and
+  ([.[] | select(.id == "localhost" and .active == true)] | length) == 1 and
+  ([.[] | select(.id == "web-crawlers" and .active == false)] | length) == 1
+' "$filters_response"
+
+settings_request="$temporary_dir/settings-request.json"
+settings_response="$temporary_dir/settings-response.json"
+jq -n '{
+  dataScrubber: true,
+  dataScrubberDefaults: true,
+  scrubIPAddresses: true,
+  sensitiveFields: ["authorization", "password"],
+  safeFields: ["request.headers.x-request-id"]
+}' >"$settings_request"
+request PUT "/api/0/projects/$organization/$project/" "$settings_request" "$settings_response"
+request GET "/api/0/projects/$organization/$project/" '' "$settings_response"
+assert_json "typed PII settings round-trip" '
+  .dataScrubber == true and
+  .dataScrubberDefaults == true and
+  .scrubIPAddresses == true and
+  .sensitiveFields == ["authorization", "password"] and
+  .safeFields == ["request.headers.x-request-id"]
+' "$settings_response"
+
 if [ "$version" = 24.7.1 ]; then
   rules_response="$temporary_dir/rules-response.json"
   request GET "/api/0/projects/$organization/$project/rules/" '' "$rules_response"
@@ -165,4 +209,4 @@ if [ "$status" != 404 ]; then
   exit 1
 fi
 
-echo "Sentry $version live API project/create/key/delete acceptance passed"
+echo "Sentry $version live API project/settings/key/delete acceptance passed"

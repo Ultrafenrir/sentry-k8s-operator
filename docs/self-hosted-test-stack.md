@@ -79,7 +79,8 @@ Sentry's public HTTP API, omits `platform`, sends `default_rules=false`, verifie
 round-trip and the single active Default client key, confirms on 24.7.1 that no legacy
 default rule was created, deletes the project, and requires it to become unreadable. On
 26.10.1 that alert effect remains source/contract-tested because only POST, not GET, is
-published on the project-detectors endpoint.
+published on the project-detectors endpoint. On both versions it also updates and reads
+back the three published inbound filters and all five typed PII settings fields.
 The matrix runs this acceptance after bootstrap and before removing the entire stack.
 
 `make sentry-clean` additionally removes the selected managed upstream checkout.
@@ -120,6 +121,7 @@ confirmed that a missing MaxMind license only stops the optional `geoipupdate` s
 Both versions also passed real project create/read/key/delete acceptance: platform was
 omitted, the marker round-tripped, one active Default key had a local DSN, and deletion
 became a 404. The 24.7.1 run additionally observed zero default legacy rules. Settings,
+filters and PII fields passed HTTP round-trip on both versions; synthetic event semantics,
 alert lifecycle, integrations, delivery, lost-response recovery and SaaS remain unverified.
 
 Allocate at least 14 GB to Docker Desktop before running the full matrix. CI runners need
