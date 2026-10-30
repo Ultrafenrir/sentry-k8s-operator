@@ -13,6 +13,8 @@ spec:
       name: company-sentry-api
       key: token
   default: true
+  compatibility:
+    alerts: legacy-24.7.1
   access:
     - owner: payments
       namespaces:

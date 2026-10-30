@@ -13,6 +13,15 @@ Before the service owner starts, a platform administrator must have:
 - verified that the target Sentry installation supports managed project creation with
   default-rule suppression and an automatically available active client key.
 
+To manage alerts, the administrator must also set an explicit target contract on the
+connection. This is never inferred from a version string:
+
+```yaml
+spec:
+  compatibility:
+    alerts: legacy-24.7.1 # or modern-26.10.1
+```
+
 The last capability is deliberately fail-closed. Without evidence from the target Sentry,
 the resource reports `ManagedCreateUnsupported`; source fixtures are not live evidence.
 
@@ -67,6 +76,33 @@ env:
 
 The complete Deployment form is in
 [`config/samples/workload_with_sentry_dsn.yaml`](../config/samples/workload_with_sentry_dsn.yaml).
+
+## Add typed alerts
+
+Alerts refer only to local destination names. Legacy 24.7.1 supports enabled first-seen,
+regression and event-count rules; it deliberately rejects `enabled: false` because its
+DELETE operation is not a pause. The modern 26.10.1 profile currently supports event-count.
+
+```yaml
+spec:
+  destinations:
+    team:
+      slack:
+        workspace: Company Slack
+        channel: payments-alerts
+  alerts:
+    new-errors:
+      trigger: first-seen
+      notify: [team]
+    error-volume:
+      trigger: event-count
+      windowMinutes: 5
+      threshold: 200
+      notify: [team]
+```
+
+Omitting `spec.alerts` leaves existing alerts unmanaged. Setting `spec.alerts: {}` removes
+only alerts whose protected ownership marker matches this project.
 
 ## Diagnose without Sentry API knowledge
 

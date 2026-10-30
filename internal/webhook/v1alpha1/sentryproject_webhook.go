@@ -166,6 +166,9 @@ func validateSentryProject(obj *sentryconfigurationv1alpha1.SentryProject) error
 		if obj.Spec.Destinations != nil {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("destinations"), "project.use is read-only"))
 		}
+		if obj.Spec.Alerts != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("alerts"), "project.use is read-only"))
+		}
 		if obj.Spec.Lifecycle.OnDelete == sentryconfigurationv1alpha1.OnDeleteDeleteProject {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("lifecycle", "onDelete"), "project.use cannot delete an external project"))
 		}
@@ -192,6 +195,46 @@ func validateSentryProject(obj *sentryconfigurationv1alpha1.SentryProject) error
 		}
 		if count != 1 {
 			allErrs = append(allErrs, field.Invalid(destinationPath, destination, "exactly one destination type is required"))
+		}
+	}
+	if obj.Spec.Alerts != nil {
+		for name, alert := range *obj.Spec.Alerts {
+			alertPath := specPath.Child("alerts").Key(name)
+			for _, message := range validation.IsDNS1123Label(name) {
+				allErrs = append(allErrs, field.Invalid(alertPath, name, message))
+			}
+			switch alert.Trigger {
+			case sentryconfigurationv1alpha1.AlertTriggerFirstSeen, sentryconfigurationv1alpha1.AlertTriggerRegression:
+				if alert.WindowMinutes != nil || alert.Threshold != nil {
+					allErrs = append(allErrs, field.Invalid(alertPath, alert, "issue triggers forbid windowMinutes and threshold"))
+				}
+			case sentryconfigurationv1alpha1.AlertTriggerEventCount:
+				if alert.WindowMinutes == nil || *alert.WindowMinutes < 1 || *alert.WindowMinutes > 1440 || alert.Threshold == nil || *alert.Threshold < 1 {
+					allErrs = append(allErrs, field.Invalid(alertPath, alert, "event-count requires windowMinutes 1..1440 and a positive threshold"))
+				}
+			default:
+				allErrs = append(allErrs, field.NotSupported(alertPath.Child("trigger"), alert.Trigger, []string{"first-seen", "regression", "event-count"}))
+			}
+			if len(alert.Notify) == 0 || len(alert.Notify) > 20 {
+				allErrs = append(allErrs, field.Invalid(alertPath.Child("notify"), alert.Notify, "must contain 1..20 destination keys"))
+			}
+			seen := make(map[string]bool, len(alert.Notify))
+			for index, destinationName := range alert.Notify {
+				notifyPath := alertPath.Child("notify").Index(index)
+				if seen[destinationName] {
+					allErrs = append(allErrs, field.Duplicate(notifyPath, destinationName))
+					continue
+				}
+				seen[destinationName] = true
+				destination, found := obj.Spec.Destinations[destinationName]
+				if !found {
+					allErrs = append(allErrs, field.NotFound(notifyPath, destinationName))
+					continue
+				}
+				if destination.Slack == nil && destination.PagerDuty == nil {
+					allErrs = append(allErrs, field.NotSupported(notifyPath, destinationName, []string{"slack destination", "pagerDuty destination"}))
+				}
+			}
 		}
 	}
 

@@ -10,3 +10,24 @@ spec:
   project:
     create:
       team: payments
+  destinations:
+    team:
+      slack:
+        workspace: Company Slack
+        channel: payments-alerts
+    oncall:
+      pagerDuty:
+        account: Company PagerDuty
+        service: Payments Primary
+  alerts:
+    new-errors:
+      trigger: first-seen
+      notify:
+        - team
+    error-volume:
+      trigger: event-count
+      windowMinutes: 5
+      threshold: 200
+      notify:
+        - team
+        - oncall

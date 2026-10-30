@@ -118,6 +118,9 @@ func validateSentryConnection(obj *sentryconfigurationv1alpha1.SentryConnection)
 	if obj.Spec.Credentials.CABundleSecretRef != nil {
 		allErrs = append(allErrs, validateSecretKeyReference(*obj.Spec.Credentials.CABundleSecretRef, specPath.Child("credentials", "caBundleSecretRef"))...)
 	}
+	if obj.Spec.Compatibility != nil && obj.Spec.Compatibility.Alerts != "" && obj.Spec.Compatibility.Alerts != sentryconfigurationv1alpha1.AlertCompatibilityLegacy24 && obj.Spec.Compatibility.Alerts != sentryconfigurationv1alpha1.AlertCompatibilityModern26 {
+		allErrs = append(allErrs, field.NotSupported(specPath.Child("compatibility", "alerts"), obj.Spec.Compatibility.Alerts, []string{string(sentryconfigurationv1alpha1.AlertCompatibilityLegacy24), string(sentryconfigurationv1alpha1.AlertCompatibilityModern26)}))
+	}
 
 	for index, rule := range obj.Spec.Access {
 		rulePath := specPath.Child("access").Index(index)

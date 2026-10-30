@@ -40,6 +40,17 @@ var _ = Describe("SentryConnection Webhook", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("accepts only explicit supported alert compatibility profiles", func() {
+		obj := validConnection()
+		obj.Spec.Compatibility = &sentryconfigurationv1alpha1.ConnectionCompatibility{Alerts: sentryconfigurationv1alpha1.AlertCompatibilityLegacy24}
+		_, err := validator.ValidateCreate(context.Background(), obj)
+		Expect(err).NotTo(HaveOccurred())
+
+		obj.Spec.Compatibility.Alerts = "guessed-latest"
+		_, err = validator.ValidateCreate(context.Background(), obj)
+		Expect(err).To(MatchError(ContainSubstring("Unsupported value")))
+	})
+
 	It("requires HTTPS without embedded credentials", func() {
 		obj := validConnection()
 		obj.Spec.URL = "http://token@example.invalid"

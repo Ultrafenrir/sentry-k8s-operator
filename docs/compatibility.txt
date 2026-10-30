@@ -264,9 +264,9 @@ https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/project
 Source подтверждает first_seen_event, regression_event, event frequency, environment,
 tag filters, Slack/PagerDuty actions, CRUD и enable. Публичного disable endpoint без
 удаления в version-pinned source не найдено. PUT disabled rule автоматически re-enables;
-DELETE переводит его в PENDING_DELETION. Поэтому обязательный lifecycle
-create/read/update/disable/enable/delete не доказан и legacy issue adapter получает
-Unsupported для common presets на 24.7.1.
+DELETE переводит его в PENDING_DELETION. Поэтому `enabled:false` остаётся Unsupported;
+явный connection profile `legacy-24.7.1` допускает только включённые first-seen/regression
+rules и никогда не переводит disable в DELETE.
 
 Live 24.7.1 acceptance подтвердил create/read/update с сохранением exact ID и marker,
 после DELETE detail стал inactive (`disabled` в legacy serializer), а active list исключил
@@ -285,12 +285,14 @@ https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/incidents/serializers
 Подтверждены error count transport (dataset=events, aggregate=count()), thresholds,
 window choices 1/5/10/15/30/60/120/240/1440 minutes, environment, query and actions.
 Model имеет DISABLED и internal logic, но публичного disable/enable API в 24.7.1 не
-найдено. Следовательно metric adapter также Unsupported для common preset lifecycle.
+найдено. Следовательно metric adapter принимает только включённые event-count rules, а
+`enabled:false` fail-closed до HTTP mutation.
 
 Live 24.7.1 acceptance подтвердил events count() metric alert с пустыми actions:
 create/read/update сохраняют exact ID и marker, threshold round-trip проходит, DELETE
 делает detail недоступным. Поэтому CRUD повышен до Verified, но disable+enable остаётся
-Unsupported и такой adapter не удовлетворяет общему обязательному lifecycle.
+Unsupported. Controller использует это как ограниченный compatibility profile, а не как
+ложное доказательство полного toggle lifecycle.
 
 Sentry 26.10.1 source публикует modern workflow API:
 - GET|POST|PUT|DELETE /api/0/organizations/{org}/workflows/;

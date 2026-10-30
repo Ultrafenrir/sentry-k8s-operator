@@ -16,7 +16,7 @@ test "$(cd "$root_dir" && GOMODCACHE="$product_gomodcache" GOCACHE="$product_goc
   "$go_bin" list -m -f '{{.Version}}' sigs.k8s.io/controller-runtime)" = v0.24.1
 test "$(cd "$root_dir" && GOMODCACHE="$product_gomodcache" GOCACHE="$product_gocache" \
   "$go_bin" list -m -f '{{.Version}}' k8s.io/apimachinery)" = v0.36.0
-test "$(find "$root_dir/testdata/t01/golden" -type f -name '*.yaml' | wc -l | tr -d ' ')" = 5
+test "$(find "$root_dir/testdata/t01/golden" -type f -name '*.yaml' | wc -l | tr -d ' ')" = 6
 
 ruby -ryaml -rjson -e '
   puts JSON.generate(YAML.load_file(ARGV.fetch(0)))
@@ -59,7 +59,7 @@ jq -e '
     .admissionReviewVersions == ["v1"])
 ' "$tmp_dir/webhooks.json" >/dev/null
 
-if rg -n '(^|[[:space:]])(alerts|profile|grouping|advanced):' \
+if rg -n '(^|[[:space:]])(profile|grouping|advanced):' \
   "$root_dir/testdata/t01/golden" "$root_dir/config/samples"; then
   echo 'unpublished alpha field found in positive examples' >&2
   exit 1

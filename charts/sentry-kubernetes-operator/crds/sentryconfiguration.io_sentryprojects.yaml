@@ -52,6 +52,54 @@ spec:
           spec:
             description: spec defines the desired state of SentryProject
             properties:
+              alerts:
+                additionalProperties:
+                  description: AlertSpec is adapter-neutral and references notification
+                    destinations only by local key.
+                  properties:
+                    enabled:
+                      default: true
+                      type: boolean
+                    notify:
+                      items:
+                        maxLength: 63
+                        minLength: 1
+                        type: string
+                      maxItems: 20
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: set
+                    threshold:
+                      format: int64
+                      minimum: 1
+                      type: integer
+                    trigger:
+                      description: AlertTrigger is the portable alert condition exposed
+                        by the operator.
+                      enum:
+                      - first-seen
+                      - regression
+                      - event-count
+                      type: string
+                    windowMinutes:
+                      format: int32
+                      maximum: 1440
+                      minimum: 1
+                      type: integer
+                  required:
+                  - notify
+                  - trigger
+                  type: object
+                  x-kubernetes-validations:
+                  - message: event-count requires windowMinutes and threshold; issue
+                      triggers forbid them
+                    rule: 'self.trigger == ''event-count'' ? (has(self.windowMinutes)
+                      && has(self.threshold)) : (!has(self.windowMinutes) && !has(self.threshold))'
+                description: |-
+                  An absent alerts field leaves existing alert children unmanaged. An explicit empty map
+                  deletes all protected operator-owned alerts.
+                maxProperties: 100
+                type: object
               connection:
                 maxLength: 253
                 minLength: 1
@@ -215,12 +263,15 @@ spec:
             - project
             type: object
             x-kubernetes-validations:
-            - message: project.use forbids settings and destinations
-              rule: '!has(self.project.use) || (!has(self.settings) && !has(self.destinations))'
+            - message: project.use forbids settings, destinations and alerts
+              rule: '!has(self.project.use) || (!has(self.settings) && !has(self.destinations)
+                && !has(self.alerts))'
             - message: project.use forbids lifecycle.onDelete DeleteProject
               rule: '!has(self.project.use) || self.lifecycle.onDelete != ''DeleteProject'''
             - message: destination names must be lowercase DNS labels
               rule: '!has(self.destinations) || self.destinations.all(k, k.matches(''^[a-z](?:[a-z0-9-]*[a-z0-9])?$''))'
+            - message: alert names must be lowercase DNS labels
+              rule: '!has(self.alerts) || self.alerts.all(k, k.matches(''^[a-z](?:[a-z0-9-]*[a-z0-9])?$''))'
           status:
             description: status defines the observed state of SentryProject
             properties:
@@ -230,6 +281,25 @@ spec:
                 - ReadOnly
                 - Deny
                 type: string
+              alerts:
+                additionalProperties:
+                  description: AlertStatus is the safe status of one local alert key.
+                  properties:
+                    reason:
+                      maxLength: 64
+                      type: string
+                    state:
+                      maxLength: 64
+                      type: string
+                  required:
+                  - reason
+                  - state
+                  type: object
+                description: |-
+                  Alerts exposes only local names and safe lifecycle state. Adapter and external IDs stay
+                  in the protected project binding.
+                type: object
+                x-kubernetes-map-type: granular
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current

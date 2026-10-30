@@ -32,6 +32,12 @@ rg -q 'LegacyMetricAdapter' internal/alerts/legacy_http_adapter.go
 rg -q 'ErrLegacyToggleUnsupported' internal/alerts/legacy_http_adapter.go
 rg -q 'TestLegacyHTTPAdapterIssueLifecycleAndLostResponseRecovery' internal/alerts/legacy_http_adapter_test.go
 rg -q 'TestLegacyHTTPAdapterMetricLifecycleAndPayload' internal/alerts/legacy_http_adapter_test.go
+rg -q 'LegacyCombinedAdapter' internal/alerts/router.go
+rg -q 'TestLegacyRouterSupportsMixedIssueAndMetricIdentities' internal/alerts/legacy_http_adapter_test.go
+rg -q 'reconcileAlerts' internal/controller/sentryproject_controller.go
+rg -q 'AlertsReady' internal/controller/sentryproject_controller.go
+rg -q 'AlertCompatibilityLegacy24' api/v1alpha1/sentryconnection_types.go
+rg -q 'Alerts \*map\[string\]AlertSpec' api/v1alpha1/sentryproject_types.go
 rg -q 'ReasonJournalSubmitted' internal/audit/audit.go
 rg -q 'ReasonResultRecovered' internal/audit/audit.go
 rg -q 'TestAbsentAlertsDoesNotManageExistingChildren' internal/alerts/engine_test.go
@@ -46,9 +52,8 @@ rg -q 'TestFailedAlertDeleteBlocksDestinationCleanup' internal/alerts/engine_tes
 rg -q 'TestBindingValidationRejectsCorruptProtectedAlertState' internal/binding/store_test.go
 rg -q 'TestOperationJournalRejectsUnsafeTransitions' internal/binding/store_test.go
 
-if rg -n 'json:"alerts' api/v1alpha1 config/crd/bases; then
-  echo 'unaccepted alerts surface leaked into the public alpha API' >&2
-  exit 1
-fi
+rg -q 'json:"alerts,omitempty"' api/v1alpha1/sentryproject_types.go
+rg -q 'legacy-24.7.1' config/crd/bases/sentryconfiguration.io_sentryconnections.yaml
+rg -q 'event-count' config/crd/bases/sentryconfiguration.io_sentryprojects.yaml
 
-echo 'T07 protected lifecycle and modern/legacy HTTP adapters verified; controller wiring and live action delivery remain gated'
+echo 'T07 typed API, protected controller lifecycle and modern/legacy HTTP adapters verified; live action delivery remains gated'

@@ -353,7 +353,7 @@ func (a *LegacyHTTPAdapter) destinationActions(adapter string, names []string) (
 				return nil, ErrLegacyDestinationUnsupported
 			}
 			issue = append(issue, legacyIssueAction{ID: "sentry.integrations.slack.notify_action.SlackNotifyServiceAction", Workspace: destination.IntegrationIdentity, Channel: destination.ResourceName, ChannelID: destination.ResourceIdentity})
-			metric = append(metric, legacyMetricAction{Type: "slack", TargetType: "specific", TargetIdentifier: destination.ResourceIdentity, IntegrationID: integrationID, InputChannelID: destination.ResourceIdentity})
+			metric = append(metric, legacyMetricAction{Type: "slack", TargetType: "specific", TargetIdentifier: destination.ResourceName, IntegrationID: integrationID, InputChannelID: destination.ResourceIdentity})
 		case "pagerduty":
 			resourceID, parseErr := strconv.ParseInt(destination.ResourceIdentity, 10, 64)
 			if parseErr != nil || resourceID <= 0 {

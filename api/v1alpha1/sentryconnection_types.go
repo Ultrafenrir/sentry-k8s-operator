@@ -184,6 +184,23 @@ type ConnectionIntegrations struct {
 	Telegram *TelegramIntegration `json:"telegram,omitempty"`
 }
 
+// AlertCompatibilityProfile is an explicit platform assertion about the target Sentry
+// alert API. The operator never infers this safety boundary from an unstable version route.
+// +kubebuilder:validation:Enum=legacy-24.7.1;modern-26.10.1
+type AlertCompatibilityProfile string
+
+const (
+	AlertCompatibilityLegacy24 AlertCompatibilityProfile = "legacy-24.7.1"
+	AlertCompatibilityModern26 AlertCompatibilityProfile = "modern-26.10.1"
+)
+
+// ConnectionCompatibility pins version-sensitive API families selected by the platform
+// administrator.
+type ConnectionCompatibility struct {
+	// +optional
+	Alerts AlertCompatibilityProfile `json:"alerts,omitempty"`
+}
+
 // SentryConnectionSpec defines the desired state of SentryConnection.
 type SentryConnectionSpec struct {
 	// +kubebuilder:validation:MinLength=9
@@ -209,6 +226,10 @@ type SentryConnectionSpec struct {
 
 	// +optional
 	Integrations *ConnectionIntegrations `json:"integrations,omitempty"`
+
+	// Compatibility is required before version-sensitive APIs such as alerts are mutated.
+	// +optional
+	Compatibility *ConnectionCompatibility `json:"compatibility,omitempty"`
 }
 
 // SentryConnectionStatus defines the observed state of SentryConnection.

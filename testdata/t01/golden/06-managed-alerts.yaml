@@ -1,0 +1,31 @@
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryProject
+metadata:
+  name: checkout-alerts
+  namespace: checkout-prod
+spec:
+  connection: company-sentry
+  project:
+    create:
+      team: payments
+  destinations:
+    team:
+      slack:
+        workspace: Company Slack
+        channel: payments-alerts
+    oncall:
+      pagerDuty:
+        account: Company PagerDuty
+        service: Payments Primary
+  alerts:
+    new-errors:
+      trigger: first-seen
+      notify:
+        - team
+    error-volume:
+      trigger: event-count
+      windowMinutes: 5
+      threshold: 200
+      notify:
+        - team
+        - oncall

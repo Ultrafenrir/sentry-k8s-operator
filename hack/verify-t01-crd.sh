@@ -25,7 +25,7 @@ kubectl --context "$context" apply -f "$root_dir/config/crd/bases" >/dev/null
 kubectl --context "$context" create namespace "$namespace" >/dev/null
 
 golden_count=$(find "$root_dir/testdata/t01/golden" -type f -name '*.yaml' | wc -l | tr -d ' ')
-test "$golden_count" = 5
+test "$golden_count" = 6
 
 for fixture in "$root_dir"/testdata/t01/golden/*.yaml; do
   rendered="$tmp_dir/$(basename "$fixture")"
@@ -42,6 +42,12 @@ jq -e '
   (.spec.settings.pii.safeFields | type == "array" and length == 0) and
   (.spec.settings.pii.sensitiveFields | length == 2)
 ' "$tmp_dir/04-managed-settings.yaml.json" >/dev/null
+jq -e '
+  .spec.alerts.new-errors.trigger == "first-seen" and
+  .spec.alerts.new-errors.enabled == true and
+  .spec.alerts.error-volume.windowMinutes == 5 and
+  .spec.alerts.error-volume.threshold == 200
+' "$tmp_dir/06-managed-alerts.yaml.json" >/dev/null
 
 for fixture in "$root_dir"/testdata/t01/negative/*.yaml; do
   rendered="$tmp_dir/negative-$(basename "$fixture")"
@@ -53,4 +59,4 @@ for fixture in "$root_dir"/testdata/t01/negative/*.yaml; do
   fi
 done
 
-echo "$context: five T01 golden fixtures and all schema/CEL negatives passed"
+echo "$context: six T01 golden fixtures and all schema/CEL negatives passed"

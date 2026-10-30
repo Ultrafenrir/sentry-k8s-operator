@@ -160,6 +160,42 @@ type DestinationSpec struct {
 	Telegram *TelegramDestination `json:"telegram,omitempty"`
 }
 
+// AlertTrigger is the portable alert condition exposed by the operator.
+// +kubebuilder:validation:Enum=first-seen;regression;event-count
+type AlertTrigger string
+
+const (
+	AlertTriggerFirstSeen  AlertTrigger = "first-seen"
+	AlertTriggerRegression AlertTrigger = "regression"
+	AlertTriggerEventCount AlertTrigger = "event-count"
+)
+
+// +kubebuilder:validation:XValidation:rule="self.trigger == 'event-count' ? (has(self.windowMinutes) && has(self.threshold)) : (!has(self.windowMinutes) && !has(self.threshold))",message="event-count requires windowMinutes and threshold; issue triggers forbid them"
+// AlertSpec is adapter-neutral and references notification destinations only by local key.
+type AlertSpec struct {
+	Trigger AlertTrigger `json:"trigger"`
+
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=1440
+	// +optional
+	WindowMinutes *int32 `json:"windowMinutes,omitempty"`
+
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	Threshold *int64 `json:"threshold,omitempty"`
+
+	// +kubebuilder:default=true
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=20
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=63
+	// +listType=set
+	Notify []string `json:"notify"`
+}
+
 // OnDeletePolicy controls whether the external project may be deleted with the CR.
 // +kubebuilder:validation:Enum=Retain;DeleteProject
 type OnDeletePolicy string
@@ -177,9 +213,10 @@ type LifecycleSpec struct {
 	OnDelete OnDeletePolicy `json:"onDelete,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="!has(self.project.use) || (!has(self.settings) && !has(self.destinations))",message="project.use forbids settings and destinations"
+// +kubebuilder:validation:XValidation:rule="!has(self.project.use) || (!has(self.settings) && !has(self.destinations) && !has(self.alerts))",message="project.use forbids settings, destinations and alerts"
 // +kubebuilder:validation:XValidation:rule="!has(self.project.use) || self.lifecycle.onDelete != 'DeleteProject'",message="project.use forbids lifecycle.onDelete DeleteProject"
 // +kubebuilder:validation:XValidation:rule="!has(self.destinations) || self.destinations.all(k, k.matches('^[a-z](?:[a-z0-9-]*[a-z0-9])?$'))",message="destination names must be lowercase DNS labels"
+// +kubebuilder:validation:XValidation:rule="!has(self.alerts) || self.alerts.all(k, k.matches('^[a-z](?:[a-z0-9-]*[a-z0-9])?$'))",message="alert names must be lowercase DNS labels"
 // SentryProjectSpec defines the desired state of SentryProject.
 type SentryProjectSpec struct {
 	// +kubebuilder:validation:MinLength=1
@@ -198,6 +235,12 @@ type SentryProjectSpec struct {
 	// +kubebuilder:validation:MaxProperties=20
 	// +optional
 	Destinations map[string]DestinationSpec `json:"destinations,omitempty"`
+
+	// An absent alerts field leaves existing alert children unmanaged. An explicit empty map
+	// deletes all protected operator-owned alerts.
+	// +kubebuilder:validation:MaxProperties=100
+	// +optional
+	Alerts *map[string]AlertSpec `json:"alerts,omitempty"`
 
 	// +kubebuilder:default=false
 	// +optional
@@ -241,6 +284,12 @@ type SentryProjectStatus struct {
 	// +optional
 	Destinations map[string]DestinationStatus `json:"destinations,omitempty"`
 
+	// Alerts exposes only local names and safe lifecycle state. Adapter and external IDs stay
+	// in the protected project binding.
+	// +mapType=granular
+	// +optional
+	Alerts map[string]AlertStatus `json:"alerts,omitempty"`
+
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -262,6 +311,15 @@ type DestinationStatus struct {
 	// authenticated Telegram registration writer.
 	// +optional
 	RegistrationCommit *RegistrationCommit `json:"registrationCommit,omitempty"`
+}
+
+// AlertStatus is the safe status of one local alert key.
+type AlertStatus struct {
+	// +kubebuilder:validation:MaxLength=64
+	State string `json:"state"`
+
+	// +kubebuilder:validation:MaxLength=64
+	Reason string `json:"reason"`
 }
 
 // +kubebuilder:object:root=true

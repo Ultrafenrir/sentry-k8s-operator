@@ -180,6 +180,19 @@ spec:
                 x-kubernetes-list-map-keys:
                 - owner
                 x-kubernetes-list-type: map
+              compatibility:
+                description: Compatibility is required before version-sensitive APIs
+                  such as alerts are mutated.
+                properties:
+                  alerts:
+                    description: |-
+                      AlertCompatibilityProfile is an explicit platform assertion about the target Sentry
+                      alert API. The operator never infers this safety boundary from an unstable version route.
+                    enum:
+                    - legacy-24.7.1
+                    - modern-26.10.1
+                    type: string
+                type: object
               credentials:
                 description: ConnectionCredentials contains platform-owned Sentry
                   API credentials.

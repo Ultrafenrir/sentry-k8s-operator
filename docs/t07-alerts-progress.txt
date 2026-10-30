@@ -1,7 +1,7 @@
 SENTRY CONFIGURATION OPERATOR — T07 ALERTS PROGRESS
 Date: 2026-10-30
-Status: In Progress; internal lifecycle core implemented, partial public API lifecycle
-Verified locally, concrete controller adapters still gated.
+Status: In Progress; typed public API, protected controller lifecycle and concrete legacy
+and modern adapters Verified locally; live external notification delivery remains gated.
 
 Implemented lifecycle core and its current evidence boundary:
 
@@ -81,7 +81,7 @@ Implemented lifecycle core and its current evidence boundary:
 Verification:
 
 - `make verify-t07-core` runs the alert and binding packages under the race detector and
-  vet, checks lifecycle guards, and fails if an alerts field appears in the generated CRD.
+  vet, checks lifecycle guards, the typed generated CRD and explicit compatibility profiles.
 - Fake-adapter tests cover create/update/toggle/delete, deterministic pinning, repeated
   authorization, ownership loss, missing/unsupported adapter, no-recreate update failure,
   per-alert isolation, tombstones, delete-before-create ordering, canonical hashes, and
@@ -124,16 +124,23 @@ Evidence boundary and remaining work:
   static high/OK thresholds and no external actions; detector read, bulk disable/enable and
   delete-to-404 all preserved exact identity. Workflow delete-to-404 completed afterwards.
   This proves a usable local detector/workflow lifecycle, but not actions or delivery.
-- `spec.alerts` intentionally remains absent from v1alpha1. The source catalog records that
-  Sentry 24.7.1 lacks a confirmed non-destructive disable lifecycle and that the modern
-  action registry and external integrations remain organization/feature dependent. Pinned
-  26.10.1 source also proves that `error` create is forbidden and only updates the existing
-  project detector, while `uptime_domain_failure` owns a separate subscription/quota/seat
-  lifecycle. Neither may be selected as a generic fallback for the verified `metric_issue`
-  lifecycle, and one accepted metric-count detector does not prove all preset mappings.
-- Controller wiring to the protected Store/status and destination release signal, a safe
-  compatibility-profile decision for legacy adapters, live modern Slack/PagerDuty delivery
-  acceptance and the remaining trigger mappings are required before T07 can be Complete.
+- `spec.alerts` now publishes only first-seen, regression and event-count with local
+  Slack/PagerDuty destination references. An absent field remains unmanaged; an explicit
+  empty map deletes protected children. Status exposes only local key/state/reason and an
+  `AlertsReady` condition. Adapter, remote identity, desired hash and marker stay protected.
+- `SentryConnection.spec.compatibility.alerts` is an explicit platform-owned assertion:
+  `legacy-24.7.1` selects the combined issue/metric adapter and `modern-26.10.1` selects the
+  verified metric_issue detector/workflow adapter. Missing or incompatible profiles fail
+  before mutation. Legacy accepts only enabled desired rules because delete is not a pause;
+  modern supports toggles. A trigger-family change that lacks safe in-place semantics also
+  fails without delete/recreate.
+- The project controller now resolves destinations first, reconciles alerts through the
+  protected operation journal and audit sink, reauthorizes every mutation against current
+  project policy/profile/bindings, CAS-persists alert bindings/pin/tombstones, and publishes
+  redacted per-rule status. Envtest covers create, safe status, protected identity/pin,
+  explicit-empty deletion and tombstone persistence.
+- Live Slack/PagerDuty delivery acceptance and additional portable trigger mappings remain
+  outside the verified boundary; they do not block the implemented configuration lifecycle.
 - The closed audit core now covers managed project create/delete, internal alert mutations,
   Telegram registration, destination cleanup and external Telegram delivery through the
   durable immutable export/retention backend. Queue-administration coverage remains required

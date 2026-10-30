@@ -95,7 +95,7 @@ func TestLegacyHTTPAdapterMetricLifecycleAndPayload(t *testing.T) {
 	if got := remote.lastMetric; got.QueryType != 0 || got.Dataset != "events" || got.Aggregate != "count()" || got.TimeWindow != 5 || got.Triggers[0].AlertThreshold != 200 || len(got.Triggers[0].Actions) != 2 {
 		t.Fatalf("metric payload=%#v", got)
 	}
-	if got := remote.lastMetric.Triggers[0].Actions; got[0].Type != "slack" || got[0].IntegrationID != 12 || got[0].TargetIdentifier != "C123" || got[1].Type != "pagerduty" || got[1].TargetIdentifier != float64(567) {
+	if got := remote.lastMetric.Triggers[0].Actions; got[0].Type != "slack" || got[0].IntegrationID != 12 || got[0].TargetIdentifier != "incidents" || got[0].InputChannelID != "C123" || got[1].Type != "pagerduty" || got[1].TargetIdentifier != float64(567) {
 		t.Fatalf("metric actions=%#v", got)
 	}
 	second, err := adapter.Ensure(context.Background(), LegacyMetricAdapter, "company", "checkout", "error-volume", desired, marker)
@@ -133,6 +133,42 @@ func TestLegacyHTTPAdapterRejectsUnsupportedState(t *testing.T) {
 	desired.Enabled = false
 	if !errors.Is(adapter.validate(LegacyIssueAdapter, "checkout", "rule", desired), ErrLegacyInvalidState) {
 		t.Fatal("disabled legacy desired state was accepted")
+	}
+}
+
+func TestLegacyRouterSupportsMixedIssueAndMetricIdentities(t *testing.T) {
+	t.Parallel()
+	remote := &legacyTestRemote{}
+	server := httptest.NewTLSServer(http.HandlerFunc(remote.serveHTTP))
+	defer server.Close()
+	router := &LegacyRouterAdapter{Legacy: legacyTestAdapter(t, server)}
+	marker := binding.Marker{Origin: "managed", Owner: "payments", ManagedBy: "sko"}
+	issue, err := router.Ensure(context.Background(), LegacyCombinedAdapter, "company", "checkout", "new-errors", Desired{Trigger: TriggerFirstSeen, Enabled: true, Notify: []string{"chat"}}, marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metric, err := router.Ensure(context.Background(), LegacyCombinedAdapter, "company", "checkout", "volume", Desired{Trigger: TriggerEventCount, WindowMinutes: 5, Threshold: 10, Enabled: true, Notify: []string{"page"}}, marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issueIdentity, issueChild, err := parseLegacyRoutedIdentity(issue.Adapter, issue.Identity)
+	if err != nil || issueChild != LegacyIssueAdapter || issueIdentity.ID != "11" {
+		t.Fatalf("issue identity=%#v child=%q err=%v", issueIdentity, issueChild, err)
+	}
+	metricIdentity, metricChild, err := parseLegacyRoutedIdentity(metric.Adapter, metric.Identity)
+	if err != nil || metricChild != LegacyMetricAdapter || metricIdentity.ID != "22" {
+		t.Fatalf("metric identity=%#v child=%q err=%v", metricIdentity, metricChild, err)
+	}
+	observed, found, err := router.Observe(context.Background(), LegacyCombinedAdapter, "company", "checkout", metric.Identity)
+	if err != nil || !found || observed.Identity != metric.Identity || observed.Adapter != LegacyCombinedAdapter {
+		t.Fatalf("observed=%#v found=%v err=%v", observed, found, err)
+	}
+	changedFamily := Desired{Trigger: TriggerRegression, Enabled: true, Notify: []string{"chat"}}
+	if _, err := router.Update(context.Background(), LegacyCombinedAdapter, "company", "checkout", metric.Identity, changedFamily); !errors.Is(err, ErrUnsupportedUpdate) {
+		t.Fatalf("family-changing update error=%v", err)
+	}
+	if _, _, err := parseLegacyRoutedIdentity(LegacyCombinedAdapter, `{"kind":"issue","id":"11","extra":true}`); err == nil {
+		t.Fatal("identity with unknown field was accepted")
 	}
 }
 

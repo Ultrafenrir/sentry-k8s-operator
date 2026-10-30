@@ -18,9 +18,11 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -33,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	sentryconfigurationv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
+	alertsruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/alerts"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/audit"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
 	connectionruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/connection"
@@ -62,6 +65,7 @@ var _ = Describe("SentryProject Controller", func() {
 		var projectSerial int
 		var settingsAdapter *controllerFakeSettingsAdapter
 		var destinationCatalog *controllerFakeDestinationCatalog
+		var alertAdapter *controllerFakeAlertAdapter
 
 		BeforeEach(func() {
 			keyListCalls = 0
@@ -115,6 +119,7 @@ var _ = Describe("SentryProject Controller", func() {
 			adapter = &controllerFakeProjectAdapter{projects: make(map[string]projectruntime.RemoteProject)}
 			settingsAdapter = &controllerFakeSettingsAdapter{}
 			destinationCatalog = &controllerFakeDestinationCatalog{}
+			alertAdapter = &controllerFakeAlertAdapter{objects: make(map[string]alertsruntime.Observed)}
 			reconciler = &SentryProjectReconciler{
 				Client:    k8sClient,
 				Scheme:    k8sClient.Scheme(),
@@ -137,7 +142,10 @@ var _ = Describe("SentryProject Controller", func() {
 				},
 				NewSettingsAdapter:    func(*sentryapi.Client) settingsruntime.Adapter { return settingsAdapter },
 				NewDestinationCatalog: func(*sentryapi.Client) destination.Catalog { return destinationCatalog },
-				Audit:                 controllerAuditSink{},
+				NewAlertAdapter: func(*sentryapi.Client, map[string]binding.DestinationBinding) alertsruntime.Adapter {
+					return alertAdapter
+				},
+				Audit: controllerAuditSink{},
 			}
 		})
 
@@ -502,6 +510,51 @@ var _ = Describe("SentryProject Controller", func() {
 			Expect(record.Binding.Destinations["ops"].ResourceIdentity).To(Equal("private-channel-id"))
 		})
 
+		It("reconciles legacy alerts through protected bindings and safe status", func() {
+			connection := &sentryconfigurationv1alpha1.SentryConnection{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: connectionName}, connection)).To(Succeed())
+			connection.Spec.Compatibility = &sentryconfigurationv1alpha1.ConnectionCompatibility{Alerts: sentryconfigurationv1alpha1.AlertCompatibilityLegacy24}
+			connection.Spec.Integrations = &sentryconfigurationv1alpha1.ConnectionIntegrations{Slack: &sentryconfigurationv1alpha1.SlackIntegration{DefaultWorkspace: "company"}}
+			connection.Spec.Access[0].Destinations = &sentryconfigurationv1alpha1.DestinationAccess{Slack: []sentryconfigurationv1alpha1.SlackDestinationGrant{{Workspace: "company", Channels: []string{"incidents"}}}}
+			Expect(k8sClient.Update(ctx, connection)).To(Succeed())
+			resource := &sentryconfigurationv1alpha1.SentryProject{}
+			Expect(k8sClient.Get(ctx, key, resource)).To(Succeed())
+			resource.Spec.Destinations = map[string]sentryconfigurationv1alpha1.DestinationSpec{"ops": {Slack: &sentryconfigurationv1alpha1.SlackDestination{Channel: "incidents"}}}
+			alerts := map[string]sentryconfigurationv1alpha1.AlertSpec{"new-errors": {Trigger: sentryconfigurationv1alpha1.AlertTriggerFirstSeen, Notify: []string{"ops"}}}
+			resource.Spec.Alerts = &alerts
+			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
+			destinationCatalog.integrations = map[string][]destination.Integration{"slack": {{Identity: "12", Name: "company"}}}
+			destinationCatalog.slack = map[string][]destination.Resource{"12": {{Identity: "C123", Name: "incidents"}}}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, key, resource)).To(Succeed())
+			Expect(resource.Status.Alerts).To(HaveKeyWithValue("new-errors", sentryconfigurationv1alpha1.AlertStatus{State: alertsruntime.StateReady, Reason: "AlertReady"}))
+			Expect(resource.Status.Conditions).To(ContainElement(And(HaveField("Type", "AlertsReady"), HaveField("Status", metav1.ConditionTrue))))
+			statusJSON, err := json.Marshal(resource.Status)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(statusJSON)).NotTo(ContainSubstring("private-alert-id-SHOULD-NOT-LEAK"))
+			record, err := reconciler.Bindings.GetBinding(ctx, string(resource.UID))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(record.Binding.PinnedAdapters["alerts"]).To(Equal(alertsruntime.LegacyCombinedAdapter))
+			Expect(record.Binding.Alerts["new-errors"].ExternalIdentity).To(Equal("private-alert-id-SHOULD-NOT-LEAK"))
+
+			emptyAlerts := map[string]sentryconfigurationv1alpha1.AlertSpec{}
+			resource.Spec.Alerts = &emptyAlerts
+			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, key, resource)).To(Succeed())
+			Expect(resource.Status.Alerts).To(HaveKeyWithValue("new-errors", sentryconfigurationv1alpha1.AlertStatus{State: alertsruntime.StateDeleted, Reason: "AlertDeleted"}))
+			record, err = reconciler.Bindings.GetBinding(ctx, string(resource.UID))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(record.Binding.Alerts).To(BeEmpty())
+			Expect(record.Binding.Tombstones).To(HaveKey("new-errors"))
+			Expect(alertAdapter.deleteCalls).To(Equal(1))
+		})
+
 		It("revokes one destination grant without blocking an allowed sibling", func() {
 			connection := &sentryconfigurationv1alpha1.SentryConnection{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: connectionName}, connection)).To(Succeed())
@@ -574,6 +627,77 @@ type controllerFakeSettingsAdapter struct {
 	state          settingsruntime.ProjectState
 	filterUpdates  int
 	projectUpdates []settingsruntime.ProjectPatch
+}
+
+type controllerFakeAlertAdapter struct {
+	mu          sync.Mutex
+	objects     map[string]alertsruntime.Observed
+	deleteCalls int
+}
+
+func (a *controllerFakeAlertAdapter) Ensure(_ context.Context, adapter, _, _, _ string, desired alertsruntime.Desired, marker binding.Marker) (alertsruntime.Observed, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	identity := "private-alert-id-SHOULD-NOT-LEAK"
+	if current, found := a.objects[identity]; found {
+		return current, nil
+	}
+	observed := alertsruntime.Observed{Identity: identity, Adapter: adapter, Marker: marker, DesiredHash: controllerAlertHash(desired), Enabled: desired.Enabled}
+	a.objects[identity] = observed
+	return observed, nil
+}
+
+func (a *controllerFakeAlertAdapter) Observe(_ context.Context, _, _, _, identity string) (alertsruntime.Observed, bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	value, found := a.objects[identity]
+	return value, found, nil
+}
+
+func (a *controllerFakeAlertAdapter) Update(_ context.Context, _, _, _, identity string, desired alertsruntime.Desired) (alertsruntime.Observed, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	value := a.objects[identity]
+	value.DesiredHash = controllerAlertHash(desired)
+	a.objects[identity] = value
+	return value, nil
+}
+
+func (a *controllerFakeAlertAdapter) SetEnabled(_ context.Context, _, _, _, identity string, enabled bool) (alertsruntime.Observed, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	value := a.objects[identity]
+	value.Enabled = enabled
+	a.objects[identity] = value
+	return value, nil
+}
+
+func (a *controllerFakeAlertAdapter) Delete(_ context.Context, _, _, _, identity string, marker binding.Marker) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	value, found := a.objects[identity]
+	if !found {
+		return nil
+	}
+	if !value.Marker.Matches(marker) {
+		return alertsruntime.ErrOwnershipLost
+	}
+	delete(a.objects, identity)
+	a.deleteCalls++
+	return nil
+}
+
+func controllerAlertHash(desired alertsruntime.Desired) string {
+	notify := append([]string(nil), desired.Notify...)
+	sort.Strings(notify)
+	payload, _ := json.Marshal(struct {
+		Trigger       alertsruntime.Trigger `json:"trigger"`
+		WindowMinutes int                   `json:"windowMinutes,omitempty"`
+		Threshold     int64                 `json:"threshold,omitempty"`
+		Notify        []string              `json:"notify"`
+	}{Trigger: desired.Trigger, WindowMinutes: desired.WindowMinutes, Threshold: desired.Threshold, Notify: notify})
+	digest := sha256.Sum256(payload)
+	return fmt.Sprintf("%x", digest[:])
 }
 
 type controllerFakeDestinationCatalog struct {

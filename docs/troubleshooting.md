@@ -6,7 +6,7 @@ and do not paste raw Sentry responses into an issue.
 ```sh
 kubectl get sentryconnection
 kubectl -n <namespace> get sentryproject <name> -o json \
-  | jq '{generation: .metadata.generation, observed: .status.observedGeneration, dsnClientKey: .status.dsnClientKey, conditions: .status.conditions, destinations: .status.destinations}'
+  | jq '{generation: .metadata.generation, observed: .status.observedGeneration, dsnClientKey: .status.dsnClientKey, conditions: .status.conditions, destinations: .status.destinations, alerts: .status.alerts}'
 ```
 
 `metadata.generation != status.observedGeneration` means the latest spec has not completed
@@ -118,6 +118,23 @@ for routine diagnosis.
 - `SettingsPartiallyApplied`: at least one independent settings component succeeded and was
   preserved while another failed. Inspect the component conditions before changing desired
   values.
+
+## Alerts
+
+- `AlertsNotReady` with per-rule `AlertAdapterUnavailable`: the connection is missing
+  `spec.compatibility.alerts`, the selected profile does not support the trigger, or a
+  legacy rule requests `enabled: false`. Correct the platform-owned profile or desired rule;
+  do not use DELETE as a pause workaround.
+- `AlertUpdateUnsupported`: the requested trigger-family change cannot preserve identity.
+  Delete the old local key in one verified reconciliation, then create the new family under
+  a deliberate key; the operator never performs an implicit delete/recreate.
+- `AlertOwnershipLost` or `AlertMissing`: protected identity or marker evidence no longer
+  matches Sentry. Do not recreate by hand; use the redacted administrator report.
+- `AlertsPartiallyApplied`: independent rules that verified successfully were persisted;
+  inspect only the local `status.alerts` state/reason entries for the failed rules.
+
+Alert status never contains Sentry rule IDs, detector/workflow IDs, integration IDs,
+desired hashes, or ownership markers.
 - `DestinationUnsupported`: that adapter/catalog is not implemented or proven for the
   selected target. A rendered destination is not evidence of runtime support.
 - `DestinationAccessRevoked`: new operations are denied and cleanup state is retained.

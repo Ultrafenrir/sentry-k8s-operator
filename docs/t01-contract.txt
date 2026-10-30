@@ -71,15 +71,16 @@ Conversion: strategy=None, см. ADR 0002.
 
 5. Golden contract
 
-Ровно пять positive fixtures находятся в testdata/t01/golden/:
+Ровно шесть positive fixtures находятся в testdata/t01/golden/:
 1) minimal Managed create;
 2) External observe без DSN request;
 3) External consume DSN с пустым dsn block и default Secret;
 4) полный опубликованный filters/PII settings contract;
-5) Slack/PagerDuty/Telegram selectors без alerts.
+5) Slack/PagerDuty/Telegram selectors;
+6) typed first-seen и event-count alerts с локальными Slack/PagerDuty references.
 
-Schema/CEL negative fixtures находятся в testdata/t01/negative/. Alert-dependent
-dangling-notify/delete-in-use fixtures перенесены ADR 0001 в T07.
+Schema/CEL negative fixtures находятся в testdata/t01/negative/. Event-count без threshold
+отклоняется schema/CEL, а dangling и Telegram notify references — admission webhook.
 
 6. Проверки
 
@@ -90,10 +91,10 @@ dangling-notify/delete-in-use fixtures перенесены ADR 0001 в T07.
 - make verify-t01-webhook-kind: product manager TLS webhooks Passed на kind v1.35.5,
   exact v1.35.9 и exact v1.36.5, включая default, immutable identity, policy validation
   и failurePolicy=Fail при scale-to-zero;
-- make verify-t01-generated: dependency versions, conversion=None, five golden fixtures,
+- make verify-t01-generated: dependency versions, conversion=None, six golden fixtures,
   fail-closed webhook manifests и least-privilege generated manager RBAC проверены;
 - strict server-side validation сохранила false, [] и defaults;
-- unpublished owner/alerts/profile/advanced fields отклонены;
+- unpublished owner/profile/advanced fields отклонены; typed alerts accepted;
 - generated CRD, RBAC и webhook manifests воспроизводимы pinned controller-gen.
 
 7. Передано следующим задачам
@@ -102,7 +103,7 @@ dangling-notify/delete-in-use fixtures перенесены ADR 0001 в T07.
 - policy evaluator/resolvers принадлежат T02;
 - Secret watch, DSN publisher и binding принадлежат T02–T04;
 - destination runtime capability остаётся Unknown до T06;
-- alerts остаются вне schema до live lifecycle evidence/T07;
+- alerts surface и controller lifecycle приняты в T07 после version-pinned evidence;
 - certificate rotation/recovery остаётся T09; T01 проверил static TLS deployment и
   fail-closed outage, не заявляя rotation готовой;
 - duplicate readable external names уже имеют T00 executable negative tests, а runtime

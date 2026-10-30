@@ -88,6 +88,46 @@ var _ = Describe("SentryProject Webhook", func() {
 		Expect(err).To(MatchError(ContainSubstring("exactly one destination type")))
 	})
 
+	It("accepts typed alerts and rejects missing or Telegram destinations", func() {
+		enabled := true
+		window := int32(5)
+		threshold := int64(200)
+		obj := managedProject("checkout")
+		obj.Spec.Destinations = map[string]sentryconfigurationv1alpha1.DestinationSpec{
+			"ops":      {Slack: &sentryconfigurationv1alpha1.SlackDestination{Channel: "incidents"}},
+			"telegram": {Telegram: &sentryconfigurationv1alpha1.TelegramDestination{Target: "alerts"}},
+		}
+		alerts := map[string]sentryconfigurationv1alpha1.AlertSpec{
+			"new-errors": {Trigger: sentryconfigurationv1alpha1.AlertTriggerFirstSeen, Enabled: &enabled, Notify: []string{"ops"}},
+			"volume":     {Trigger: sentryconfigurationv1alpha1.AlertTriggerEventCount, WindowMinutes: &window, Threshold: &threshold, Enabled: &enabled, Notify: []string{"ops"}},
+		}
+		obj.Spec.Alerts = &alerts
+		_, err := validator.ValidateCreate(context.Background(), obj)
+		Expect(err).NotTo(HaveOccurred())
+
+		alerts["new-errors"] = sentryconfigurationv1alpha1.AlertSpec{Trigger: sentryconfigurationv1alpha1.AlertTriggerFirstSeen, Notify: []string{"missing"}}
+		_, err = validator.ValidateCreate(context.Background(), obj)
+		Expect(err).To(MatchError(ContainSubstring("Not found")))
+
+		alerts["new-errors"] = sentryconfigurationv1alpha1.AlertSpec{Trigger: sentryconfigurationv1alpha1.AlertTriggerFirstSeen, Notify: []string{"telegram"}}
+		_, err = validator.ValidateCreate(context.Background(), obj)
+		Expect(err).To(MatchError(ContainSubstring("Unsupported value")))
+	})
+
+	It("rejects invalid alert trigger fields", func() {
+		window := int32(5)
+		obj := managedProject("checkout")
+		obj.Spec.Destinations = map[string]sentryconfigurationv1alpha1.DestinationSpec{
+			"ops": {Slack: &sentryconfigurationv1alpha1.SlackDestination{Channel: "incidents"}},
+		}
+		alerts := map[string]sentryconfigurationv1alpha1.AlertSpec{
+			"bad": {Trigger: sentryconfigurationv1alpha1.AlertTriggerEventCount, WindowMinutes: &window, Notify: []string{"ops"}},
+		}
+		obj.Spec.Alerts = &alerts
+		_, err := validator.ValidateCreate(context.Background(), obj)
+		Expect(err).To(MatchError(ContainSubstring("event-count requires")))
+	})
+
 	It("rejects identity changes", func() {
 		oldObj := managedProject("checkout")
 		newObj := oldObj.DeepCopy()

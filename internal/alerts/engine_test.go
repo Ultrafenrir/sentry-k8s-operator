@@ -162,6 +162,25 @@ func TestPinnedAdapterAndOwnershipFailClosed(t *testing.T) {
 	}
 }
 
+func TestCapabilityWithoutToggleAcceptsOnlyEnabledDesiredState(t *testing.T) {
+	t.Parallel()
+	adapter := newFakeAdapter()
+	input := baseInput(adapter, func(context.Context) error { return nil })
+	input.Capabilities = []Capability{{Name: "legacy", Triggers: allTriggers(), SupportsUpdate: true, SupportsToggle: false}}
+	input.Desired = map[string]Desired{"rule": {Trigger: TriggerFirstSeen, Enabled: true, Notify: []string{"chat"}}}
+	result := newTestEngine(adapter).Reconcile(context.Background(), input)
+	if result.Err() != nil || result.PinnedAdapter != "legacy" || result.Statuses["rule"].State != StateReady {
+		t.Fatalf("enabled legacy result=%#v", result)
+	}
+	input.Current = nil
+	input.PinnedAdapter = ""
+	input.Desired["rule"] = Desired{Trigger: TriggerFirstSeen, Enabled: false, Notify: []string{"chat"}}
+	result = newTestEngine(adapter).Reconcile(context.Background(), input)
+	if !errors.Is(result.Statuses["rule"].Err, ErrAdapterUnavailable) || len(result.Bindings) != 0 {
+		t.Fatalf("disabled legacy result=%#v", result)
+	}
+}
+
 func TestUnsupportedUpdateDoesNotRecreate(t *testing.T) {
 	adapter := newFakeAdapter()
 	input := baseInput(adapter, func(context.Context) error { return nil })

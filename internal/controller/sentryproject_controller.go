@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	sentryconfigurationv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
+	alertsruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/alerts"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/audit"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
 	connectionruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/connection"
@@ -57,6 +58,8 @@ type SettingsAdapterFactory func(*sentryapi.Client) settingsruntime.Adapter
 
 type DestinationCatalogFactory func(*sentryapi.Client) destination.Catalog
 
+type AlertAdapterFactory func(*sentryapi.Client, map[string]binding.DestinationBinding) alertsruntime.Adapter
+
 // SentryProjectReconciler reconciles a SentryProject object.
 type SentryProjectReconciler struct {
 	client.Client
@@ -71,6 +74,7 @@ type SentryProjectReconciler struct {
 	ListKeys              ClientKeyLister
 	NewSettingsAdapter    SettingsAdapterFactory
 	NewDestinationCatalog DestinationCatalogFactory
+	NewAlertAdapter       AlertAdapterFactory
 	// RegistrationRecovery uses a direct uncached client. It completes a durable
 	// Telegram publish/fence release before any Sentry API dependency is needed.
 	RegistrationRecovery *registration.Service
@@ -165,6 +169,8 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	settingsErr := settingsResult.Err()
 	destinationResult := r.reconcileDestinations(ctx, resource, connection, apiClient, result)
 	destinationErr := destinationResult.Err()
+	alertResult := r.reconcileAlerts(ctx, resource, connection, apiClient, result)
+	alertErr := alertResult.Err()
 	base := resource.DeepCopy()
 	resource.Status.ObservedGeneration = resource.Generation
 	resource.Status.Origin = string(result.Origin)
@@ -173,6 +179,7 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	resource.Status.DSNSecret = dsnResult.Secret
 	resource.Status.DSNClientKey = dsnResult.ClientKey
 	resource.Status.Destinations = safeDestinationStatuses(destinationResult.Statuses, resource.Status.Destinations)
+	resource.Status.Alerts = safeAlertStatuses(alertResult.Statuses)
 	dsnApplicable := result.AccessMode == binding.AccessManage || resource.Spec.DSN != nil
 	dsnStatus, dsnReason, dsnMessage := dsnCondition(dsnApplicable, dsnResult.Phase, dsnResult.ExternalNameChanged, dsnErr)
 	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
@@ -200,6 +207,15 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		Reason:             destinationReason,
 		Message:            destinationMessage,
 	})
+	alertsApplicable := resource.Spec.Alerts != nil
+	alertsStatus, alertsReason, alertsMessage := alertCondition(alertsApplicable, alertResult, alertErr)
+	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+		Type:               "AlertsReady",
+		Status:             alertsStatus,
+		ObservedGeneration: resource.Generation,
+		Reason:             alertsReason,
+		Message:            alertsMessage,
+	})
 	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
 		Type:               "ProjectReady",
 		Status:             metav1.ConditionTrue,
@@ -207,7 +223,7 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		Reason:             "ProjectVerified",
 		Message:            "Project identity, access mode and ownership evidence are verified.",
 	})
-	ready := (!dsnApplicable || dsnStatus == metav1.ConditionTrue) && (!settingsApplicable || settingsStatus == metav1.ConditionTrue) && (!destinationApplicable || destinationStatus == metav1.ConditionTrue)
+	ready := (!dsnApplicable || dsnStatus == metav1.ConditionTrue) && (!settingsApplicable || settingsStatus == metav1.ConditionTrue) && (!destinationApplicable || destinationStatus == metav1.ConditionTrue) && (!alertsApplicable || alertsStatus == metav1.ConditionTrue)
 	readyStatus := metav1.ConditionTrue
 	readyReason := "ProjectVerified"
 	readyMessage := "Project identity, access mode and all applicable components are verified."
@@ -310,6 +326,25 @@ func destinationCondition(applicable bool, result destination.Result, err error)
 		}
 	}
 	return metav1.ConditionTrue, "DestinationsReady", "All configured destinations have verified pinned identities."
+}
+
+func alertCondition(applicable bool, result alertsruntime.Result, err error) (metav1.ConditionStatus, string, string) {
+	if !applicable {
+		return metav1.ConditionUnknown, "NotApplicable", "Alert management was not requested."
+	}
+	if err != nil {
+		ready := 0
+		for _, status := range result.Statuses {
+			if status.Err == nil {
+				ready++
+			}
+		}
+		if ready > 0 {
+			return metav1.ConditionFalse, "AlertsPartiallyApplied", "At least one alert failed; independently verified alerts were preserved."
+		}
+		return metav1.ConditionFalse, "AlertsNotReady", "Alerts could not be safely reconciled; protected identities were preserved."
+	}
+	return metav1.ConditionTrue, "AlertsReady", "All managed alerts match the requested state."
 }
 
 type dsnReconcileResult struct {
@@ -490,6 +525,147 @@ func (r *SentryProjectReconciler) reconcileDestinations(ctx context.Context, res
 	next.Destinations = result.Bindings
 	if _, err := r.Bindings.UpdateBinding(ctx, record, next); err != nil {
 		result.PolicyErr = err
+	}
+	return result
+}
+
+func (r *SentryProjectReconciler) reconcileAlerts(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, apiClient *sentryapi.Client, projectResult projectruntime.Result) alertsruntime.Result {
+	if projectResult.AccessMode != binding.AccessManage {
+		if resource.Spec.Alerts == nil {
+			return alertsruntime.Result{}
+		}
+		return alertsruntime.Result{Statuses: map[string]alertsruntime.Status{"": {State: alertsruntime.StateError, Reason: "InvalidAlertInput", Err: alertsruntime.ErrInvalidInput}}}
+	}
+	record, err := r.Bindings.GetBinding(ctx, string(resource.UID))
+	if err != nil {
+		return alertsruntime.Result{Statuses: map[string]alertsruntime.Status{"": {State: alertsruntime.StateError, Reason: "AlertStateUnavailable", Err: err}}}
+	}
+	if resource.Spec.Alerts == nil && len(record.Binding.Alerts) == 0 {
+		return alertsruntime.Result{}
+	}
+	desiredCount := 0
+	if resource.Spec.Alerts != nil {
+		desiredCount = len(*resource.Spec.Alerts)
+	}
+	desired := make(map[string]alertsruntime.Desired, desiredCount)
+	if resource.Spec.Alerts != nil {
+		for name, alert := range *resource.Spec.Alerts {
+			enabled := true
+			if alert.Enabled != nil {
+				enabled = *alert.Enabled
+			}
+			value := alertsruntime.Desired{Trigger: alertsruntime.Trigger(alert.Trigger), Enabled: enabled, Notify: append([]string(nil), alert.Notify...)}
+			if alert.WindowMinutes != nil {
+				value.WindowMinutes = int(*alert.WindowMinutes)
+			}
+			if alert.Threshold != nil {
+				value.Threshold = *alert.Threshold
+			}
+			desired[name] = value
+		}
+	}
+
+	legacy := &alertsruntime.LegacyRouterAdapter{Legacy: &alertsruntime.LegacyHTTPAdapter{Client: apiClient, Destinations: record.Binding.Destinations}}
+	modern := &alertsruntime.ModernHTTPAdapter{Client: apiClient, Destinations: record.Binding.Destinations}
+	var adapter alertsruntime.Adapter = &alertsruntime.MuxAdapter{Adapters: map[string]alertsruntime.Adapter{
+		alertsruntime.LegacyCombinedAdapter:    legacy,
+		alertsruntime.ModernMetricIssueAdapter: modern,
+	}}
+	if r.NewAlertAdapter != nil {
+		adapter = r.NewAlertAdapter(apiClient, record.Binding.Destinations)
+	}
+	capabilities := alertCapabilities(connection.Spec)
+	marker := binding.Marker{}
+	if record.Binding.Marker != nil {
+		marker = *record.Binding.Marker
+	}
+	result := (&alertsruntime.Engine{Adapter: adapter, Journal: r.Bindings, Audit: r.Audit}).Reconcile(ctx, alertsruntime.Input{
+		Organization: connection.Spec.Organization,
+		ProjectSlug:  record.Binding.Slug,
+		Manage:       resource.Spec.Alerts != nil,
+		Desired:      desired,
+		Current:      record.Binding.Alerts,
+		Tombstones:   record.Binding.Tombstones,
+		Destinations: record.Binding.Destinations,
+		PinnedAdapter: func() string {
+			if record.Binding.PinnedAdapters == nil {
+				return ""
+			}
+			return record.Binding.PinnedAdapters["alerts"]
+		}(),
+		Capabilities: capabilities,
+		Marker:       marker,
+		Authorize:    r.alertAuthorizer(resource, connection, record.Binding),
+	})
+	if resource.Spec.Alerts == nil {
+		return result
+	}
+	next := record.Binding
+	next.Alerts = result.Bindings
+	next.Tombstones = result.Tombstones
+	next.PinnedAdapters = cloneStringMap(record.Binding.PinnedAdapters)
+	if result.PinnedAdapter != "" {
+		next.PinnedAdapters["alerts"] = result.PinnedAdapter
+	}
+	if reflect.DeepEqual(record.Binding.Alerts, next.Alerts) && reflect.DeepEqual(record.Binding.Tombstones, next.Tombstones) && reflect.DeepEqual(record.Binding.PinnedAdapters, next.PinnedAdapters) {
+		return result
+	}
+	if _, err := r.Bindings.UpdateBinding(ctx, record, next); err != nil {
+		result.Statuses[""] = alertsruntime.Status{State: alertsruntime.StateError, Reason: "AlertStatePersistFailed", Err: err}
+	}
+	return result
+}
+
+func alertCapabilities(spec sentryconfigurationv1alpha1.SentryConnectionSpec) []alertsruntime.Capability {
+	if spec.Compatibility == nil {
+		return nil
+	}
+	switch spec.Compatibility.Alerts {
+	case sentryconfigurationv1alpha1.AlertCompatibilityLegacy24:
+		return []alertsruntime.Capability{{
+			Name: alertsruntime.LegacyCombinedAdapter,
+			Triggers: map[alertsruntime.Trigger]bool{
+				alertsruntime.TriggerFirstSeen: true, alertsruntime.TriggerRegression: true, alertsruntime.TriggerEventCount: true,
+			},
+			SupportsUpdate: true, SupportsToggle: false,
+		}}
+	case sentryconfigurationv1alpha1.AlertCompatibilityModern26:
+		return []alertsruntime.Capability{{
+			Name: alertsruntime.ModernMetricIssueAdapter,
+			Triggers: map[alertsruntime.Trigger]bool{
+				alertsruntime.TriggerEventCount: true,
+			},
+			SupportsUpdate: true, SupportsToggle: true,
+		}}
+	default:
+		return nil
+	}
+}
+
+func (r *SentryProjectReconciler) alertAuthorizer(original *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, expected binding.ProjectBinding) alertsruntime.Authorization {
+	return func(ctx context.Context) error {
+		if err := r.dsnAuthorizer(original, connection, expected)(ctx); err != nil {
+			return err
+		}
+		latestConnection := &sentryconfigurationv1alpha1.SentryConnection{}
+		if err := r.Get(ctx, client.ObjectKey{Name: connection.Name}, latestConnection); err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(latestConnection.Spec.Compatibility, connection.Spec.Compatibility) {
+			return dsn.ErrAuthorization
+		}
+		state, err := r.Bindings.GetBinding(ctx, string(original.UID))
+		if err != nil || !reflect.DeepEqual(state.Binding.Alerts, expected.Alerts) || !reflect.DeepEqual(state.Binding.Destinations, expected.Destinations) || !reflect.DeepEqual(state.Binding.PinnedAdapters, expected.PinnedAdapters) {
+			return dsn.ErrAuthorization
+		}
+		return nil
+	}
+}
+
+func cloneStringMap(input map[string]string) map[string]string {
+	result := make(map[string]string, len(input)+1)
+	for key, value := range input {
+		result[key] = value
 	}
 	return result
 }
@@ -687,6 +863,23 @@ func safeDestinationStatuses(statuses map[string]destination.Status, existing ma
 			next.RegistrationCommit = current.RegistrationCommit.DeepCopy()
 		}
 		result[name] = next
+	}
+	return result
+}
+
+func safeAlertStatuses(statuses map[string]alertsruntime.Status) map[string]sentryconfigurationv1alpha1.AlertStatus {
+	if len(statuses) == 0 {
+		return nil
+	}
+	result := make(map[string]sentryconfigurationv1alpha1.AlertStatus, len(statuses))
+	for name, status := range statuses {
+		if name == "" {
+			continue
+		}
+		result[name] = sentryconfigurationv1alpha1.AlertStatus{State: status.State, Reason: status.Reason}
+	}
+	if len(result) == 0 {
+		return nil
 	}
 	return result
 }

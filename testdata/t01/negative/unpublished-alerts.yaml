@@ -1,10 +1,19 @@
 apiVersion: sentryconfiguration.io/v1alpha1
 kind: SentryProject
 metadata:
-  name: invalid-alerts
+  name: invalid-alert-shape
   namespace: checkout-prod
 spec:
   project:
     create:
       team: payments
-  alerts: {}
+  destinations:
+    team:
+      slack:
+        channel: payments-alerts
+  alerts:
+    broken-count:
+      trigger: event-count
+      windowMinutes: 5
+      notify:
+        - team

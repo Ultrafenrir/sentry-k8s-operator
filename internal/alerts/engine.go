@@ -376,12 +376,9 @@ func selectCapability(input Input, keys []string) (Capability, error) {
 		if pinned != "" && candidate.Name != pinned {
 			continue
 		}
-		if !candidate.SupportsToggle {
-			continue
-		}
 		compatible := true
 		for _, key := range keys {
-			if !candidate.Triggers[input.Desired[key].Trigger] {
+			if !candidate.Triggers[input.Desired[key].Trigger] || (!candidate.SupportsToggle && !input.Desired[key].Enabled) {
 				compatible = false
 				break
 			}

@@ -179,5 +179,5 @@ workflow/tag identity; `make verify-release-workflow` locks that source contract
 workflow run occurred and no image was pushed, signed or verified against a real registry.
 
 This does not make T10 complete. There is no published registry/chart repository, signed
-release, live Sentry acceptance, full alerts example, human usability test, or upgrade test
+release, live Sentry alert-action acceptance, human usability test, or upgrade test
 between distinct code/schema versions with an externally submitted pending operation.
