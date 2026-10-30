@@ -23,6 +23,10 @@ rg -q 'ReleasableDestinations' internal/alerts/engine.go
 rg -q 'OperationSubmitted' internal/alerts/journal.go
 rg -q 'finishMutation' internal/alerts/journal.go
 rg -q 'ErrAuditUnavailable' internal/alerts/journal.go
+rg -q 'ModernMetricIssueAdapter' internal/alerts/modern_http_adapter.go
+rg -q 'observed\.Marker\.Matches\(marker\)' internal/alerts/modern_http_adapter.go
+rg -q 'TestModernHTTPAdapterFullMetricIssueLifecycle' internal/alerts/modern_http_adapter_test.go
+rg -q 'TestModernHTTPAdapterRecoversLostDetectorCreateResponse' internal/alerts/modern_http_adapter_test.go
 rg -q 'ReasonJournalSubmitted' internal/audit/audit.go
 rg -q 'ReasonResultRecovered' internal/audit/audit.go
 rg -q 'TestAbsentAlertsDoesNotManageExistingChildren' internal/alerts/engine_test.go
@@ -42,4 +46,4 @@ if rg -n 'json:"alerts' api/v1alpha1 config/crd/bases; then
   exit 1
 fi
 
-echo 'T07 protected lifecycle core verified; concrete controller adapters and usable detector/action delivery remain gated'
+echo 'T07 protected lifecycle and modern metric HTTP adapter verified; controller wiring and live action delivery remain gated'

@@ -47,6 +47,23 @@ Implemented lifecycle core and its current evidence boundary:
 - Canonical hashes sort destination references and exclude enable state, so a toggle does
   not trigger an unrelated rule update. Invalid/unsupported rules fail per alert and do not
   block independent valid rules.
+- `ModernHTTPAdapter` implements the pinned Sentry 26 `metric_issue` pair as one protected
+  composite detector/workflow identity. Names carry project slug, local key, canonical
+  desired hash and the exact parent ownership marker; both children and their bidirectional
+  link are checked before update, toggle or delete. Delete now receives the expected marker
+  through the common Adapter contract, closing the last point at which a concrete adapter
+  otherwise could not compare protected ownership immediately before mutation.
+- Modern event-count rendering is deliberately narrow: events/count(), error event type,
+  static high/OK conditions and one workflow action filter. Slack and PagerDuty actions are
+  built only from active protected destination identities; readable local keys remain the
+  desired input. Telegram, missing, revoked and malformed identities fail closed before an
+  HTTP mutation. The adapter never accepts raw native action/config/query payloads.
+- Ensure lists every paginated organization workflow and project metric detector, matches
+  the complete managed name, rejects duplicates/half-pairs, and reuses a detached workflow
+  created before a lost response. A lost detector POST response is recovered from the same
+  workflow/detector pair with no second POST. Update is workflow-first and treats the
+  detector hash/state as authoritative, so an interrupted pair update/toggle can safely
+  converge without changing either identity.
 
 Verification:
 
@@ -58,6 +75,10 @@ Verification:
   preservation of an unbound manual alert. Failure injection also covers a child created
   before a lost Ensure response: restart recovery returns the same child, not a duplicate.
   A policy failure during alert deletion is verified to block destination cleanup release.
+- TLS-backed HTTP adapter tests cover the complete modern metric pair lifecycle, exact
+  source-derived Slack/PagerDuty payloads, composite identity stability, idempotent Ensure,
+  a connection drop after detector creation, ownership denial before DELETE, unsupported
+  Telegram rejection and strict identity decoding.
 - Audit failure injection proves that no adapter call occurs when the start event cannot be
   recorded, and that the protected journal remains Submitted. A separately verified resumed
   operation records `Recovered` and closes without authorization or a second Apply. Sentinel
@@ -93,9 +114,9 @@ Evidence boundary and remaining work:
   project detector, while `uptime_domain_failure` owns a separate subscription/quota/seat
   lifecycle. Neither may be selected as a generic fallback for the verified `metric_issue`
   lifecycle, and one accepted metric-count detector does not prove all preset mappings.
-- Concrete legacy issue, legacy metric and modern detector/workflow adapters, controller
-  wiring to the protected Store/status and destination release signal, action lifecycle
-  and notification delivery remain required before T07 can be Complete.
+- Concrete legacy issue and legacy metric adapters, controller wiring to the protected
+  Store/status and destination release signal, live modern Slack/PagerDuty delivery
+  acceptance and the remaining trigger mappings are required before T07 can be Complete.
 - The closed audit core now covers managed project create/delete, internal alert mutations,
   Telegram registration, destination cleanup and external Telegram delivery through the
   durable immutable export/retention backend. Queue-administration coverage remains required

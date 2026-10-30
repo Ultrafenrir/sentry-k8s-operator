@@ -87,7 +87,7 @@ type Adapter interface {
 	Observe(context.Context, string, string, string, string) (Observed, bool, error)
 	Update(context.Context, string, string, string, string, Desired) (Observed, error)
 	SetEnabled(context.Context, string, string, string, string, bool) (Observed, error)
-	Delete(context.Context, string, string, string, string) error
+	Delete(context.Context, string, string, string, string, binding.Marker) error
 }
 
 type Authorization func(context.Context) error
@@ -343,7 +343,7 @@ func (e *Engine) deleteOne(ctx context.Context, input Input, key string, current
 		Hash:  mutationHash(current.Adapter, current.ExternalIdentity, current.DesiredHash),
 		Audit: e.Audit, Action: audit.ActionDelete, Authorize: input.Authorize,
 		Apply: func(ctx context.Context) error {
-			return e.Adapter.Delete(ctx, current.Adapter, input.Organization, input.ProjectSlug, current.ExternalIdentity)
+			return e.Adapter.Delete(ctx, current.Adapter, input.Organization, input.ProjectSlug, current.ExternalIdentity, current.Marker)
 		},
 		Verify: func(ctx context.Context) (bool, error) {
 			observed, found, verifyErr := e.Adapter.Observe(ctx, current.Adapter, input.Organization, input.ProjectSlug, current.ExternalIdentity)

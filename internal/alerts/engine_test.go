@@ -410,7 +410,7 @@ func (f *fakeAdapter) SetEnabled(_ context.Context, _, _, _, identity string, en
 	return observed, nil
 }
 
-func (f *fakeAdapter) Delete(_ context.Context, _, _, _, identity string) error {
+func (f *fakeAdapter) Delete(_ context.Context, _, _, _, identity string, _ binding.Marker) error {
 	key := identity[len("id-"):]
 	f.operations = append(f.operations, "delete:"+key)
 	delete(f.objects, identity)
