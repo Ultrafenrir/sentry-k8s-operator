@@ -3,9 +3,9 @@ T05 — FILTERS, PII И GROUPING
 Статус: Complete для опубликованной alpha surface (filters + PII); HTTP round-trip
 Verified на локальных self-hosted 24.7.1 и 26.10.1.
 Profile, grouping/fingerprintRules, advanced и reset остаются Unsupported по T00/ADR 0001.
-PII scrubbing нового synthetic event Verified на обеих локальных self-hosted версиях;
-localhost inbound-filter rejection также Verified. Browser-extension/web-crawler event
-semantics и historical reprocessing остаются Unknown.
+PII scrubbing нового synthetic event и event semantics всех трёх опубликованных inbound
+filters Verified на обеих локальных self-hosted версиях. Historical reprocessing остаётся
+Unknown.
 
 1. Граница публичного контракта
 
@@ -82,9 +82,9 @@ body и отсутствие blind retry.
 Live disposable Sentry подтвердил transport и точный read-after-write для трёх filters и
 пяти PII fields. Затем обе версии приняли synthetic event через active Default DSN;
 event-detail GET по точному ID вернул sensitive extras как [Filtered], сохранил контрольное
-несекретное значение и не вернул исходные sentinels. Затем при localhost=true обе версии
-приняли envelope, но не сохранили event с
-user.ip_address=127.0.0.1: exact event-detail GET оставался 404 в контрольном окне, тогда
-как control event был читаем. Browser-extension/web-crawler event rejection, grouping и
-историческая перегруппировка ещё не проверены. Grouping и profiles требуют отдельного
-adapter-neutral design/round-trip, а не передачи raw DSL.
+несекретное значение и не вернул исходные sentinels. При localhost=true обе версии приняли
+envelope, но не сохранили event с user.ip_address=127.0.0.1. Отдельные matching events для
+browser-extensions и web-crawlers сначала были читаемы при active=false, а в отдельном
+одноразовом project остались 404 при active=true. Grouping и историческая перегруппировка
+ещё не проверены. Grouping и profiles требуют отдельного adapter-neutral design/round-trip,
+а не передачи raw DSL.

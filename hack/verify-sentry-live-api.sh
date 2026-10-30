@@ -61,6 +61,8 @@ project="sko-live-api"
 managed_name='Live API [managed;o=acceptance;m=sko]'
 recovery_project="sko-lost-response"
 recovery_name='Lost response [managed;o=acceptance;m=sko]'
+filter_project="sko-filter-semantics"
+filter_name='Filter semantics [managed;o=acceptance;m=sko]'
 
 request() {
   method=$1
@@ -209,12 +211,65 @@ if ! printf '%s\n' "$project_id" | grep -Eq '^[0-9]+$'; then
   exit 1
 fi
 
+event_request="$temporary_dir/event-request.json"
+event_response="$temporary_dir/event-response.json"
+ingest_event() {
+  description=$1
+  input=$2
+  ingest_status=$(curl --silent --show-error --noproxy '*' \
+    --connect-timeout 2 --max-time 30 --request POST \
+    --header 'Content-Type: application/json' --data-binary "@$input" \
+    --output "$event_response" --write-out '%{http_code}' \
+    "$base_url/api/$project_id/store/?sentry_key=$public_key&sentry_version=7")
+  case "$ingest_status" in
+    2??) ;;
+    *) echo "$description ingestion returned HTTP $ingest_status" >&2; exit 1 ;;
+  esac
+}
+
+wait_for_event() {
+  expected_event_id=$1
+  description=$2
+  event_attempt=0
+  event_status=
+  while [ "$event_attempt" -lt 120 ]; do
+    event_attempt=$((event_attempt + 1))
+    event_status=$(curl --config "$auth_config" --silent --show-error --noproxy '*' \
+      --connect-timeout 2 --max-time 10 --output "$event_response" --write-out '%{http_code}' \
+      "$base_url/api/0/projects/$organization/$project/events/$expected_event_id/")
+    case "$event_status" in
+      200) break ;;
+      404) sleep 1 ;;
+      *) echo "$description lookup returned HTTP $event_status" >&2; exit 1 ;;
+    esac
+  done
+  if [ "$event_status" != 200 ]; then
+    echo "$description was not readable after ingestion" >&2
+    exit 1
+  fi
+}
+
+assert_event_filtered() {
+  expected_event_id=$1
+  description=$2
+  filtered_attempt=0
+  while [ "$filtered_attempt" -lt 20 ]; do
+    filtered_attempt=$((filtered_attempt + 1))
+    filtered_status=$(curl --config "$auth_config" --silent --show-error --noproxy '*' \
+      --connect-timeout 2 --max-time 10 --output "$event_response" --write-out '%{http_code}' \
+      "$base_url/api/0/projects/$organization/$project/events/$expected_event_id/")
+    case "$filtered_status" in
+      404) sleep 1 ;;
+      200) echo "$description became readable" >&2; exit 1 ;;
+      *) echo "$description lookup returned HTTP $filtered_status" >&2; exit 1 ;;
+    esac
+  done
+}
+
 case "$version" in
   24.7.1) event_id=24710000000000000000000000000001 ;;
   26.10.1) event_id=26101000000000000000000000000001 ;;
 esac
-event_request="$temporary_dir/event-request.json"
-event_response="$temporary_dir/event-response.json"
 jq -n --arg event_id "$event_id" '{
   event_id: $event_id,
   platform: "other",
@@ -228,33 +283,8 @@ jq -n --arg event_id "$event_id" '{
     request_id: "sko-safe-request-id"
   }
 }' >"$event_request"
-ingest_status=$(curl --silent --show-error --noproxy '*' \
-  --connect-timeout 2 --max-time 30 --request POST \
-  --header 'Content-Type: application/json' --data-binary "@$event_request" \
-  --output "$event_response" --write-out '%{http_code}' \
-  "$base_url/api/$project_id/store/?sentry_key=$public_key&sentry_version=7")
-case "$ingest_status" in
-  2??) ;;
-  *) echo "synthetic event ingestion returned HTTP $ingest_status" >&2; exit 1 ;;
-esac
-
-event_attempt=0
-event_status=
-while [ "$event_attempt" -lt 120 ]; do
-  event_attempt=$((event_attempt + 1))
-  event_status=$(curl --config "$auth_config" --silent --show-error --noproxy '*' \
-    --connect-timeout 2 --max-time 10 --output "$event_response" --write-out '%{http_code}' \
-    "$base_url/api/0/projects/$organization/$project/events/$event_id/")
-  case "$event_status" in
-    200) break ;;
-    404) sleep 1 ;;
-    *) echo "synthetic event lookup returned HTTP $event_status" >&2; exit 1 ;;
-  esac
-done
-if [ "$event_status" != 200 ]; then
-  echo 'synthetic event was not readable after ingestion' >&2
-  exit 1
-fi
+ingest_event 'synthetic PII event' "$event_request"
+wait_for_event "$event_id" 'synthetic PII event'
 assert_json "ingested event is returned by exact identity with sensitive extras scrubbed" '
   .eventID == $event_id and
   .message == "Synthetic PII acceptance" and
@@ -278,27 +308,120 @@ jq -n --arg event_id "$filtered_event_id" '{
   environment: "sko-live",
   user: {ip_address: "127.0.0.1"}
 }' >"$event_request"
-filtered_ingest_status=$(curl --silent --show-error --noproxy '*' \
-  --connect-timeout 2 --max-time 30 --request POST \
-  --header 'Content-Type: application/json' --data-binary "@$event_request" \
-  --output "$event_response" --write-out '%{http_code}' \
-  "$base_url/api/$project_id/store/?sentry_key=$public_key&sentry_version=7")
-case "$filtered_ingest_status" in
-  2??) ;;
-  *) echo "filtered synthetic event ingestion returned HTTP $filtered_ingest_status" >&2; exit 1 ;;
+ingest_event 'localhost-filtered synthetic event' "$event_request"
+assert_event_filtered "$filtered_event_id" 'localhost-filtered synthetic event'
+
+case "$version" in
+  24.7.1)
+    extension_control_id=24710000000000000000000000000003
+    extension_filtered_id=24710000000000000000000000000004
+    crawler_control_id=24710000000000000000000000000005
+    crawler_filtered_id=24710000000000000000000000000006
+    ;;
+  26.10.1)
+    extension_control_id=26101000000000000000000000000003
+    extension_filtered_id=26101000000000000000000000000004
+    crawler_control_id=26101000000000000000000000000005
+    crawler_filtered_id=26101000000000000000000000000006
+    ;;
 esac
-filtered_attempt=0
-while [ "$filtered_attempt" -lt 20 ]; do
-  filtered_attempt=$((filtered_attempt + 1))
-  filtered_status=$(curl --config "$auth_config" --silent --show-error --noproxy '*' \
-    --connect-timeout 2 --max-time 10 --output "$event_response" --write-out '%{http_code}' \
-    "$base_url/api/0/projects/$organization/$project/events/$filtered_event_id/")
-  case "$filtered_status" in
-    404) sleep 1 ;;
-    200) echo 'localhost-filtered synthetic event became readable' >&2; exit 1 ;;
-    *) echo "filtered synthetic event lookup returned HTTP $filtered_status" >&2; exit 1 ;;
-  esac
+
+jq -n --arg event_id "$extension_control_id" '{
+  event_id: $event_id,
+  platform: "javascript",
+  logger: "sko-live",
+  level: "error",
+  message: "Synthetic browser extension control",
+  exception: {values: [{type: "Error", value: "http://loading.retry.widdit.com/"}]}
+}' >"$event_request"
+ingest_event 'browser-extension disabled control event' "$event_request"
+wait_for_event "$extension_control_id" 'browser-extension disabled control event'
+
+jq -n --arg event_id "$crawler_control_id" '{
+  event_id: $event_id,
+  platform: "other",
+  logger: "sko-live",
+  level: "error",
+  message: "Synthetic web crawler control",
+  request: {
+    url: "http://example.com",
+    method: "GET",
+    headers: [["User-Agent", "Mediapartners-Google"]]
+  }
+}' >"$event_request"
+ingest_event 'web-crawler disabled control event' "$event_request"
+wait_for_event "$crawler_control_id" 'web-crawler disabled control event'
+
+filter_project_request="$temporary_dir/filter-project-request.json"
+filter_project_response="$temporary_dir/filter-project-response.json"
+jq -n --arg name "$filter_name" --arg slug "$filter_project" \
+  '{name: $name, slug: $slug, default_rules: false}' >"$filter_project_request"
+request POST "/api/0/teams/$organization/$team/projects/" \
+  "$filter_project_request" "$filter_project_response"
+assert_json "filter-semantics project preserves its ownership marker" \
+  '.slug == $slug and .name == $name and (.id | type == "string")' \
+  "$filter_project_response" --arg slug "$filter_project" --arg name "$filter_name"
+
+for filter_id in browser-extensions web-crawlers; do
+  jq -n '{active: true}' >"$filter_request"
+  request PUT "/api/0/projects/$organization/$filter_project/filters/$filter_id/" \
+    "$filter_request" "$filter_response"
 done
+request GET "/api/0/projects/$organization/$filter_project/filters/" '' "$filters_response"
+assert_json "enabled semantic filters round-trip before first ingestion" '
+  ([.[] | select(.id == "browser-extensions" and .active == true)] | length) == 1 and
+  ([.[] | select(.id == "web-crawlers" and .active == true)] | length) == 1
+' "$filters_response"
+
+filter_keys_response="$temporary_dir/filter-keys-response.json"
+request GET "/api/0/projects/$organization/$filter_project/keys/" '' "$filter_keys_response"
+filter_public_key=$(jq -r '[.[] | select(.isActive == true)][0].public // empty' "$filter_keys_response")
+filter_project_id=$(jq -r '[.[] | select(.isActive == true)][0].projectId // empty' "$filter_keys_response")
+if ! printf '%s\n' "$filter_public_key" | grep -Eq '^[0-9a-f]{32}$'; then
+  echo 'filter-semantics project key has an invalid public key' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$filter_project_id" | grep -Eq '^[0-9]+$'; then
+  echo 'filter-semantics project key has an invalid project identity' >&2
+  exit 1
+fi
+
+primary_project=$project
+primary_project_id=$project_id
+primary_public_key=$public_key
+project=$filter_project
+project_id=$filter_project_id
+public_key=$filter_public_key
+
+jq -n --arg event_id "$extension_filtered_id" '{
+  event_id: $event_id,
+  platform: "javascript",
+  logger: "sko-live",
+  level: "error",
+  message: "Synthetic browser extension filtered",
+  exception: {values: [{type: "Error", value: "http://loading.retry.widdit.com/"}]}
+}' >"$event_request"
+ingest_event 'browser-extension enabled filtered event' "$event_request"
+assert_event_filtered "$extension_filtered_id" 'browser-extension enabled filtered event'
+
+jq -n --arg event_id "$crawler_filtered_id" '{
+  event_id: $event_id,
+  platform: "other",
+  logger: "sko-live",
+  level: "error",
+  message: "Synthetic web crawler filtered",
+  request: {
+    url: "http://example.com",
+    method: "GET",
+    headers: [["User-Agent", "Mediapartners-Google"]]
+  }
+}' >"$event_request"
+ingest_event 'web-crawler enabled filtered event' "$event_request"
+assert_event_filtered "$crawler_filtered_id" 'web-crawler enabled filtered event'
+
+project=$primary_project
+project_id=$primary_project_id
+public_key=$primary_public_key
 
 if [ "$version" = 24.7.1 ]; then
   rules_response="$temporary_dir/rules-response.json"
@@ -561,6 +684,7 @@ fi
 
 delete_response="$temporary_dir/delete-response.json"
 request DELETE "/api/0/projects/$organization/$recovery_project/" '' "$delete_response"
+request DELETE "/api/0/projects/$organization/$filter_project/" '' "$delete_response"
 request DELETE "/api/0/projects/$organization/$project/" '' "$delete_response"
 
 attempt=0
@@ -596,6 +720,24 @@ while [ "$recovery_delete_attempt" -lt 30 ]; do
 done
 if [ "$recovery_status" != 404 ]; then
   echo "recovered project remained readable after delete: HTTP $recovery_status" >&2
+  exit 1
+fi
+
+filter_delete_attempt=0
+filter_delete_status=
+while [ "$filter_delete_attempt" -lt 30 ]; do
+  filter_delete_attempt=$((filter_delete_attempt + 1))
+  filter_delete_status=$(curl --config "$auth_config" --silent --show-error --noproxy '*' \
+    --connect-timeout 2 --max-time 10 --output "$filter_project_response" --write-out '%{http_code}' \
+    "$base_url/api/0/projects/$organization/$filter_project/")
+  case "$filter_delete_status" in
+    404) break ;;
+    200) sleep 1 ;;
+    *) echo "filter-semantics project delete verification returned HTTP $filter_delete_status" >&2; exit 1 ;;
+  esac
+done
+if [ "$filter_delete_status" != 404 ]; then
+  echo "filter-semantics project remained readable after delete: HTTP $filter_delete_status" >&2
   exit 1
 fi
 

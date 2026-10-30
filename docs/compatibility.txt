@@ -212,9 +212,10 @@ round-trip. Затем Default DSN принял synthetic event с sensitive ext
 вернул оба sensitive значения как [Filtered], сохранил несекретное контрольное значение
 и не содержал исходных sentinels. Поэтому self-hosted PII строка Verified включает
 фактическую обработку нового события. Обе версии также отбросили отдельный event с
-user.ip_address=127.0.0.1 при localhost=true: event остался 404 в контрольном окне, тогда
-как preceding control event был читаем. Event semantics browser-extensions/web-crawlers,
-historical reprocessing и rolling SaaS behavior этим не доказаны.
+user.ip_address=127.0.0.1 при localhost=true. Для browser-extensions и web-crawlers
+matching control events были читаемы при active=false, а после настройки active=true до
+первой ingestion в отдельном одноразовом project точные event IDs оставались 404 в
+контрольном окне. Historical reprocessing и rolling SaaS behavior этим не доказаны.
 
 fingerprintingRules в обеих версиях остаётся одной raw newline-delimited DSL string.
 Одинаковая простая grammar подтверждается source tests, однако 26.10.1 parser уже имеет
@@ -418,9 +419,9 @@ modern workflow read/write       alerts:read / alerts:write согласно cur
 11. Обязательные следующие проверки
 
 1) 24.7.1/26.10.1: controller-level lost-response recovery с реальным Kubernetes journal.
-2) 24.7.1/26.10.1: browser-extension/web-crawler event rejection и controller drift repair.
+2) 24.7.1/26.10.1: controller-level filter/settings drift repair с live Sentry.
 3) 24.7.1: public non-destructive disable для issue/metric rule остаётся опровергнут source.
-4) 26.10.1: feature flags и полный detector/workflow lifecycle, включая enabled=false.
+4) 26.10.1: feature flags и detector families кроме проверенного metric detector.
 5) SaaS: те же calls с зафиксированной датой и очищенными fixtures.
 6) Slack/PagerDuty: duplicate readable names, pagination, revoked integration и delivery.
 7) Service hook/Sentry App: signed raw-body positive/negative/replay tests и TLS verification.

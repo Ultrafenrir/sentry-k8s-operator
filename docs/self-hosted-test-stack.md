@@ -89,10 +89,14 @@ exact event ID through the public event-detail API, requires both configured sen
 extras to be `[Filtered]`, preserves a non-sensitive control value, and rejects any response
 that still contains either original sentinel.
 It then posts a second event with `user.ip_address=127.0.0.1` while the localhost filter is
-active and requires the exact event ID to remain unreadable. A separate project-create
-request deliberately discards its successful response; acceptance recovers it only through
-GET by slug plus the exact marker, without a second POST, and deletes the recovered project.
-The matrix runs this acceptance after bootstrap and before removing the entire stack.
+active and requires the exact event ID to remain unreadable. Matching browser-extension and
+web-crawler control events must be readable with their filters disabled. Acceptance creates
+a separate disposable project, enables both filters before its first ingestion so Relay
+cache timing cannot affect the result, and requires both matching event IDs to remain 404.
+A separate project-create request deliberately discards its successful response; acceptance
+recovers it only through GET by slug plus the exact marker, without a second POST, and deletes
+all three projects. The matrix runs this acceptance after bootstrap and before removing the
+entire stack.
 
 `make sentry-clean` additionally removes the selected managed upstream checkout.
 `make sentry-matrix` performs the clean start/smoke/removal cycle for both versions in
@@ -134,12 +138,13 @@ omitted, the marker round-tripped, one active Default key had a local DSN, and d
 became a 404. The 24.7.1 run additionally observed zero default legacy rules. Settings,
 filters and PII fields passed HTTP round-trip on both versions. Both versions then accepted
 a synthetic event through the Default DSN and returned its sensitive extras scrubbed while
-preserving the control value. The localhost filter also rejected a loopback-IP event, and
-a discarded project-create response was recovered by exact slug/marker without a second
-POST. Browser-extension and web-crawler event semantics, controller+journal recovery with
-live Sentry, detector families beyond the verified metric detector, external actions,
-integrations, delivery and SaaS remain unverified. Legacy issue/metric CRUD and attached
-modern metric detector/workflow toggle/lifecycle are verified.
+preserving the control value. Localhost rejected a loopback-IP event; browser-extension and
+web-crawler matching events were readable with filters disabled and rejected in a fresh
+project configured before first ingestion. A discarded project-create response was recovered
+by exact slug/marker without a second POST. Controller/journal recovery with live Sentry,
+detector families beyond the verified metric detector, external actions, integrations,
+delivery and SaaS remain unverified. Legacy issue/metric CRUD and attached modern metric
+detector/workflow toggle/lifecycle are verified.
 
 Allocate at least 14 GB to Docker Desktop before running the full matrix. CI runners need
 the same resources plus enough disk for the official images. Put a job-level timeout around
