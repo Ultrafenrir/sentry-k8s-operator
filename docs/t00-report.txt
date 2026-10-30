@@ -1,5 +1,5 @@
 T00 — ОТЧЁТ ПЕРВОГО ЭТАПА
-Дата: 2026-10-29
+Дата: 2026-10-30
 Итог: source/contract часть и Kubernetes/toolchain freeze выполнены; локальный live-Sentry
 project lifecycle подтверждён для обеих целевых версий. Settings/alerts acceptance и M0
 не завершены. T01 scaffold разблокирован только на явно опубликованной alpha surface;
@@ -80,8 +80,11 @@ Sentry real calls: официальные self-hosted 24.7.1 и 26.10.1 уста
 health-check. В каждой версии local user token выполнил public-API create/read/delete
 marker-bearing project без platform и подтвердил active Default key с DSN. 24.7.1 также
 подтвердил отсутствие legacy rules при default_rules=false. Обе версии выполнили точный
-PUT/GET round-trip трёх inbound filters и пяти typed PII fields. Synthetic events, alert
-delivery, detector/action lifecycle, lost-response recovery и SaaS calls ещё не выполнялись.
+PUT/GET round-trip трёх inbound filters и пяти typed PII fields. Synthetic events
+с настроенными sensitive extras приняты через Default DSN обеих версий и прочитаны по
+точному event ID: secrets заменены на [Filtered], control value сохранён. Inbound-filter
+event rejection, alert delivery, detector/action lifecycle, lost-response recovery и SaaS
+calls ещё не выполнялись.
 24.7.1 legacy issue/metric CRUD и 26.10.1 detached workflow CRUD/toggle проверены live.
 Kubernetes: постоянный dev smoke работает на v1.35.5; exact v1.35.9/v1.36.5 release
 matrix выполнена на локально построенных arm64 kind images. Тот же probe set ранее
@@ -97,8 +100,8 @@ Sentry feature flags, permissions, transport, retries или delivery.
 6. Не проверено и почему
 
 - Sentry 24.7.1/26.10.1: project/settings и частичный alert lifecycle выполнены;
-  synthetic events, detector/actions, integrations, delivery, lost-response recovery и
-  SaaS calls не выполнены;
+  synthetic PII scrubbing выполнен, но inbound-filter rejection, detector/actions,
+  integrations, delivery, lost-response recovery и SaaS calls не выполнены;
 - Kubernetes matrix: envtest и exact-patch real-cluster probe matrix пройдены;
   project-side prototype registration fence и resourceVersion CAS проверены только в
   envtest, а двухресурсный Connection -> Project protocol и multi-node HA отсутствуют;

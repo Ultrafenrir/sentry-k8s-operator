@@ -83,6 +83,10 @@ published on the project-detectors endpoint. On both versions it also updates an
 back the three published inbound filters and all five typed PII settings fields. On 24.7.1
 it verifies legacy issue and metric alert create/read/update/delete lifecycles; on 26.10.1
 it verifies detached workflow create/read/update/disable/enable/delete.
+On both versions it posts a synthetic event through the active Default DSN, waits for the
+exact event ID through the public event-detail API, requires both configured sensitive
+extras to be `[Filtered]`, preserves a non-sensitive control value, and rejects any response
+that still contains either original sentinel.
 The matrix runs this acceptance after bootstrap and before removing the entire stack.
 
 `make sentry-clean` additionally removes the selected managed upstream checkout.
@@ -123,9 +127,11 @@ confirmed that a missing MaxMind license only stops the optional `geoipupdate` s
 Both versions also passed real project create/read/key/delete acceptance: platform was
 omitted, the marker round-tripped, one active Default key had a local DSN, and deletion
 became a 404. The 24.7.1 run additionally observed zero default legacy rules. Settings,
-filters and PII fields passed HTTP round-trip on both versions; synthetic event semantics,
-detector/action lifecycle, integrations, delivery, lost-response recovery and SaaS remain
-unverified. Legacy issue/metric CRUD and detached modern workflow toggle/lifecycle are verified.
+filters and PII fields passed HTTP round-trip on both versions. Both versions then accepted
+a synthetic event through the Default DSN and returned its sensitive extras scrubbed while
+preserving the control value. Inbound-filter event rejection, detector/action lifecycle,
+integrations, delivery, lost-response recovery and SaaS remain unverified. Legacy
+issue/metric CRUD and detached modern workflow toggle/lifecycle are verified.
 
 Allocate at least 14 GB to Docker Desktop before running the full matrix. CI runners need
 the same resources plus enough disk for the official images. Put a job-level timeout around
@@ -133,6 +139,6 @@ the same resources plus enough disk for the official images. Put a job-level tim
 runtime.
 
 The installer deliberately skips interactive user creation; `sentry-bootstrap` supplies
-the ephemeral local acceptance identity described above. Settings and alert lifecycle
-acceptance calls are the next step. A future SaaS token is independent of these local
-stacks and must be supplied through a Secret or CI secret, never committed to this repository.
+the ephemeral local acceptance identity described above. A future SaaS token is independent
+of these local stacks and must be supplied through a Secret or CI secret, never committed
+to this repository.

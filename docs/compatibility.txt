@@ -12,9 +12,11 @@ Unknown        — реальный вызов или достаточный ver
 
 На 2026-10-30 обе self-hosted версии прошли fresh install, полные миграции, health-check,
 Bearer authentication и реальный public-API lifecycle create/read/key/delete на полностью
-одноразовых volumes. В 24.7.1 дополнительно подтверждено отсутствие legacy rules после
-default_rules=false. В 26.10.1 GET project detectors не опубликован и отвечает 403,
-поэтому эффект default_rules=false остаётся ContractTested. SaaS token отсутствует.
+одноразовых volumes. Обе версии также приняли synthetic event через созданный Default DSN,
+вернули его по точному event ID и отфильтровали настроенные sensitiveFields. В 24.7.1
+дополнительно подтверждено отсутствие legacy rules после default_rules=false. В 26.10.1
+GET project detectors не опубликован и отвечает 403, поэтому эффект default_rules=false
+остаётся ContractTested. SaaS token отсутствует.
 
 2. Зафиксированные среды
 
@@ -203,8 +205,11 @@ dataScrubber, dataScrubberDefaults, scrubIPAddresses, sensitiveFields и safeFie
 version-pinned endpoint tests подтверждают false и list round-trip. Для обоих contracts
 добавлены отдельные обезличенные fixtures. Live acceptance на свежих 24.7.1 и 26.10.1
 дополнительно выполнил PUT/GET всех трёх filter IDs и пяти typed PII fields с точным
-round-trip, поэтому self-hosted строки повышены до Verified. Это не доказывает обработку
-реального события, historical reprocessing или rolling SaaS behavior.
+round-trip. Затем Default DSN принял synthetic event с sensitive extras, event detail GET
+вернул оба sensitive значения как [Filtered], сохранил несекретное контрольное значение
+и не содержал исходных sentinels. Поэтому self-hosted PII строка Verified включает
+фактическую обработку нового события. Inbound filter rejection, historical reprocessing
+и rolling SaaS behavior этим не доказаны.
 
 fingerprintingRules в обеих версиях остаётся одной raw newline-delimited DSL string.
 Одинаковая простая grammar подтверждается source tests, однако 26.10.1 parser уже имеет
@@ -404,9 +409,8 @@ modern workflow read/write       alerts:read / alerts:write согласно cur
 
 11. Обязательные следующие проверки
 
-1) 24.7.1: POST create с marker, platform omitted, default_rules=false; потерять response,
-   восстановить identity; доказать один usable active Default key и отсутствие rules.
-2) 24.7.1/26.10.1: synthetic-event filtering/scrubbing и controller-level drift repair.
+1) 24.7.1/26.10.1: потерять project-create response и восстановить identity по marker.
+2) 24.7.1/26.10.1: synthetic-event inbound-filter rejection и controller-level drift repair.
 3) 24.7.1: public non-destructive disable для issue/metric rule остаётся опровергнут source.
 4) 26.10.1: feature flags и полный detector/workflow lifecycle, включая enabled=false.
 5) SaaS: те же calls с зафиксированной датой и очищенными fixtures.

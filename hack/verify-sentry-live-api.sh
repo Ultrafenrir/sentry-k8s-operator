@@ -176,6 +176,73 @@ assert_json "typed PII settings round-trip" '
   .safeFields == ["request.headers.x-request-id"]
 ' "$settings_response"
 
+public_key=$(jq -r '[.[] | select(.isActive == true)][0].public // empty' "$keys_response")
+project_id=$(jq -r '[.[] | select(.isActive == true)][0].projectId // empty' "$keys_response")
+if ! printf '%s\n' "$public_key" | grep -Eq '^[0-9a-f]{32}$'; then
+  echo 'active project key has an invalid public key' >&2
+  exit 1
+fi
+if ! printf '%s\n' "$project_id" | grep -Eq '^[0-9]+$'; then
+  echo 'active project key has an invalid project identity' >&2
+  exit 1
+fi
+
+case "$version" in
+  24.7.1) event_id=24710000000000000000000000000001 ;;
+  26.10.1) event_id=26101000000000000000000000000001 ;;
+esac
+event_request="$temporary_dir/event-request.json"
+event_response="$temporary_dir/event-response.json"
+jq -n --arg event_id "$event_id" '{
+  event_id: $event_id,
+  platform: "other",
+  logger: "sko-live",
+  level: "error",
+  message: "Synthetic PII acceptance",
+  environment: "sko-live",
+  extra: {
+    authorization: "Bearer sko-sensitive-authorization",
+    password: "sko-sensitive-password",
+    request_id: "sko-safe-request-id"
+  }
+}' >"$event_request"
+ingest_status=$(curl --silent --show-error --noproxy '*' \
+  --connect-timeout 2 --max-time 30 --request POST \
+  --header 'Content-Type: application/json' --data-binary "@$event_request" \
+  --output "$event_response" --write-out '%{http_code}' \
+  "$base_url/api/$project_id/store/?sentry_key=$public_key&sentry_version=7")
+case "$ingest_status" in
+  2??) ;;
+  *) echo "synthetic event ingestion returned HTTP $ingest_status" >&2; exit 1 ;;
+esac
+
+event_attempt=0
+event_status=
+while [ "$event_attempt" -lt 120 ]; do
+  event_attempt=$((event_attempt + 1))
+  event_status=$(curl --config "$auth_config" --silent --show-error --noproxy '*' \
+    --connect-timeout 2 --max-time 10 --output "$event_response" --write-out '%{http_code}' \
+    "$base_url/api/0/projects/$organization/$project/events/$event_id/")
+  case "$event_status" in
+    200) break ;;
+    404) sleep 1 ;;
+    *) echo "synthetic event lookup returned HTTP $event_status" >&2; exit 1 ;;
+  esac
+done
+if [ "$event_status" != 200 ]; then
+  echo 'synthetic event was not readable after ingestion' >&2
+  exit 1
+fi
+assert_json "ingested event is returned by exact identity with sensitive extras scrubbed" '
+  .eventID == $event_id and
+  .message == "Synthetic PII acceptance" and
+  .context.authorization == "[Filtered]" and
+  .context.password == "[Filtered]" and
+  .context.request_id == "sko-safe-request-id" and
+  (tostring | contains("sko-sensitive-authorization") | not) and
+  (tostring | contains("sko-sensitive-password") | not)
+' "$event_response" --arg event_id "$event_id"
+
 if [ "$version" = 24.7.1 ]; then
   rules_response="$temporary_dir/rules-response.json"
   request GET "/api/0/projects/$organization/$project/rules/" '' "$rules_response"
@@ -389,4 +456,4 @@ if [ "$status" != 404 ]; then
   exit 1
 fi
 
-echo "Sentry $version live API project/settings/key/delete acceptance passed"
+echo "Sentry $version live API project/settings/ingestion/alerts/delete acceptance passed"
