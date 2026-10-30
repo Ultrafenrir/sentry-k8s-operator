@@ -33,10 +33,12 @@ type InputVersions struct {
 }
 
 type registryEntry struct {
-	baseURL string
-	client  *sentryapi.Client
-	inputs  SecretInputs
-	version InputVersions
+	baseURL               string
+	allowInsecureHTTP     bool
+	insecureSkipTLSVerify bool
+	client                *sentryapi.Client
+	inputs                SecretInputs
+	version               InputVersions
 }
 
 // Registry owns one live client and secret snapshot per SentryConnection.
@@ -58,7 +60,9 @@ func (r *Registry) Apply(name, baseURL string, inputs SecretInputs) (*sentryapi.
 	version := hashInputs(inputs)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if current, found := r.entries[name]; found && current.baseURL == baseURL {
+	if current, found := r.entries[name]; found && current.baseURL == baseURL &&
+		current.allowInsecureHTTP == inputs.AllowInsecureHTTP &&
+		current.insecureSkipTLSVerify == inputs.InsecureSkipTLSVerify {
 		if current.version == version {
 			return current.client, false, nil
 		}
@@ -71,21 +75,25 @@ func (r *Registry) Apply(name, baseURL string, inputs SecretInputs) (*sentryapi.
 		return current.client, true, nil
 	}
 	next, err := sentryapi.NewClient(sentryapi.Config{
-		BaseURL:       baseURL,
-		Token:         string(inputs.Token),
-		CABundle:      inputs.CABundle,
-		MaxConcurrent: 4,
-		MaxRetries:    3,
-		UserAgent:     "sentry-kubernetes-operator",
+		BaseURL:               baseURL,
+		Token:                 string(inputs.Token),
+		CABundle:              inputs.CABundle,
+		AllowInsecureHTTP:     inputs.AllowInsecureHTTP,
+		InsecureSkipTLSVerify: inputs.InsecureSkipTLSVerify,
+		MaxConcurrent:         4,
+		MaxRetries:            3,
+		UserAgent:             "sentry-kubernetes-operator",
 	})
 	if err != nil {
 		return nil, false, err
 	}
 	r.entries[name] = &registryEntry{
-		baseURL: baseURL,
-		client:  next,
-		inputs:  cloneInputs(inputs),
-		version: version,
+		baseURL:               baseURL,
+		allowInsecureHTTP:     inputs.AllowInsecureHTTP,
+		insecureSkipTLSVerify: inputs.InsecureSkipTLSVerify,
+		client:                next,
+		inputs:                cloneInputs(inputs),
+		version:               version,
 	}
 	return next, true, nil
 }
@@ -141,9 +149,11 @@ func hashInputs(inputs SecretInputs) InputVersions {
 
 func cloneInputs(inputs SecretInputs) SecretInputs {
 	return SecretInputs{
-		Token:       append([]byte(nil), inputs.Token...),
-		CABundle:    append([]byte(nil), inputs.CABundle...),
-		BotToken:    append([]byte(nil), inputs.BotToken...),
-		WebhookAuth: append([]byte(nil), inputs.WebhookAuth...),
+		Token:                 append([]byte(nil), inputs.Token...),
+		CABundle:              append([]byte(nil), inputs.CABundle...),
+		BotToken:              append([]byte(nil), inputs.BotToken...),
+		WebhookAuth:           append([]byte(nil), inputs.WebhookAuth...),
+		AllowInsecureHTTP:     inputs.AllowInsecureHTTP,
+		InsecureSkipTLSVerify: inputs.InsecureSkipTLSVerify,
 	}
 }

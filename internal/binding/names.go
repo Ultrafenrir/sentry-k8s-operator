@@ -29,19 +29,23 @@ import (
 // A discovered canonical installation URL can be passed through the same function.
 func CanonicalInstallation(raw string) (string, error) {
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", fmt.Errorf("installation URL must be absolute HTTPS without userinfo, query, or fragment")
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("installation URL must be absolute HTTP or HTTPS without userinfo, query, or fragment")
 	}
 	host := strings.ToLower(parsed.Hostname())
 	port := parsed.Port()
-	if port != "" && port != "443" {
+	defaultPort := "443"
+	if parsed.Scheme == "http" {
+		defaultPort = "80"
+	}
+	if port != "" && port != defaultPort {
 		host += ":" + port
 	}
 	cleanPath := pathpkg.Clean("/" + strings.TrimPrefix(parsed.EscapedPath(), "/"))
 	if cleanPath == "/" {
 		cleanPath = ""
 	}
-	return "https://" + host + cleanPath, nil
+	return parsed.Scheme + "://" + host + cleanPath, nil
 }
 
 func BindingName(projectUID string) string {

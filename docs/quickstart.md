@@ -25,6 +25,21 @@ spec:
 The last capability is deliberately fail-closed. Without evidence from the target Sentry,
 the resource reports `ManagedCreateUnsupported`; source fixtures are not live evidence.
 
+Sentry connections use verified HTTPS by default. A local development installation may
+explicitly permit plain HTTP:
+
+```yaml
+spec:
+  url: http://host.docker.internal:26101
+  transport:
+    allowInsecureHTTP: true
+```
+
+For self-signed HTTPS, use `transport.insecureSkipTLSVerify: true` instead. That keeps TLS
+encryption but disables certificate and hostname verification, and it is mutually exclusive
+with `credentials.caBundleSecretRef`. Prefer a CA bundle whenever one is available; neither
+insecure option should be used for production credentials.
+
 ## Create the project
 
 Create the application namespace if the platform has not already provisioned it:

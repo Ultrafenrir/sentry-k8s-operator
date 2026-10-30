@@ -109,6 +109,19 @@ func TestSelectRejectsAmbiguityAndUsesReadableSelectorOnly(t *testing.T) {
 	}
 }
 
+func TestSelectAllowsHTTPDSNOnlyWithExplicitTransportOptIn(t *testing.T) {
+	t.Parallel()
+
+	keys := []ClientKey{clientKey("id-one", "Default", true, "http://public@sentry.internal/1")}
+	if _, err := Select(keys, "", nil); !errors.Is(err, ErrInvalidDSN) {
+		t.Fatalf("secure selection accepted HTTP DSN: %v", err)
+	}
+	selection, err := SelectWithTransport(keys, "", nil, true)
+	if err != nil || selection.Key.ID != "id-one" {
+		t.Fatalf("explicit insecure HTTP selection = %#v, %v", selection, err)
+	}
+}
+
 func TestPinnedKeyDoesNotSwitchAfterRenameOrReplacement(t *testing.T) {
 	t.Parallel()
 

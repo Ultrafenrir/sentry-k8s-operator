@@ -338,6 +338,9 @@ func (e *Engine) reconcileManaged(ctx context.Context, input Input, installation
 		if !sentryapi.IsKind(preflightErr, sentryapi.ErrorNotFound) {
 			return Result{}, preflightErr
 		}
+		if err := validateManagedName(create, slug, marker); err != nil {
+			return Result{}, &Error{Reason: ReasonInvalidState, cause: err}
+		}
 
 		claimRecord, _, claimErr := e.Bindings.AcquireClaim(ctx, claim)
 		if errors.Is(claimErr, binding.ErrOwnershipConflict) {
@@ -382,6 +385,12 @@ func (e *Engine) reconcileManaged(ctx context.Context, input Input, installation
 	if claimRecord.Claim.Handoff != nil || (bindingRecord.Binding.Pending != nil && bindingRecord.Binding.Pending.Phase == string(sentryapi.OperationSubmitted)) {
 		return Result{}, &Error{Reason: ReasonCreationOutcomeUnknown}
 	}
+	// Validate the complete Sentry name before moving the durable create intent
+	// to Submitted. FormatManagedName is deterministic and performs no I/O, so a
+	// local validation error must never look like an uncertain external mutation.
+	if err := validateManagedName(create, slug, marker); err != nil {
+		return Result{}, &Error{Reason: ReasonInvalidState, cause: err}
+	}
 
 	// Re-read the claim immediately before the only external mutation.
 	claimRecord, err = e.Bindings.GetClaim(ctx, installation, input.Connection.Organization, slug)
@@ -422,6 +431,15 @@ func (e *Engine) reconcileManaged(ctx context.Context, input Input, installation
 		return Result{}, err
 	}
 	return e.bindVerifiedRemote(ctx, bindingRecord, claimRecord, remote, marker)
+}
+
+func validateManagedName(create *sentryv1alpha1.ProjectCreate, slug string, marker binding.Marker) error {
+	displayName := create.DisplayName
+	if displayName == "" {
+		displayName = slug
+	}
+	_, err := FormatManagedName(displayName, marker)
+	return err
 }
 
 func newManagedBinding(input Input, installation, slug, owner string, marker binding.Marker, claimName string, reference binding.ProjectReference, create *sentryv1alpha1.ProjectCreate) binding.ProjectBinding {

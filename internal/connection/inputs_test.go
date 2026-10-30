@@ -42,6 +42,7 @@ func TestLoadSecretInputsAndNames(t *testing.T) {
 	).Build()
 	caRef := &sentryv1alpha1.SecretKeyReference{Name: "api", Key: "ca"}
 	spec := sentryv1alpha1.SentryConnectionSpec{
+		Transport: &sentryv1alpha1.ConnectionTransport{InsecureSkipTLSVerify: true},
 		Credentials: sentryv1alpha1.ConnectionCredentials{
 			TokenSecretRef:    sentryv1alpha1.SecretKeyReference{Name: "api", Key: "token"},
 			CABundleSecretRef: caRef,
@@ -56,7 +57,7 @@ func TestLoadSecretInputsAndNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSecretInputs: %v", err)
 	}
-	if string(inputs.Token) != "api-secret" || string(inputs.CABundle) != "ca-pem" || string(inputs.BotToken) != "bot-secret" || string(inputs.WebhookAuth) != "webhook-secret" {
+	if string(inputs.Token) != "api-secret" || string(inputs.CABundle) != "ca-pem" || string(inputs.BotToken) != "bot-secret" || string(inputs.WebhookAuth) != "webhook-secret" || !inputs.InsecureSkipTLSVerify || inputs.AllowInsecureHTTP {
 		t.Fatal("one or more secret values were not loaded")
 	}
 	names := SecretNames(spec)

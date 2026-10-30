@@ -124,6 +124,22 @@ func TestModernHTTPAdapterFailsClosedOnUnsupportedDestinationAndIdentity(t *test
 	}
 }
 
+func TestModernHTTPAdapterConvergesIgnoredDisabledDetectorCreate(t *testing.T) {
+	t.Parallel()
+
+	remote := &modernTestRemote{forceDetectorOnCreate: true}
+	server := httptest.NewTLSServer(http.HandlerFunc(remote.serveHTTP))
+	defer server.Close()
+	adapter := &ModernHTTPAdapter{Client: modernTestClient(t, server), Destinations: map[string]binding.DestinationBinding{
+		"page": {Kind: "pagerduty", State: "Active", IntegrationIdentity: "34", ResourceIdentity: "567", ResourceName: "checkout"},
+	}}
+	desired := Desired{Trigger: TriggerEventCount, WindowMinutes: 5, Threshold: 20, Enabled: false, Notify: []string{"page"}}
+	observed, err := adapter.Ensure(context.Background(), ModernMetricIssueAdapter, "company", "checkout", "disabled", desired, binding.Marker{Origin: "managed", Owner: "payments", ManagedBy: "sko"})
+	if err != nil || observed.Enabled || remote.workflowToggles != 1 || remote.detectorToggles != 1 {
+		t.Fatalf("disabled create=%#v err=%v toggles=%d/%d", observed, err, remote.workflowToggles, remote.detectorToggles)
+	}
+}
+
 func TestModernHTTPAdapterRecoversLostDetectorCreateResponse(t *testing.T) {
 	t.Parallel()
 
@@ -157,6 +173,7 @@ type modernTestRemote struct {
 	workflowPosts, detectorPosts, workflowPuts, detectorPuts           int
 	workflowToggles, detectorToggles, workflowDeletes, detectorDeletes int
 	loseDetectorResponseOnce                                           bool
+	forceDetectorOnCreate                                              bool
 }
 
 func (r *modernTestRemote) serveHTTP(w http.ResponseWriter, request *http.Request) {
@@ -197,6 +214,9 @@ func (r *modernTestRemote) serveHTTP(w http.ResponseWriter, request *http.Reques
 			return
 		}
 		r.detectorExists, r.detectorName, r.detectorOn = true, r.lastDetector.Name, r.lastDetector.Enabled
+		if r.forceDetectorOnCreate {
+			r.detectorOn = true
+		}
 		if r.loseDetectorResponseOnce {
 			r.loseDetectorResponseOnce = false
 			connection, _, err := w.(http.Hijacker).Hijack()

@@ -56,7 +56,17 @@ func TestCanonicalInstallationAndDeterministicClaimName(t *testing.T) {
 	if ClaimName(canonical, "company", "checkout") == ClaimName(canonical, "company", "other") {
 		t.Fatal("different project slugs produced the same claim name")
 	}
-	for _, invalid := range []string{"http://sentry.example", "https://user:pass@sentry.example", "https://sentry.example/?token=secret"} {
+	httpAliases := []string{"http://SENTRY.example/", "http://sentry.example:80", "http://sentry.example/./"}
+	for _, alias := range httpAliases {
+		value, err := CanonicalInstallation(alias)
+		if err != nil || value != "http://sentry.example" {
+			t.Fatalf("HTTP alias %q canonicalized as %q, %v", alias, value, err)
+		}
+	}
+	if ClaimName("http://sentry.example", "company", "checkout") == ClaimName("https://sentry.example", "company", "checkout") {
+		t.Fatal("HTTP and HTTPS installations produced the same claim name")
+	}
+	for _, invalid := range []string{"ftp://sentry.example", "https://user:pass@sentry.example", "https://sentry.example/?token=secret"} {
 		if _, err := CanonicalInstallation(invalid); err == nil {
 			t.Errorf("accepted invalid installation URL %q", invalid)
 		}

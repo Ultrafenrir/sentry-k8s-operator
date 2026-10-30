@@ -40,15 +40,17 @@ const maxResponseBytes = 4 << 20
 
 // Config configures one connection-scoped Sentry API client.
 type Config struct {
-	BaseURL       string
-	Token         string
-	CABundle      []byte
-	Timeout       time.Duration
-	MaxConcurrent int
-	MaxRetries    int
-	MinBackoff    time.Duration
-	MaxBackoff    time.Duration
-	UserAgent     string
+	BaseURL               string
+	Token                 string
+	CABundle              []byte
+	AllowInsecureHTTP     bool
+	InsecureSkipTLSVerify bool
+	Timeout               time.Duration
+	MaxConcurrent         int
+	MaxRetries            int
+	MinBackoff            time.Duration
+	MaxBackoff            time.Duration
+	UserAgent             string
 
 	// Sleep and Jitter are injectable to make retry behavior deterministic in tests.
 	Sleep  func(context.Context, time.Duration) error
@@ -68,17 +70,18 @@ type Request struct {
 
 // Client is safe for concurrent use and supports credential and CA rotation.
 type Client struct {
-	baseURL    *url.URL
-	httpClient *http.Client
-	transport  *rotatingTransport
-	token      atomic.Value
-	semaphore  chan struct{}
-	maxRetries int
-	minBackoff time.Duration
-	maxBackoff time.Duration
-	userAgent  string
-	sleep      func(context.Context, time.Duration) error
-	jitter     func(time.Duration) time.Duration
+	baseURL               *url.URL
+	httpClient            *http.Client
+	transport             *rotatingTransport
+	insecureSkipTLSVerify bool
+	token                 atomic.Value
+	semaphore             chan struct{}
+	maxRetries            int
+	minBackoff            time.Duration
+	maxBackoff            time.Duration
+	userAgent             string
+	sleep                 func(context.Context, time.Duration) error
+	jitter                func(time.Duration) time.Duration
 }
 
 type rotatingTransport struct {
@@ -89,11 +92,23 @@ func (t *rotatingTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	return t.current.Load().RoundTrip(req)
 }
 
-// NewClient creates a client which accepts only an HTTPS origin.
+// NewClient creates a client which is HTTPS-only unless plain HTTP is explicitly enabled.
 func NewClient(cfg Config) (*Client, error) {
 	baseURL, err := url.Parse(cfg.BaseURL)
-	if err != nil || baseURL.Scheme != "https" || baseURL.Host == "" || baseURL.User != nil {
-		return nil, fmt.Errorf("base URL must be an absolute HTTPS URL without userinfo")
+	if err != nil || (baseURL.Scheme != "https" && baseURL.Scheme != "http") || baseURL.Host == "" || baseURL.User != nil {
+		return nil, fmt.Errorf("base URL must be an absolute HTTP or HTTPS URL without userinfo")
+	}
+	if baseURL.Scheme == "http" && !cfg.AllowInsecureHTTP {
+		return nil, fmt.Errorf("plain HTTP requires explicit allow-insecure-http configuration")
+	}
+	if baseURL.Scheme != "https" && cfg.InsecureSkipTLSVerify {
+		return nil, fmt.Errorf("skip TLS verification requires an HTTPS base URL")
+	}
+	if cfg.InsecureSkipTLSVerify && len(cfg.CABundle) > 0 {
+		return nil, fmt.Errorf("skip TLS verification and a CA bundle are mutually exclusive")
+	}
+	if baseURL.Scheme != "https" && len(cfg.CABundle) > 0 {
+		return nil, fmt.Errorf("a CA bundle requires an HTTPS base URL")
 	}
 	baseURL.Fragment = ""
 	baseURL.RawQuery = ""
@@ -123,24 +138,25 @@ func NewClient(cfg Config) (*Client, error) {
 		cfg.Jitter = cryptoJitter
 	}
 
-	transport, err := newHTTPTransport(cfg.CABundle)
+	transport, err := newHTTPTransport(cfg.CABundle, cfg.InsecureSkipTLSVerify)
 	if err != nil {
 		return nil, err
 	}
 	rotating := &rotatingTransport{}
 	rotating.current.Store(transport)
 	c := &Client{
-		baseURL:    baseURL,
-		transport:  rotating,
-		semaphore:  make(chan struct{}, cfg.MaxConcurrent),
-		maxRetries: cfg.MaxRetries,
-		minBackoff: cfg.MinBackoff,
-		maxBackoff: cfg.MaxBackoff,
-		userAgent:  cfg.UserAgent,
-		sleep:      cfg.Sleep,
-		jitter:     cfg.Jitter,
+		baseURL:               baseURL,
+		transport:             rotating,
+		insecureSkipTLSVerify: cfg.InsecureSkipTLSVerify,
+		semaphore:             make(chan struct{}, cfg.MaxConcurrent),
+		maxRetries:            cfg.MaxRetries,
+		minBackoff:            cfg.MinBackoff,
+		maxBackoff:            cfg.MaxBackoff,
+		userAgent:             cfg.UserAgent,
+		sleep:                 cfg.Sleep,
+		jitter:                cfg.Jitter,
 	}
-	c.token.Store(cfg.Token)
+	c.token.Store(strings.TrimSpace(cfg.Token))
 	c.httpClient = &http.Client{
 		Transport: rotating,
 		Timeout:   cfg.Timeout,
@@ -159,12 +175,15 @@ func NewClient(cfg Config) (*Client, error) {
 
 // UpdateToken atomically applies a rotated token to subsequent attempts.
 func (c *Client) UpdateToken(token string) {
-	c.token.Store(token)
+	c.token.Store(strings.TrimSpace(token))
 }
 
 // UpdateCABundle atomically applies a rotated CA bundle to subsequent requests.
 func (c *Client) UpdateCABundle(caBundle []byte) error {
-	next, err := newHTTPTransport(caBundle)
+	if c.insecureSkipTLSVerify && len(caBundle) > 0 {
+		return fmt.Errorf("skip TLS verification and a CA bundle are mutually exclusive")
+	}
+	next, err := newHTTPTransport(caBundle, c.insecureSkipTLSVerify)
 	if err != nil {
 		return err
 	}
@@ -307,7 +326,7 @@ func (c *Client) backoff(attempt int) time.Duration {
 	return delay
 }
 
-func newHTTPTransport(caBundle []byte) (*http.Transport, error) {
+func newHTTPTransport(caBundle []byte, insecureSkipTLSVerify bool) (*http.Transport, error) {
 	roots, err := x509.SystemCertPool()
 	if err != nil || roots == nil {
 		roots = x509.NewCertPool()
@@ -316,7 +335,7 @@ func newHTTPTransport(caBundle []byte) (*http.Transport, error) {
 		return nil, fmt.Errorf("CA bundle contains no valid PEM certificates")
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots, InsecureSkipVerify: insecureSkipTLSVerify} // #nosec G402 -- explicit per-connection development option
 	return transport, nil
 }
 

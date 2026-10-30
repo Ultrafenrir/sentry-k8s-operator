@@ -104,7 +104,7 @@ var _ = Describe("SentryProject Controller", func() {
 					Connection: connectionName,
 					Project: sentryconfigurationv1alpha1.ProjectSelector{Create: &sentryconfigurationv1alpha1.ProjectCreate{
 						Team:        "payments",
-						DisplayName: fmt.Sprintf("Checkout %d", projectSerial),
+						DisplayName: fmt.Sprintf("C%d", projectSerial),
 						Slug:        fmt.Sprintf("checkout-%d", projectSerial),
 					}},
 				},

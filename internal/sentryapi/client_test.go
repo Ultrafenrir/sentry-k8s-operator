@@ -47,7 +47,7 @@ func TestClientUsesCustomCAAndRotatedToken(t *testing.T) {
 
 	client := mustClient(t, Config{
 		BaseURL:   server.URL,
-		Token:     "token-one",
+		Token:     " token-one\n",
 		CABundle:  serverCA(t, server),
 		UserAgent: "sentry-operator/test",
 	})
@@ -62,7 +62,7 @@ func TestClientUsesCustomCAAndRotatedToken(t *testing.T) {
 	}
 
 	expectedToken.Store("token-two")
-	client.UpdateToken("token-two")
+	client.UpdateToken("\ttoken-two\r\n")
 	if _, err := client.DoJSON(context.Background(), Request{Method: http.MethodGet, Path: "/api/0/", Operation: "discover"}, &result); err != nil {
 		t.Fatalf("request after token rotation: %v", err)
 	}
@@ -125,6 +125,44 @@ func TestClientRejectsUnsafeOriginsAndRedirects(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "never-leak") || strings.Contains(err.Error(), target.URL) {
 		t.Fatalf("safe error leaked sensitive data: %v", err)
+	}
+}
+
+func TestClientRequiresExplicitInsecureTransportOptions(t *testing.T) {
+	t.Parallel()
+
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer httpServer.Close()
+	if _, err := NewClient(Config{BaseURL: httpServer.URL}); err == nil {
+		t.Fatal("plain HTTP was accepted without an explicit opt-in")
+	}
+	httpClient := mustClient(t, Config{BaseURL: httpServer.URL, AllowInsecureHTTP: true})
+	if _, err := httpClient.DoJSON(context.Background(), Request{Method: http.MethodGet, Path: "/", Operation: "http-probe"}, &struct {
+		OK bool `json:"ok"`
+	}{}); err != nil {
+		t.Fatalf("explicit HTTP request failed: %v", err)
+	}
+
+	tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer tlsServer.Close()
+	strictClient := mustClient(t, Config{BaseURL: tlsServer.URL})
+	if _, err := strictClient.DoJSON(context.Background(), Request{Method: http.MethodGet, Path: "/", Operation: "strict-probe"}, &struct{}{}); !IsKind(err, ErrorTransport) {
+		t.Fatalf("strict TLS error = %v, want TransportError", err)
+	}
+	insecureClient := mustClient(t, Config{BaseURL: tlsServer.URL, InsecureSkipTLSVerify: true})
+	if _, err := insecureClient.DoJSON(context.Background(), Request{Method: http.MethodGet, Path: "/", Operation: "skip-verify-probe"}, &struct{}{}); err != nil {
+		t.Fatalf("explicit skip-verify request failed: %v", err)
+	}
+
+	if _, err := NewClient(Config{BaseURL: httpServer.URL, AllowInsecureHTTP: true, InsecureSkipTLSVerify: true}); err == nil {
+		t.Fatal("skip TLS verification was accepted for HTTP")
+	}
+	if _, err := NewClient(Config{BaseURL: tlsServer.URL, InsecureSkipTLSVerify: true, CABundle: serverCA(t, tlsServer)}); err == nil {
+		t.Fatal("skip TLS verification was accepted together with a CA bundle")
 	}
 }
 

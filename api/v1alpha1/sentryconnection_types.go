@@ -41,6 +41,23 @@ type ConnectionCredentials struct {
 	CABundleSecretRef *SecretKeyReference `json:"caBundleSecretRef,omitempty"`
 }
 
+// ConnectionTransport contains explicit development-only transport exceptions. Both
+// options default to false so production connections remain HTTPS with certificate
+// verification enabled.
+type ConnectionTransport struct {
+	// AllowInsecureHTTP permits a plain HTTP Sentry origin. This sends the API token
+	// without transport encryption and should only be used on a trusted local network.
+	// +kubebuilder:default=false
+	// +optional
+	AllowInsecureHTTP bool `json:"allowInsecureHTTP,omitempty"`
+
+	// InsecureSkipTLSVerify keeps HTTPS encryption but disables server certificate and
+	// hostname verification. It is mutually exclusive with caBundleSecretRef.
+	// +kubebuilder:default=false
+	// +optional
+	InsecureSkipTLSVerify bool `json:"insecureSkipTLSVerify,omitempty"`
+}
+
 // NamespaceAccess selects namespaces by exact, human-readable name.
 type NamespaceAccess struct {
 	// +kubebuilder:validation:MinItems=1
@@ -201,11 +218,15 @@ type ConnectionCompatibility struct {
 	Alerts AlertCompatibilityProfile `json:"alerts,omitempty"`
 }
 
+// +kubebuilder:validation:XValidation:rule="self.url.startsWith('https://') || (has(self.transport) && self.transport.allowInsecureHTTP)",message="plain HTTP requires transport.allowInsecureHTTP=true"
+// +kubebuilder:validation:XValidation:rule="!has(self.transport) || !self.transport.insecureSkipTLSVerify || self.url.startsWith('https://')",message="transport.insecureSkipTLSVerify requires an HTTPS URL"
+// +kubebuilder:validation:XValidation:rule="!has(self.transport) || !self.transport.insecureSkipTLSVerify || !has(self.credentials.caBundleSecretRef)",message="transport.insecureSkipTLSVerify and credentials.caBundleSecretRef are mutually exclusive"
+// +kubebuilder:validation:XValidation:rule="self.url.startsWith('https://') || !has(self.credentials.caBundleSecretRef)",message="credentials.caBundleSecretRef requires an HTTPS URL"
 // SentryConnectionSpec defines the desired state of SentryConnection.
 type SentryConnectionSpec struct {
 	// +kubebuilder:validation:MinLength=9
 	// +kubebuilder:validation:MaxLength=2048
-	// +kubebuilder:validation:Pattern=`^https://[^[:space:]]+$`
+	// +kubebuilder:validation:Pattern=`^https?://[^[:space:]]+$`
 	URL string `json:"url"`
 
 	// +kubebuilder:validation:MinLength=1
@@ -213,6 +234,9 @@ type SentryConnectionSpec struct {
 	Organization string `json:"organization"`
 
 	Credentials ConnectionCredentials `json:"credentials"`
+
+	// +optional
+	Transport *ConnectionTransport `json:"transport,omitempty"`
 
 	// +kubebuilder:default=false
 	// +optional

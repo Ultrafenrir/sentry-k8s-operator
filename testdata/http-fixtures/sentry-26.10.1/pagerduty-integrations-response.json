@@ -5,8 +5,8 @@
     "provider": {"key": "pagerduty", "name": "PagerDuty"},
     "configData": {
       "service_table": [
-        {"id": "2001", "service": "Checkout"},
-        {"id": "2002", "service": "Payments"}
+        {"id": 2001, "service": "Checkout"},
+        {"id": 2002, "service": "Payments"}
       ]
     }
   }

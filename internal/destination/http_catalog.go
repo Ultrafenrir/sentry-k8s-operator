@@ -17,7 +17,9 @@ limitations under the License.
 package destination
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/url"
 	"sync"
@@ -45,10 +47,31 @@ type integrationResponse struct {
 	} `json:"provider"`
 	ConfigData struct {
 		ServiceTable []struct {
-			ID      string `json:"id"`
-			Service string `json:"service"`
+			ID      catalogID `json:"id"`
+			Service string    `json:"service"`
 		} `json:"service_table"`
 	} `json:"configData"`
+}
+
+// PagerDuty service ids are strings in some supported responses and JSON
+// numbers in others. Normalize both without exposing that version difference
+// to the protected binding layer.
+type catalogID string
+
+func (id *catalogID) UnmarshalJSON(value []byte) error {
+	var text string
+	if err := json.Unmarshal(value, &text); err == nil {
+		*id = catalogID(text)
+		return nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(value))
+	decoder.UseNumber()
+	var number json.Number
+	if err := decoder.Decode(&number); err != nil {
+		return err
+	}
+	*id = catalogID(number.String())
+	return nil
 }
 
 func (c *HTTPCatalog) ListIntegrations(ctx context.Context, organization, provider string) ([]Integration, error) {
@@ -73,7 +96,7 @@ func (c *HTTPCatalog) ListIntegrations(ctx context.Context, organization, provid
 				if service.ID == "" || service.Service == "" {
 					return nil, ErrCatalogUnsupported
 				}
-				services = append(services, Resource{Identity: service.ID, Name: service.Service})
+				services = append(services, Resource{Identity: string(service.ID), Name: service.Service})
 			}
 			pagerDuty[item.ID] = services
 		}

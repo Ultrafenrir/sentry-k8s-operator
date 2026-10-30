@@ -32,10 +32,12 @@ import (
 
 // SecretInputs contains in-memory secret material. It must never be logged or written to status.
 type SecretInputs struct {
-	Token       []byte
-	CABundle    []byte
-	BotToken    []byte
-	WebhookAuth []byte
+	Token                 []byte
+	CABundle              []byte
+	BotToken              []byte
+	WebhookAuth           []byte
+	AllowInsecureHTTP     bool
+	InsecureSkipTLSVerify bool
 }
 
 // LoadSecretInputs reads all currently configured refs from the fixed operator namespace.
@@ -44,6 +46,10 @@ func LoadSecretInputs(ctx context.Context, reader client.Reader, namespace strin
 		return SecretInputs{}, fmt.Errorf("operator namespace is required")
 	}
 	var inputs SecretInputs
+	if spec.Transport != nil {
+		inputs.AllowInsecureHTTP = spec.Transport.AllowInsecureHTTP
+		inputs.InsecureSkipTLSVerify = spec.Transport.InsecureSkipTLSVerify
+	}
 	var err error
 	if inputs.Token, err = loadSecretKey(ctx, reader, namespace, spec.Credentials.TokenSecretRef); err != nil {
 		return SecretInputs{}, err

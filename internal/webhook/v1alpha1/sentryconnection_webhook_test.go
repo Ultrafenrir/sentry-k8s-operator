@@ -51,12 +51,34 @@ var _ = Describe("SentryConnection Webhook", func() {
 		Expect(err).To(MatchError(ContainSubstring("Unsupported value")))
 	})
 
-	It("requires HTTPS without embedded credentials", func() {
+	It("requires an explicit opt-in for insecure connection transports", func() {
 		obj := validConnection()
-		obj.Spec.URL = "http://token@example.invalid"
+		obj.Spec.URL = "http://sentry.example.invalid"
 
-		_, err := validator.ValidateCreate(context.Background(), obj)
-		Expect(err).To(MatchError(ContainSubstring("must be an HTTPS URL without userinfo")))
+		warnings, err := validator.ValidateCreate(context.Background(), obj)
+		Expect(err).To(MatchError(ContainSubstring("plain HTTP requires spec.transport.allowInsecureHTTP=true")))
+		Expect(warnings).To(BeEmpty())
+
+		obj.Spec.Transport = &sentryconfigurationv1alpha1.ConnectionTransport{AllowInsecureHTTP: true}
+		warnings, err = validator.ValidateCreate(context.Background(), obj)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warnings).To(ContainElement(ContainSubstring("without transport encryption")))
+
+		obj.Spec.URL = "https://sentry.example.invalid"
+		obj.Spec.Transport = &sentryconfigurationv1alpha1.ConnectionTransport{InsecureSkipTLSVerify: true}
+		warnings, err = validator.ValidateCreate(context.Background(), obj)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(warnings).To(ContainElement(ContainSubstring("certificate and hostname verification")))
+
+		obj.Spec.Credentials.CABundleSecretRef = &sentryconfigurationv1alpha1.SecretKeyReference{Name: "sentry-ca", Key: "ca.crt"}
+		_, err = validator.ValidateCreate(context.Background(), obj)
+		Expect(err).To(MatchError(ContainSubstring("mutually exclusive")))
+
+		obj.Spec.URL = "https://token@example.invalid"
+		obj.Spec.Transport = nil
+		obj.Spec.Credentials.CABundleSecretRef = nil
+		_, err = validator.ValidateCreate(context.Background(), obj)
+		Expect(err).To(MatchError(ContainSubstring("without userinfo")))
 	})
 
 	It("requires the Sentry hook receiver to be an exact HTTPS events base", func() {

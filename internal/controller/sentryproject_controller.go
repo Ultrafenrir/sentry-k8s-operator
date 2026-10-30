@@ -394,7 +394,8 @@ func (r *SentryProjectReconciler) reconcileDSN(ctx context.Context, resource *se
 	if err != nil {
 		return current, err
 	}
-	selection, err := dsn.Select(keys, selector, record.Binding.DSN)
+	allowInsecureHTTP := connection.Spec.Transport != nil && connection.Spec.Transport.AllowInsecureHTTP
+	selection, err := dsn.SelectWithTransport(keys, selector, record.Binding.DSN, allowInsecureHTTP)
 	if err != nil {
 		if errors.Is(err, dsn.ErrPinnedKeyLost) && record.Binding.DSN != nil {
 			expected := *record.Binding.DSN
@@ -419,7 +420,7 @@ func (r *SentryProjectReconciler) reconcileDSN(ctx context.Context, resource *se
 		nextDSN.PendingSecret = record.Binding.DSN.PendingSecret
 	}
 	authorize := r.dsnAuthorizer(resource, connection, record.Binding)
-	nextDSN, phase, err := (&dsn.Publisher{Client: r.outputSecrets()}).Reconcile(ctx, resource, decision.Owner, desiredSecret, selection.Key.DSN.Public, nextDSN, authorize)
+	nextDSN, phase, err := (&dsn.Publisher{Client: r.outputSecrets(), AllowInsecureHTTP: allowInsecureHTTP}).Reconcile(ctx, resource, decision.Owner, desiredSecret, selection.Key.DSN.Public, nextDSN, authorize)
 	if err != nil {
 		return current, err
 	}

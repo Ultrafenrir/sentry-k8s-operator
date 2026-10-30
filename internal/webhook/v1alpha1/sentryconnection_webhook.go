@@ -77,7 +77,7 @@ type SentryConnectionValidator struct {
 func (v *SentryConnectionValidator) ValidateCreate(_ context.Context, obj *sentryconfigurationv1alpha1.SentryConnection) (admission.Warnings, error) {
 	sentryconnectionlog.Info("Validation for SentryConnection upon creation", "name", obj.GetName())
 
-	return nil, validateSentryConnection(obj)
+	return insecureTransportWarnings(obj), validateSentryConnection(obj)
 }
 
 // ValidateUpdate implements admission.Validator so a webhook will be registered for the type SentryConnection.
@@ -92,7 +92,7 @@ func (v *SentryConnectionValidator) ValidateUpdate(_ context.Context, oldObj, ne
 		)
 	}
 
-	return nil, validateSentryConnection(newObj)
+	return insecureTransportWarnings(newObj), validateSentryConnection(newObj)
 }
 
 // ValidateDelete implements admission.Validator so a webhook will be registered for the type SentryConnection.
@@ -113,7 +113,7 @@ func (v *SentryConnectionValidator) ValidateDelete(_ context.Context, obj *sentr
 func validateSentryConnection(obj *sentryconfigurationv1alpha1.SentryConnection) error {
 	specPath := field.NewPath("spec")
 	allErrs := field.ErrorList{}
-	allErrs = append(allErrs, validateHTTPSURL(obj.Spec.URL, specPath.Child("url"))...)
+	allErrs = append(allErrs, validateConnectionURL(obj.Spec, specPath)...)
 	allErrs = append(allErrs, validateSecretKeyReference(obj.Spec.Credentials.TokenSecretRef, specPath.Child("credentials", "tokenSecretRef"))...)
 	if obj.Spec.Credentials.CABundleSecretRef != nil {
 		allErrs = append(allErrs, validateSecretKeyReference(*obj.Spec.Credentials.CABundleSecretRef, specPath.Child("credentials", "caBundleSecretRef"))...)
@@ -178,12 +178,42 @@ func validateSecretKeyReference(ref sentryconfigurationv1alpha1.SecretKeyReferen
 	return allErrs
 }
 
-func validateHTTPSURL(value string, path *field.Path) field.ErrorList {
-	parsed, err := url.ParseRequestURI(value)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
-		return field.ErrorList{field.Invalid(path, value, fmt.Sprintf("must be an HTTPS URL without userinfo: %v", err))}
+func validateConnectionURL(spec sentryconfigurationv1alpha1.SentryConnectionSpec, specPath *field.Path) field.ErrorList {
+	path := specPath.Child("url")
+	parsed, err := url.ParseRequestURI(spec.URL)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.User != nil {
+		return field.ErrorList{field.Invalid(path, spec.URL, fmt.Sprintf("must be an absolute HTTP or HTTPS URL without userinfo: %v", err))}
+	}
+	transport := spec.Transport
+	if parsed.Scheme == "http" && (transport == nil || !transport.AllowInsecureHTTP) {
+		return field.ErrorList{field.Forbidden(path, "plain HTTP requires spec.transport.allowInsecureHTTP=true")}
+	}
+	if transport != nil && transport.InsecureSkipTLSVerify {
+		if parsed.Scheme != "https" {
+			return field.ErrorList{field.Forbidden(specPath.Child("transport", "insecureSkipTLSVerify"), "requires an HTTPS URL")}
+		}
+		if spec.Credentials.CABundleSecretRef != nil {
+			return field.ErrorList{field.Forbidden(specPath.Child("transport", "insecureSkipTLSVerify"), "is mutually exclusive with credentials.caBundleSecretRef")}
+		}
+	}
+	if parsed.Scheme == "http" && spec.Credentials.CABundleSecretRef != nil {
+		return field.ErrorList{field.Forbidden(specPath.Child("credentials", "caBundleSecretRef"), "requires an HTTPS URL")}
 	}
 	return nil
+}
+
+func insecureTransportWarnings(obj *sentryconfigurationv1alpha1.SentryConnection) admission.Warnings {
+	if obj.Spec.Transport == nil {
+		return nil
+	}
+	warnings := admission.Warnings{}
+	if obj.Spec.Transport.AllowInsecureHTTP {
+		warnings = append(warnings, "spec.transport.allowInsecureHTTP sends the Sentry API token without transport encryption")
+	}
+	if obj.Spec.Transport.InsecureSkipTLSVerify {
+		warnings = append(warnings, "spec.transport.insecureSkipTLSVerify disables Sentry server certificate and hostname verification")
+	}
+	return warnings
 }
 
 func validateSentryReceiverURL(value string, path *field.Path) field.ErrorList {

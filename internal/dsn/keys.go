@@ -68,11 +68,18 @@ type Selection struct {
 
 // Select chooses only from a complete, already paginated list and preserves a pinned key.
 func Select(keys []ClientKey, selector string, current *binding.DSNBinding) (Selection, error) {
+	return SelectWithTransport(keys, selector, current, false)
+}
+
+// SelectWithTransport applies the same identity-safe selection while allowing a
+// plain HTTP public DSN only when the owning SentryConnection explicitly opted
+// into insecure HTTP transport.
+func SelectWithTransport(keys []ClientKey, selector string, current *binding.DSNBinding, allowInsecureHTTP bool) (Selection, error) {
 	selectorHash := hashSelector(selector)
 	if current != nil && current.KeyIdentity != "" && current.SelectorHash == selectorHash {
 		for _, key := range keys {
 			if key.ID == current.KeyIdentity {
-				if !key.IsActive || !validPublicDSN(key.DSN.Public) {
+				if !key.IsActive || !validPublicDSN(key.DSN.Public, allowInsecureHTTP) {
 					return Selection{}, ErrPinnedKeyLost
 				}
 				name := readableName(key)
@@ -117,7 +124,7 @@ func Select(keys []ClientKey, selector string, current *binding.DSNBinding) (Sel
 	if !validReadableName(name) {
 		return Selection{}, ErrInvalidKeyName
 	}
-	if selected.ID == "" || !validPublicDSN(selected.DSN.Public) {
+	if selected.ID == "" || !validPublicDSN(selected.DSN.Public, allowInsecureHTTP) {
 		return Selection{}, ErrInvalidDSN
 	}
 	return Selection{
@@ -150,9 +157,9 @@ func validReadableName(value string) bool {
 	return true
 }
 
-func validPublicDSN(raw string) bool {
+func validPublicDSN(raw string, allowInsecureHTTP bool) bool {
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User == nil {
+	if err != nil || (parsed.Scheme != "https" && !(allowInsecureHTTP && parsed.Scheme == "http")) || parsed.Host == "" || parsed.User == nil {
 		return false
 	}
 	if _, hasPassword := parsed.User.Password(); hasPassword {

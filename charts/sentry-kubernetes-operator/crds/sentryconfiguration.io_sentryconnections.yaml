@@ -316,16 +316,47 @@ spec:
                 maxLength: 64
                 minLength: 1
                 type: string
+              transport:
+                description: |-
+                  ConnectionTransport contains explicit development-only transport exceptions. Both
+                  options default to false so production connections remain HTTPS with certificate
+                  verification enabled.
+                properties:
+                  allowInsecureHTTP:
+                    default: false
+                    description: |-
+                      AllowInsecureHTTP permits a plain HTTP Sentry origin. This sends the API token
+                      without transport encryption and should only be used on a trusted local network.
+                    type: boolean
+                  insecureSkipTLSVerify:
+                    default: false
+                    description: |-
+                      InsecureSkipTLSVerify keeps HTTPS encryption but disables server certificate and
+                      hostname verification. It is mutually exclusive with caBundleSecretRef.
+                    type: boolean
+                type: object
               url:
                 maxLength: 2048
                 minLength: 9
-                pattern: ^https://[^[:space:]]+$
+                pattern: ^https?://[^[:space:]]+$
                 type: string
             required:
             - credentials
             - organization
             - url
             type: object
+            x-kubernetes-validations:
+            - message: plain HTTP requires transport.allowInsecureHTTP=true
+              rule: self.url.startsWith('https://') || (has(self.transport) && self.transport.allowInsecureHTTP)
+            - message: transport.insecureSkipTLSVerify requires an HTTPS URL
+              rule: '!has(self.transport) || !self.transport.insecureSkipTLSVerify
+                || self.url.startsWith(''https://'')'
+            - message: transport.insecureSkipTLSVerify and credentials.caBundleSecretRef
+                are mutually exclusive
+              rule: '!has(self.transport) || !self.transport.insecureSkipTLSVerify
+                || !has(self.credentials.caBundleSecretRef)'
+            - message: credentials.caBundleSecretRef requires an HTTPS URL
+              rule: self.url.startsWith('https://') || !has(self.credentials.caBundleSecretRef)
           status:
             description: status defines the observed state of SentryConnection
             properties:

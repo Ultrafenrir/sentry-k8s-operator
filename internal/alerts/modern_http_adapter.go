@@ -168,6 +168,18 @@ func (a *ModernHTTPAdapter) Ensure(ctx context.Context, adapter, organization, p
 		detectors = []modernDetectorResponse{detector}
 	}
 	identity := modernIdentity{Detector: detectors[0].ID, Workflow: workflow.ID}
+	// Sentry 26 may accept enabled=false on detector creation but still return an
+	// enabled detector. Converge both children through the live-confirmed toggle
+	// routes before verification so a disabled alert is never reported ready
+	// while one half of the pair remains active.
+	if detectors[0].Enabled != desired.Enabled || workflow.Enabled != desired.Enabled {
+		if err := a.putEnabled(ctx, organization, "workflows", identity.Workflow, desired.Enabled); err != nil {
+			return Observed{}, err
+		}
+		if err := a.putEnabled(ctx, organization, "detectors", identity.Detector, desired.Enabled); err != nil {
+			return Observed{}, err
+		}
+	}
 	encoded, err := encodeModernIdentity(identity)
 	if err != nil {
 		return Observed{}, err
@@ -417,13 +429,12 @@ func (a *ModernHTTPAdapter) getDetector(ctx context.Context, organization, proje
 }
 
 func (a *ModernHTTPAdapter) putEnabled(ctx context.Context, organization, resource, identity string, enabled bool) error {
-	var response map[string]any
 	_, err := a.Client.DoJSON(ctx, sentryapi.Request{
 		Method: http.MethodPut, Path: organizationPath(organization) + resource + "/?id=" + url.QueryEscape(identity),
 		Body: struct {
 			Enabled bool `json:"enabled"`
 		}{Enabled: enabled}, Operation: "toggle-modern-" + resource,
-	}, &response)
+	}, nil)
 	return err
 }
 

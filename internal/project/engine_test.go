@@ -51,7 +51,7 @@ func TestManagedCreateIsIdempotentAndAtomic(t *testing.T) {
 	if adapter.createCalls != 1 || adapter.lastCreate.DefaultRules {
 		t.Fatalf("createCalls=%d defaultRules=%v", adapter.createCalls, adapter.lastCreate.DefaultRules)
 	}
-	if adapter.lastCreate.Marker != (binding.Marker{Origin: "managed", Owner: "payments", ManagedBy: "company-sentry-operator"}) {
+	if adapter.lastCreate.Marker != (binding.Marker{Origin: "managed", Owner: "payments", ManagedBy: "company-sentry-op"}) {
 		t.Fatalf("atomic marker = %#v", adapter.lastCreate.Marker)
 	}
 	if _, err := engine.Reconcile(context.Background(), input); err != nil {
@@ -70,6 +70,27 @@ func TestManagedCreateCapabilityGateRequiresBothContracts(t *testing.T) {
 	}
 	if !ManagedCreateSupported([]string{CapabilityAutomaticActiveKey, CapabilityAtomicDefaultRules}) {
 		t.Fatal("complete create capability set was rejected")
+	}
+}
+
+func TestManagedCreateRejectsOversizedMarkedNameBeforeDurableIntent(t *testing.T) {
+	t.Parallel()
+
+	engine, adapter, store := testEngine(t)
+	input := managedInput("checkout", "uid-one", "payments")
+	input.Project.Spec.Project.Create.DisplayName = strings.Repeat("x", 50)
+
+	if _, err := engine.Reconcile(context.Background(), input); !IsReason(err, ReasonInvalidState) {
+		t.Fatalf("oversized marked name error = %v", err)
+	}
+	if adapter.createCalls != 0 {
+		t.Fatalf("oversized marked name made %d create calls", adapter.createCalls)
+	}
+	if _, err := store.GetBinding(context.Background(), "uid-one"); !errors.Is(err, binding.ErrNotFound) {
+		t.Fatalf("oversized marked name left binding: %v", err)
+	}
+	if _, err := store.GetClaim(context.Background(), "https://sentry.example", "company", "checkout"); !errors.Is(err, binding.ErrNotFound) {
+		t.Fatalf("oversized marked name left claim: %v", err)
 	}
 }
 
@@ -141,7 +162,7 @@ func TestLostPOSTResponseIsRecoveredByMarkerWithoutSecondPOST(t *testing.T) {
 	if marshalErr != nil {
 		t.Fatal(marshalErr)
 	}
-	marker := binding.Marker{Origin: "managed", Owner: "payments", ManagedBy: "company-sentry-operator"}
+	marker := binding.Marker{Origin: "managed", Owner: "payments", ManagedBy: "company-sentry-op"}
 	for _, forbidden := range []string{"project-checkout", createHash("company", "checkout", "payments", marker), "create-project"} {
 		if forbidden != "" && strings.Contains(string(payload), forbidden) {
 			t.Fatalf("project audit leaked protected value %q: %s", forbidden, payload)
@@ -231,7 +252,7 @@ func TestProjectUseIsReadOnlyAndMarkerAloneDoesNotProveManaged(t *testing.T) {
 	t.Parallel()
 
 	engine, adapter, store := testEngine(t)
-	marker := binding.Marker{Origin: "managed", Owner: "payments", ManagedBy: "company-sentry-operator"}
+	marker := binding.Marker{Origin: "managed", Owner: "payments", ManagedBy: "company-sentry-op"}
 	adapter.projects["shared"] = RemoteProject{Identity: "shared-id", Slug: "shared", URL: "https://sentry.example/projects/shared", Marker: &marker}
 	input := useInput("reader", "reader-uid", "payments", "shared")
 	result, err := engine.Reconcile(context.Background(), input)
@@ -479,7 +500,7 @@ func testEngine(t *testing.T) (*Engine, *fakeAdapter, *binding.Store) {
 	}
 	store := &binding.Store{Client: fake.NewClientBuilder().WithScheme(scheme).Build(), Namespace: "operator"}
 	adapter := &fakeAdapter{projects: make(map[string]RemoteProject)}
-	return &Engine{Bindings: store, Adapter: adapter, ManagedBy: "company-sentry-operator", Audit: &fakeAudit{}}, adapter, store
+	return &Engine{Bindings: store, Adapter: adapter, ManagedBy: "company-sentry-op", Audit: &fakeAudit{}}, adapter, store
 }
 
 type fakeAudit struct {

@@ -1,0 +1,13 @@
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryProject
+metadata:
+  name: readonly-demo
+  namespace: sentry-demo-modern
+spec:
+  connection: demo-modern
+  project:
+    use: operator-modern-demo
+  dsn:
+    secret: readonly-demo-dsn
+  lifecycle:
+    onDelete: Retain

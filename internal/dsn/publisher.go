@@ -48,7 +48,8 @@ const (
 )
 
 type Publisher struct {
-	Client client.Client
+	Client            client.Client
+	AllowInsecureHTTP bool
 }
 
 type Authorization func(context.Context) error
@@ -61,7 +62,7 @@ func (p *Publisher) Reconcile(ctx context.Context, project *sentryv1alpha1.Sentr
 	if problems := validation.IsDNS1123Subdomain(desiredName); len(problems) > 0 {
 		return current, "", ErrInvalidSecretName
 	}
-	if !validPublicDSN(publicDSN) {
+	if !validPublicDSN(publicDSN, p.AllowInsecureHTTP) {
 		return current, "", ErrInvalidDSN
 	}
 	if current.CurrentSecret == "" {

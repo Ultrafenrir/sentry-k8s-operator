@@ -77,3 +77,27 @@ func TestRegistryRejectsInvalidCARotationAtomically(t *testing.T) {
 		t.Fatal("failed rotation changed the active registry entry")
 	}
 }
+
+func TestRegistryRecreatesClientWhenTransportPolicyChanges(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	strict, _, err := registry.Apply("main", "https://sentry.example", SecretInputs{Token: []byte("one")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insecure, changed, err := registry.Apply("main", "https://sentry.example", SecretInputs{Token: []byte("one"), InsecureSkipTLSVerify: true})
+	if err != nil || !changed || strict == insecure {
+		t.Fatalf("transport update changed=%v recreated=%v err=%v", changed, strict != insecure, err)
+	}
+	loaded, _ := registry.Inputs("main")
+	if !loaded.InsecureSkipTLSVerify {
+		t.Fatal("transport policy was not retained")
+	}
+	if _, _, err := registry.Apply("http", "http://sentry.example", SecretInputs{Token: []byte("one")}); err == nil {
+		t.Fatal("HTTP client was created without explicit opt-in")
+	}
+	if _, changed, err := registry.Apply("http", "http://sentry.example", SecretInputs{Token: []byte("one"), AllowInsecureHTTP: true}); err != nil || !changed {
+		t.Fatalf("explicit HTTP client changed=%v err=%v", changed, err)
+	}
+}

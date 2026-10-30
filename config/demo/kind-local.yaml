@@ -1,0 +1,240 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sentry-demo-modern
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sentry-demo-legacy
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sentry-demo-surface
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sentry-demo-paused
+---
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryConnection
+metadata:
+  name: demo-modern
+spec:
+  url: http://host.docker.internal:26101
+  organization: sko-live-26-10-1
+  credentials:
+    tokenSecretRef:
+      name: demo-sentry-api
+      key: token
+  transport:
+    allowInsecureHTTP: true
+  default: true
+  compatibility:
+    alerts: modern-26.10.1
+  integrations:
+    slack:
+      defaultWorkspace: Demo Slack
+    pagerDuty:
+      defaultAccount: SKO Demo PagerDuty
+  access:
+    - owner: demo
+      namespaces:
+        matchNames:
+          - sentry-demo-modern
+          - sentry-demo-surface
+          - sentry-demo-paused
+      teams:
+        - sko-live
+      allowCreate: true
+      existingProjects:
+        observe:
+          - operator-modern-demo
+        consumeDSN:
+          - operator-modern-demo
+      destinations:
+        slack:
+          - workspace: Demo Slack
+            channels:
+              - demo-alerts
+        pagerDuty:
+          - account: SKO Demo PagerDuty
+            services:
+              - Demo On-call
+        telegram:
+          targets:
+            - demo-chat
+---
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryConnection
+metadata:
+  name: demo-legacy
+spec:
+  url: http://host.docker.internal:26101
+  organization: sko-live-26-10-1
+  credentials:
+    tokenSecretRef:
+      name: demo-sentry-api
+      key: token
+  transport:
+    allowInsecureHTTP: true
+  compatibility:
+    alerts: legacy-24.7.1
+  integrations:
+    pagerDuty:
+      defaultAccount: SKO Demo PagerDuty
+  access:
+    - owner: demo
+      namespaces:
+        matchNames:
+          - sentry-demo-legacy
+      teams:
+        - sko-live
+      allowCreate: true
+      destinations:
+        pagerDuty:
+          - account: SKO Demo PagerDuty
+            services:
+              - Demo On-call
+---
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryProject
+metadata:
+  name: modern-demo
+  namespace: sentry-demo-modern
+spec:
+  connection: demo-modern
+  project:
+    create:
+      team: sko-live
+      slug: operator-modern-demo
+      displayName: Modern
+      platform: python
+  dsn:
+    secret: modern-demo-dsn
+  settings:
+    filters:
+      browserExtensions: true
+      localhost: true
+      webCrawlers: true
+    pii:
+      scrubData: true
+      scrubDefaults: true
+      scrubIPAddresses: true
+      sensitiveFields:
+        - customer_token
+      safeFields:
+        - request_id
+  destinations:
+    oncall:
+      pagerDuty:
+        account: SKO Demo PagerDuty
+        service: Demo On-call
+  alerts:
+    error-volume:
+      trigger: event-count
+      windowMinutes: 5
+      threshold: 10
+      notify:
+        - oncall
+    disabled-volume:
+      trigger: event-count
+      windowMinutes: 15
+      threshold: 100
+      enabled: false
+      notify:
+        - oncall
+  lifecycle:
+    onDelete: DeleteProject
+---
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryProject
+metadata:
+  name: legacy-demo
+  namespace: sentry-demo-legacy
+spec:
+  connection: demo-legacy
+  project:
+    create:
+      team: sko-live
+      slug: operator-legacy-demo
+      displayName: Legacy
+      platform: go
+  dsn:
+    secret: legacy-demo-dsn
+  settings:
+    filters:
+      browserExtensions: false
+      localhost: true
+      webCrawlers: false
+    pii:
+      scrubData: true
+      scrubDefaults: true
+      scrubIPAddresses: false
+  destinations:
+    oncall:
+      pagerDuty:
+        account: SKO Demo PagerDuty
+        service: Demo On-call
+  alerts:
+    first-seen:
+      trigger: first-seen
+      notify:
+        - oncall
+    regression:
+      trigger: regression
+      notify:
+        - oncall
+    error-volume:
+      trigger: event-count
+      windowMinutes: 5
+      threshold: 20
+      notify:
+        - oncall
+  lifecycle:
+    onDelete: DeleteProject
+---
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryProject
+metadata:
+  name: destination-surface
+  namespace: sentry-demo-surface
+spec:
+  connection: demo-modern
+  project:
+    create:
+      team: sko-live
+      slug: operator-destination-surface
+      displayName: Surface
+      platform: javascript
+  destinations:
+    oncall:
+      pagerDuty:
+        account: SKO Demo PagerDuty
+        service: Demo On-call
+    slack:
+      slack:
+        workspace: Demo Slack
+        channel: demo-alerts
+    telegram:
+      telegram:
+        target: demo-chat
+  lifecycle:
+    onDelete: DeleteProject
+---
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryProject
+metadata:
+  name: paused-demo
+  namespace: sentry-demo-paused
+spec:
+  connection: demo-modern
+  paused: true
+  project:
+    create:
+      team: sko-live
+      slug: operator-paused-demo
+      displayName: Operator Paused Demo
+      platform: python
