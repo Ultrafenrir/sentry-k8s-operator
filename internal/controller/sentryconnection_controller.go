@@ -129,14 +129,7 @@ func (r *SentryConnectionReconciler) connectionsForSecret(ctx context.Context, o
 func (r *SentryConnectionReconciler) setCredentialCondition(ctx context.Context, connection *sentryconfigurationv1alpha1.SentryConnection, status metav1.ConditionStatus, reason, message string) error {
 	base := connection.DeepCopy()
 	connection.Status.ObservedGeneration = connection.Generation
-	connection.Status.Region = ""
-	connection.Status.ObservedRevision = 0
-	connection.Status.EffectiveRole = string(sentryconfigurationv1alpha1.ConnectionRoleStandby)
-	if connection.Spec.Ownership != nil {
-		connection.Status.Region = connection.Spec.Ownership.Region
-		connection.Status.ObservedRevision = connection.Spec.Ownership.Revision
-		connection.Status.EffectiveRole = string(connection.Spec.Ownership.Role)
-	}
+	setConnectionOwnershipStatus(connection)
 	meta.SetStatusCondition(&connection.Status.Conditions, metav1.Condition{
 		Type:               "CredentialsReady",
 		Status:             status,
@@ -149,4 +142,30 @@ func (r *SentryConnectionReconciler) setCredentialCondition(ctx context.Context,
 	}
 	emitConditionChangesObserved(r.Recorder, r.Metrics, controllerConnection, connection, base.Status.Conditions, connection.Status.Conditions)
 	return nil
+}
+
+func setConnectionOwnershipStatus(connection *sentryconfigurationv1alpha1.SentryConnection) {
+	connection.Status.Region = ""
+	connection.Status.ObservedRevision = 0
+	connection.Status.EffectiveRole = string(sentryconfigurationv1alpha1.ConnectionRoleStandby)
+	condition := metav1.Condition{
+		Type:               "OwnershipReady",
+		Status:             metav1.ConditionUnknown,
+		ObservedGeneration: connection.Generation,
+		Reason:             "NotConfigured",
+		Message:            "Regional ownership fencing is not configured.",
+	}
+	if connection.Spec.Ownership != nil {
+		connection.Status.Region = connection.Spec.Ownership.Region
+		if connection.Spec.Ownership.Role == sentryconfigurationv1alpha1.ConnectionRoleStandby {
+			condition.Status = metav1.ConditionTrue
+			condition.Reason = "StandbyConfigured"
+			condition.Message = "The connection is safely fenced in Standby; no external mutation is authorized."
+		} else {
+			condition.Status = metav1.ConditionFalse
+			condition.Reason = "RevisionUnverified"
+			condition.Message = "The requested Active revision has no verified remote ownership marker; external mutation remains fenced."
+		}
+	}
+	meta.SetStatusCondition(&connection.Status.Conditions, condition)
 }

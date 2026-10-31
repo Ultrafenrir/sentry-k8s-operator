@@ -91,6 +91,13 @@ func (v *SentryConnectionValidator) ValidateUpdate(_ context.Context, oldObj, ne
 			field.ErrorList{field.Forbidden(field.NewPath("spec"), "policy update is blocked while registrationCommit is active")},
 		)
 	}
+	if transitionErrs := validateOwnershipTransition(oldObj.Spec.Ownership, newObj.Spec.Ownership); len(transitionErrs) != 0 {
+		return nil, apierrors.NewInvalid(
+			schema.GroupKind{Group: sentryconfigurationv1alpha1.GroupVersion.Group, Kind: "SentryConnection"},
+			newObj.Name,
+			transitionErrs,
+		)
+	}
 
 	return insecureTransportWarnings(newObj), validateSentryConnection(newObj)
 }
@@ -184,6 +191,27 @@ func validateSentryConnection(obj *sentryconfigurationv1alpha1.SentryConnection)
 		obj.Name,
 		allErrs,
 	)
+}
+
+func validateOwnershipTransition(oldOwnership, newOwnership *sentryconfigurationv1alpha1.ConnectionOwnership) field.ErrorList {
+	path := field.NewPath("spec", "ownership")
+	if oldOwnership == nil {
+		return nil
+	}
+	if newOwnership == nil {
+		return field.ErrorList{field.Forbidden(path, "ownership fencing cannot be disabled after it is enabled")}
+	}
+	allErrs := field.ErrorList{}
+	if newOwnership.Revision < oldOwnership.Revision {
+		allErrs = append(allErrs, field.Invalid(path.Child("revision"), newOwnership.Revision, "must not decrease"))
+	}
+	if newOwnership.Region != oldOwnership.Region && newOwnership.Revision <= oldOwnership.Revision {
+		allErrs = append(allErrs, field.Invalid(path.Child("revision"), newOwnership.Revision, "must increase when region changes"))
+	}
+	if oldOwnership.Role == sentryconfigurationv1alpha1.ConnectionRoleStandby && newOwnership.Role == sentryconfigurationv1alpha1.ConnectionRoleActive && newOwnership.Revision <= oldOwnership.Revision {
+		allErrs = append(allErrs, field.Invalid(path.Child("revision"), newOwnership.Revision, "must increase when promoting Standby to Active"))
+	}
+	return allErrs
 }
 
 func validateIntegrationCatalog(integrations *sentryconfigurationv1alpha1.ConnectionIntegrations, path *field.Path) field.ErrorList {

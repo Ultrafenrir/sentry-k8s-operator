@@ -174,7 +174,7 @@ func safeController(value string) string {
 
 func safeCondition(value string) string {
 	switch value {
-	case "CredentialsReady", "AlertPolicyReady", "DSNReady", "SettingsReady", "GrantAccessReady", "NotificationTargetsReady", "AlertsReady", "ProjectReady", "Ready", "RolloutComplete":
+	case "CredentialsReady", "OwnershipReady", "AlertPolicyReady", "DSNReady", "SettingsReady", "GrantAccessReady", "NotificationTargetsReady", "AlertsReady", "ProjectReady", "Ready", "RolloutComplete":
 		return value
 	default:
 		return metricsUnknown

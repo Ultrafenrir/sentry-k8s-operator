@@ -102,10 +102,18 @@ maintain channel or service allowlists.
 
 `internal/ownership` implements and fake-clock tests the connection-wide revision decision,
 equal-revision conflict, stale-revision fencing, and write-delay-read takeover sequence.
-This is a domain foundation, not yet controller or live Sentry evidence. The controller does
-not yet persist the regional marker, revalidate it around every external mutation, promote
-standby project candidates, or perform adoption. Until that integration is complete, the
-new ownership fields must not be described as live failover support.
+Admission now prevents a configured ownership fence from being removed, rejects decreasing
+revisions, and requires a larger revision for region changes or Standby-to-Active promotion.
+The connection controller no longer echoes a requested Active revision as observed: it
+reports `RevisionUnverified`, keeps the effective role Standby, and the project controller
+blocks managed-project creation and deletion until the exact region and revision have
+verified remote evidence. This is a fail-closed controller boundary, not live failover.
+
+The controller does not yet persist or take over the regional marker in Sentry, promote
+standby project candidates, perform adoption, or revalidate the marker around every child
+mutation. Until that integration is complete, an ownership-enabled Active connection
+deliberately remains fenced and the new ownership fields must not be described as live
+failover support.
 
 The reusable alert-policy design decision is complete: `SentryAlertPolicy` is cluster
 scoped, ordinary cluster RBAC controls policy CRUD, and any project may opt in. There is no

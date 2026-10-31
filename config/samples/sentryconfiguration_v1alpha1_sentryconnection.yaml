@@ -14,7 +14,7 @@ spec:
       key: token
   ownership:
     region: eu-west-1
-    role: Active
+    role: Standby
     revision: 1
   projectManagement:
     unmanagedProjects: Reject

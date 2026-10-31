@@ -67,6 +67,11 @@ investigation; do not infer that a missing response means a missing external obj
   `project.use` resource.
 - `OwnershipConflict`: another SentryProject manager claim owns this project. Do not delete
   protected state or create a second writer.
+- `RevisionUnverified`: the requested Active connection revision has not been verified
+  against a remote ownership marker. The controller intentionally keeps the effective role
+  Standby and blocks Sentry mutations; do not patch status to bypass the fence.
+- `ConnectionStandby`: the selected connection is explicitly Standby. Increase the revision
+  only as part of the authorized regional promotion workflow.
 - `OwnershipLost`, `ExternalObjectReplaced`, or `ExternalDeleted`: pinned identity/marker
   evidence no longer matches. Stop mutations and capture an administrator report.
 - `ExternalNameChanged`: identity remains pinned but its readable name changed externally.

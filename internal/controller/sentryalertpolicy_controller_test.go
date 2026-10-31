@@ -75,3 +75,34 @@ func TestAlertPolicyPendingRolloutIsRequeued(t *testing.T) {
 		t.Fatalf("complete rollout unexpectedly requeued: %#v", result)
 	}
 }
+
+func TestConnectionMutationFenceRequiresVerifiedExactRevision(t *testing.T) {
+	t.Parallel()
+	connection := &sentryv1alpha1.SentryConnection{
+		ObjectMeta: metav1.ObjectMeta{Generation: 3},
+		Spec: sentryv1alpha1.SentryConnectionSpec{Ownership: &sentryv1alpha1.ConnectionOwnership{
+			Region: "eu-west-1", Role: sentryv1alpha1.ConnectionRoleActive, Revision: 8,
+		}},
+	}
+	if reason, _ := connectionMutationFence(connection); reason != "RevisionUnverified" {
+		t.Fatalf("unverified reason = %q", reason)
+	}
+	connection.Status.ObservedGeneration = 3
+	connection.Status.Region = "eu-west-1"
+	connection.Status.EffectiveRole = string(sentryv1alpha1.ConnectionRoleActive)
+	connection.Status.ObservedRevision = 8
+	connection.Status.Conditions = []metav1.Condition{{
+		Type: "OwnershipReady", Status: metav1.ConditionTrue, Reason: "RevisionVerified", ObservedGeneration: 3,
+	}}
+	if reason, message := connectionMutationFence(connection); reason != "" || message != "" {
+		t.Fatalf("verified fence = (%q, %q)", reason, message)
+	}
+	connection.Status.ObservedRevision = 7
+	if reason, _ := connectionMutationFence(connection); reason != "RevisionUnverified" {
+		t.Fatalf("stale revision reason = %q", reason)
+	}
+	connection.Spec.Ownership.Role = sentryv1alpha1.ConnectionRoleStandby
+	if reason, _ := connectionMutationFence(connection); reason != "ConnectionStandby" {
+		t.Fatalf("standby reason = %q", reason)
+	}
+}

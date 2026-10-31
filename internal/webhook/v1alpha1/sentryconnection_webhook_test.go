@@ -119,6 +119,39 @@ var _ = Describe("SentryConnection Webhook", func() {
 		Expect(err).To(MatchError(ContainSubstring("registrationCommit is active")))
 	})
 
+	It("requires ownership revisions to move monotonically", func() {
+		oldObj := validConnection()
+		oldObj.Spec.Ownership = &sentryconfigurationv1alpha1.ConnectionOwnership{
+			Region: "eu-west-1", Role: sentryconfigurationv1alpha1.ConnectionRoleStandby, Revision: 7,
+		}
+
+		removed := oldObj.DeepCopy()
+		removed.Spec.Ownership = nil
+		_, err := validator.ValidateUpdate(context.Background(), oldObj, removed)
+		Expect(err).To(MatchError(ContainSubstring("ownership fencing cannot be disabled")))
+
+		decreased := oldObj.DeepCopy()
+		decreased.Spec.Ownership.Revision = 6
+		_, err = validator.ValidateUpdate(context.Background(), oldObj, decreased)
+		Expect(err).To(MatchError(ContainSubstring("must not decrease")))
+
+		promotion := oldObj.DeepCopy()
+		promotion.Spec.Ownership.Role = sentryconfigurationv1alpha1.ConnectionRoleActive
+		_, err = validator.ValidateUpdate(context.Background(), oldObj, promotion)
+		Expect(err).To(MatchError(ContainSubstring("must increase when promoting Standby to Active")))
+
+		regionChange := oldObj.DeepCopy()
+		regionChange.Spec.Ownership.Region = "us-east-1"
+		_, err = validator.ValidateUpdate(context.Background(), oldObj, regionChange)
+		Expect(err).To(MatchError(ContainSubstring("must increase when region changes")))
+
+		validPromotion := oldObj.DeepCopy()
+		validPromotion.Spec.Ownership.Role = sentryconfigurationv1alpha1.ConnectionRoleActive
+		validPromotion.Spec.Ownership.Revision = 8
+		_, err = validator.ValidateUpdate(context.Background(), oldObj, validPromotion)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("blocks deletion while a registration fence is active", func() {
 		obj := validConnection()
 		obj.Status.RegistrationCommit = &sentryconfigurationv1alpha1.RegistrationCommit{

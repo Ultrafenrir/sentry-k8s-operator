@@ -159,6 +159,12 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		return r.reportFailure(ctx, resource, reasonForError(err), "Connection or access policy could not be resolved.")
 	}
+	setProjectOwnershipStatus(resource, connection)
+	if resource.Spec.Project.Create != nil {
+		if reason, message := connectionMutationFence(connection); reason != "" {
+			return r.reportFailure(ctx, resource, reason, message)
+		}
+	}
 	if resource.Spec.Project.Create != nil && !projectruntime.ManagedCreateSupported(connection.Status.Capabilities) {
 		return r.reportFailure(ctx, resource, "ManagedCreateUnsupported", "The connection has not proven atomic default-rule suppression and an automatic active client key.")
 	}
@@ -1321,6 +1327,10 @@ func (r *SentryProjectReconciler) reconcileDelete(ctx context.Context, resource 
 	if err != nil {
 		return r.reportFailure(ctx, resource, reasonForError(err), "DeleteProject is blocked because current authorization could not be proven.")
 	}
+	setProjectOwnershipStatus(resource, connection)
+	if reason, message := connectionMutationFence(connection); reason != "" {
+		return r.reportFailure(ctx, resource, reason, "DeleteProject is blocked. "+message)
+	}
 	apiClient, found := r.Registry.Get(connection.Name)
 	if !found {
 		return r.reportFailure(ctx, resource, "ConnectionNotReady", "DeleteProject is blocked until the selected connection is ready.")
@@ -1358,6 +1368,32 @@ func (r *SentryProjectReconciler) resolveConnection(ctx context.Context, resourc
 		return nil, err
 	}
 	return connection, nil
+}
+
+func connectionMutationFence(connection *sentryconfigurationv1alpha1.SentryConnection) (string, string) {
+	if connection == nil || connection.Spec.Ownership == nil {
+		return "", ""
+	}
+	if connection.Spec.Ownership.Role != sentryconfigurationv1alpha1.ConnectionRoleActive {
+		return "ConnectionStandby", "The selected connection is Standby; no external Sentry mutation is authorized."
+	}
+	condition := meta.FindStatusCondition(connection.Status.Conditions, "OwnershipReady")
+	if connection.Status.ObservedGeneration != connection.Generation || condition == nil || condition.ObservedGeneration != connection.Generation || condition.Status != metav1.ConditionTrue || connection.Status.EffectiveRole != string(sentryconfigurationv1alpha1.ConnectionRoleActive) || connection.Status.ObservedRevision != connection.Spec.Ownership.Revision || connection.Status.Region != connection.Spec.Ownership.Region {
+		return "RevisionUnverified", "The requested connection revision has no verified remote ownership marker; external Sentry mutation remains fenced."
+	}
+	return "", ""
+}
+
+func setProjectOwnershipStatus(project *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection) {
+	requested := project.Spec.Role
+	if requested == "" {
+		requested = sentryconfigurationv1alpha1.ProjectRoleActive
+	}
+	project.Status.RequestedRole = string(requested)
+	project.Status.EffectiveRole = string(sentryconfigurationv1alpha1.ProjectRoleStandby)
+	if requested == sentryconfigurationv1alpha1.ProjectRoleActive && connection != nil && (connection.Spec.Ownership == nil || connection.Status.EffectiveRole == string(sentryconfigurationv1alpha1.ConnectionRoleActive)) {
+		project.Status.EffectiveRole = string(sentryconfigurationv1alpha1.ProjectRoleActive)
+	}
 }
 
 func (r *SentryProjectReconciler) reportFailure(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, reason, message string) (ctrl.Result, error) {
