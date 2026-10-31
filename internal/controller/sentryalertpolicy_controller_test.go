@@ -17,6 +17,8 @@ limitations under the License.
 package controller
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -24,7 +26,13 @@ import (
 
 	sentryv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/alerts"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
+	connectionruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/connection"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/destination"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/dsn"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/ownership"
+	projectruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/project"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
 )
 
 func TestPolicyConsumerRolloutRequiresPolicyChildrenToBeReady(t *testing.T) {
@@ -76,7 +84,7 @@ func TestAlertPolicyPendingRolloutIsRequeued(t *testing.T) {
 	}
 }
 
-func TestConnectionMutationFenceRequiresVerifiedExactRevision(t *testing.T) {
+func TestConnectionMutationFenceDelegatesActiveRevisionVerification(t *testing.T) {
 	t.Parallel()
 	connection := &sentryv1alpha1.SentryConnection{
 		ObjectMeta: metav1.ObjectMeta{Generation: 3},
@@ -84,8 +92,8 @@ func TestConnectionMutationFenceRequiresVerifiedExactRevision(t *testing.T) {
 			Region: "eu-west-1", Role: sentryv1alpha1.ConnectionRoleActive, Revision: 8,
 		}},
 	}
-	if reason, _ := connectionMutationFence(connection); reason != "RevisionUnverified" {
-		t.Fatalf("unverified reason = %q", reason)
+	if reason, message := connectionMutationFence(connection); reason != "" || message != "" {
+		t.Fatalf("active fence = (%q, %q)", reason, message)
 	}
 	connection.Status.ObservedGeneration = 3
 	connection.Status.Region = "eu-west-1"
@@ -97,12 +105,68 @@ func TestConnectionMutationFenceRequiresVerifiedExactRevision(t *testing.T) {
 	if reason, message := connectionMutationFence(connection); reason != "" || message != "" {
 		t.Fatalf("verified fence = (%q, %q)", reason, message)
 	}
-	connection.Status.ObservedRevision = 7
-	if reason, _ := connectionMutationFence(connection); reason != "RevisionUnverified" {
-		t.Fatalf("stale revision reason = %q", reason)
-	}
 	connection.Spec.Ownership.Role = sentryv1alpha1.ConnectionRoleStandby
 	if reason, _ := connectionMutationFence(connection); reason != "ConnectionStandby" {
 		t.Fatalf("standby reason = %q", reason)
 	}
+}
+
+func TestRegionalRevisionAuthorizerRevalidatesRemoteEvidence(t *testing.T) {
+	t.Parallel()
+	marker := ownership.Marker{Region: "eu-west-1", Revision: 8, Owner: "payments", Installation: "company-sentry-op"}
+	evidence, err := ownership.EvidenceFor(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := connectionruntime.NewRegistry()
+	if _, _, err := registry.Apply("primary", "https://sentry.example.test", connectionruntime.SecretInputs{Token: []byte("test")}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &revisionEvidenceAdapter{remote: projectruntime.RemoteProject{Identity: "project-42", Slug: "checkout", RegionalEvidence: &evidence}}
+	reconciler := &SentryProjectReconciler{
+		Registry: registry,
+		NewAdapter: func(*sentryapi.Client) projectruntime.Adapter {
+			return adapter
+		},
+	}
+	connection := &sentryv1alpha1.SentryConnection{
+		ObjectMeta: metav1.ObjectMeta{Name: "primary"},
+		Spec: sentryv1alpha1.SentryConnectionSpec{Ownership: &sentryv1alpha1.ConnectionOwnership{
+			Region: marker.Region, Role: sentryv1alpha1.ConnectionRoleActive, Revision: marker.Revision,
+		}},
+	}
+	protected := binding.ProjectBinding{
+		AccessMode: binding.AccessManage, ExternalIdentity: adapter.remote.Identity,
+		Organization: "company", Slug: adapter.remote.Slug, Owner: marker.Owner,
+		Installation: "https://sentry.example.test", Marker: &binding.Marker{Origin: "managed", Owner: marker.Owner, ManagedBy: marker.Installation}, RegionalOwnership: &marker,
+	}
+	if err := reconciler.validateRegionalRevision(context.Background(), connection, protected); err != nil {
+		t.Fatalf("valid regional evidence rejected: %v", err)
+	}
+	changed := evidence
+	changed.Revision++
+	adapter.remote.RegionalEvidence = &changed
+	if err := reconciler.validateRegionalRevision(context.Background(), connection, protected); !errors.Is(err, dsn.ErrAuthorization) {
+		t.Fatalf("changed evidence error = %v, want authorization denial", err)
+	}
+	connection.Spec.Ownership.Role = sentryv1alpha1.ConnectionRoleStandby
+	if err := reconciler.validateRegionalRevision(context.Background(), connection, protected); !errors.Is(err, dsn.ErrAuthorization) {
+		t.Fatalf("standby error = %v, want authorization denial", err)
+	}
+}
+
+type revisionEvidenceAdapter struct {
+	remote projectruntime.RemoteProject
+}
+
+func (a *revisionEvidenceAdapter) GetBySlug(context.Context, string, string) (projectruntime.RemoteProject, error) {
+	return a.remote, nil
+}
+
+func (a *revisionEvidenceAdapter) Create(context.Context, projectruntime.CreateRequest) (projectruntime.RemoteProject, error) {
+	return projectruntime.RemoteProject{}, errors.New("unexpected create")
+}
+
+func (a *revisionEvidenceAdapter) Delete(context.Context, string, string) error {
+	return errors.New("unexpected delete")
 }

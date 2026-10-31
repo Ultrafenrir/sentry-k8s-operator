@@ -42,6 +42,7 @@ import (
 	connectionruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/connection"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/destination"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/dsn"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/ownership"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/policy"
 	projectruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/project"
 	projectaccessruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/projectaccess"
@@ -183,6 +184,9 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	})
 	if err != nil {
 		return r.reportFailure(ctx, resource, reasonForError(err), "Project reconciliation is safely blocked; no unverified mutation was performed.")
+	}
+	if resource.Spec.Project.Create != nil && connection.Spec.Ownership != nil && connection.Spec.Ownership.Role == sentryconfigurationv1alpha1.ConnectionRoleActive {
+		resource.Status.EffectiveRole = string(sentryconfigurationv1alpha1.ProjectRoleActive)
 	}
 	projectAccessResult := r.reconcileProjectAccess(ctx, resource, connection, apiClient, result)
 	projectAccessErr := projectAccessResult.Err
@@ -564,6 +568,9 @@ func (r *SentryProjectReconciler) dsnAuthorizer(original *sentryconfigurationv1a
 		state, err := r.Bindings.GetBinding(ctx, string(latest.UID))
 		if err != nil || state.Binding.ExternalIdentity != expected.ExternalIdentity || state.Binding.Connection != connection.Name || state.Binding.AccessMode != expected.AccessMode {
 			return dsn.ErrAuthorization
+		}
+		if err := r.validateRegionalRevision(ctx, latestConnection, state.Binding); err != nil {
+			return err
 		}
 		if latest.Spec.Project.Use != nil {
 			if latest.Spec.DSN == nil || decision.AccessMode != binding.AccessReadOnly || !decision.ConsumeDSN {
@@ -1350,13 +1357,46 @@ func (r *SentryProjectReconciler) reconcileDelete(ctx context.Context, resource 
 }
 
 func (r *SentryProjectReconciler) engine(apiClient *sentryapi.Client) *projectruntime.Engine {
+	return &projectruntime.Engine{Bindings: r.Bindings, Adapter: r.projectAdapter(apiClient), ManagedBy: r.ManagedBy, Audit: r.Audit}
+}
+
+func (r *SentryProjectReconciler) projectAdapter(apiClient *sentryapi.Client) projectruntime.Adapter {
 	factory := r.NewAdapter
 	if factory == nil {
 		factory = func(client *sentryapi.Client) projectruntime.Adapter {
 			return &projectruntime.HTTPAdapter{Client: client}
 		}
 	}
-	return &projectruntime.Engine{Bindings: r.Bindings, Adapter: factory(apiClient), ManagedBy: r.ManagedBy, Audit: r.Audit}
+	return factory(apiClient)
+}
+
+func (r *SentryProjectReconciler) validateRegionalRevision(ctx context.Context, connection *sentryconfigurationv1alpha1.SentryConnection, protected binding.ProjectBinding) error {
+	if protected.AccessMode != binding.AccessManage {
+		return nil
+	}
+	configured := connection.Spec.Ownership
+	pinned := protected.RegionalOwnership
+	if configured == nil && pinned == nil {
+		return nil
+	}
+	if configured == nil || pinned == nil || protected.Marker == nil || configured.Role != sentryconfigurationv1alpha1.ConnectionRoleActive || pinned.Region != configured.Region || pinned.Revision != configured.Revision || pinned.Owner != protected.Owner || pinned.Installation != protected.Marker.ManagedBy {
+		return dsn.ErrAuthorization
+	}
+	apiClient, found := r.Registry.Get(connection.Name)
+	if !found {
+		return dsn.ErrAuthorization
+	}
+	remote, err := r.projectAdapter(apiClient).GetBySlug(ctx, protected.Organization, protected.Slug)
+	if err != nil {
+		return err
+	}
+	if remote.Identity != protected.ExternalIdentity || remote.RegionalEvidence == nil {
+		return dsn.ErrAuthorization
+	}
+	if err := ownership.ValidateEvidence(ownership.Local{Marker: *pinned, Active: true}, *remote.RegionalEvidence); err != nil {
+		return dsn.ErrAuthorization
+	}
+	return nil
 }
 
 func (r *SentryProjectReconciler) resolveConnection(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject) (*sentryconfigurationv1alpha1.SentryConnection, error) {
@@ -1376,10 +1416,6 @@ func connectionMutationFence(connection *sentryconfigurationv1alpha1.SentryConne
 	}
 	if connection.Spec.Ownership.Role != sentryconfigurationv1alpha1.ConnectionRoleActive {
 		return "ConnectionStandby", "The selected connection is Standby; no external Sentry mutation is authorized."
-	}
-	condition := meta.FindStatusCondition(connection.Status.Conditions, "OwnershipReady")
-	if connection.Status.ObservedGeneration != connection.Generation || condition == nil || condition.ObservedGeneration != connection.Generation || condition.Status != metav1.ConditionTrue || connection.Status.EffectiveRole != string(sentryconfigurationv1alpha1.ConnectionRoleActive) || connection.Status.ObservedRevision != connection.Spec.Ownership.Revision || connection.Status.Region != connection.Spec.Ownership.Region {
-		return "RevisionUnverified", "The requested connection revision has no verified remote ownership marker; external Sentry mutation remains fenced."
 	}
 	return "", ""
 }

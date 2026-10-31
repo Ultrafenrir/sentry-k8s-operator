@@ -62,6 +62,45 @@ func TestManagedCreateIsIdempotentAndAtomic(t *testing.T) {
 	}
 }
 
+func TestManagedCreatePublishesAndPinsRegionalRevisionEvidence(t *testing.T) {
+	t.Parallel()
+	engine, adapter, store := testEngine(t)
+	input := managedInput("checkout", "uid-one", "payments")
+	input.Connection.Ownership = &sentryv1alpha1.ConnectionOwnership{
+		Region: "eu-west-1", Role: sentryv1alpha1.ConnectionRoleActive, Revision: 8,
+	}
+
+	if _, err := engine.Reconcile(context.Background(), input); err != nil {
+		t.Fatalf("regional reconcile: %v", err)
+	}
+	if adapter.lastCreate.RegionalEvidence == nil || adapter.projects["checkout"].RegionalEvidence == nil || adapter.projects["checkout"].Marker != nil {
+		t.Fatalf("regional create=%#v remote=%#v", adapter.lastCreate, adapter.projects["checkout"])
+	}
+	record, err := store.GetBinding(context.Background(), "uid-one")
+	if err != nil || record.Binding.RegionalOwnership == nil || record.Binding.RegionalOwnership.Region != "eu-west-1" || record.Binding.RegionalOwnership.Revision != 8 {
+		t.Fatalf("regional binding=%#v err=%v", record.Binding, err)
+	}
+	if _, err := engine.Reconcile(context.Background(), input); err != nil || adapter.createCalls != 1 {
+		t.Fatalf("regional no-op err=%v createCalls=%d", err, adapter.createCalls)
+	}
+}
+
+func TestManagedCreateRejectsStandbyConnectionBeforeExternalMutation(t *testing.T) {
+	t.Parallel()
+	engine, adapter, _ := testEngine(t)
+	input := managedInput("checkout", "uid-one", "payments")
+	input.Connection.Ownership = &sentryv1alpha1.ConnectionOwnership{
+		Region: "eu-west-1", Role: sentryv1alpha1.ConnectionRoleStandby, Revision: 8,
+	}
+
+	if _, err := engine.Reconcile(context.Background(), input); !IsReason(err, ReasonConnectionStandby) {
+		t.Fatalf("standby error=%v", err)
+	}
+	if adapter.createCalls != 0 {
+		t.Fatalf("standby made %d create calls", adapter.createCalls)
+	}
+}
+
 func TestManagedCreateCapabilityGateRequiresBothContracts(t *testing.T) {
 	t.Parallel()
 
@@ -463,7 +502,12 @@ func (a *fakeAdapter) Create(_ context.Context, request CreateRequest) (RemotePr
 		Identity: "project-" + request.Slug,
 		Slug:     request.Slug,
 		URL:      "https://sentry.example/projects/" + request.Slug,
-		Marker:   &marker,
+	}
+	if request.RegionalEvidence != nil {
+		evidence := *request.RegionalEvidence
+		project.RegionalEvidence = &evidence
+	} else {
+		project.Marker = &marker
 	}
 	a.projects[request.Slug] = project
 	if a.loseCreateResponse {
@@ -486,6 +530,10 @@ func cloneRemote(project RemoteProject) RemoteProject {
 	if project.Marker != nil {
 		marker := *project.Marker
 		project.Marker = &marker
+	}
+	if project.RegionalEvidence != nil {
+		evidence := *project.RegionalEvidence
+		project.RegionalEvidence = &evidence
 	}
 	return project
 }

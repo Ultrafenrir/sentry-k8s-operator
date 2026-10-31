@@ -17,7 +17,11 @@ limitations under the License.
 // Package binding stores protected external identity and manager claims.
 package binding
 
-import "time"
+import (
+	"time"
+
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/ownership"
+)
 
 const CurrentVersion = "v2"
 
@@ -145,29 +149,30 @@ type TelegramTarget struct {
 
 // ProjectBinding is the protected record for one SentryProject incarnation.
 type ProjectBinding struct {
-	Version          string                        `json:"version"`
-	Project          ProjectReference              `json:"project"`
-	Connection       string                        `json:"connection"`
-	Installation     string                        `json:"installation"`
-	Organization     string                        `json:"organization"`
-	Slug             string                        `json:"slug"`
-	Owner            string                        `json:"owner,omitempty"`
-	Origin           Origin                        `json:"origin"`
-	AccessMode       string                        `json:"accessMode"`
-	ExternalIdentity string                        `json:"externalIdentity,omitempty"`
-	Marker           *Marker                       `json:"marker,omitempty"`
-	ManagerUID       string                        `json:"managerUID,omitempty"`
-	ClaimName        string                        `json:"claimName,omitempty"`
-	Pending          *OperationState               `json:"pending,omitempty"`
-	AppliedHashes    map[string]string             `json:"appliedHashes,omitempty"`
-	PinnedAdapters   map[string]string             `json:"pinnedAdapters,omitempty"`
-	ChildIdentities  map[string]string             `json:"childIdentities,omitempty"`
-	Tombstones       map[string]bool               `json:"tombstones,omitempty"`
-	DSN              *DSNBinding                   `json:"dsn,omitempty"`
-	GrantedTeams     map[string]string             `json:"grantedTeams,omitempty"`
-	Destinations     map[string]DestinationBinding `json:"destinations,omitempty"`
-	Alerts           map[string]AlertBinding       `json:"alerts,omitempty"`
-	AlertPolicy      *AppliedAlertPolicy           `json:"alertPolicy,omitempty"`
+	Version           string                        `json:"version"`
+	Project           ProjectReference              `json:"project"`
+	Connection        string                        `json:"connection"`
+	Installation      string                        `json:"installation"`
+	Organization      string                        `json:"organization"`
+	Slug              string                        `json:"slug"`
+	Owner             string                        `json:"owner,omitempty"`
+	Origin            Origin                        `json:"origin"`
+	AccessMode        string                        `json:"accessMode"`
+	ExternalIdentity  string                        `json:"externalIdentity,omitempty"`
+	Marker            *Marker                       `json:"marker,omitempty"`
+	RegionalOwnership *ownership.Marker             `json:"regionalOwnership,omitempty"`
+	ManagerUID        string                        `json:"managerUID,omitempty"`
+	ClaimName         string                        `json:"claimName,omitempty"`
+	Pending           *OperationState               `json:"pending,omitempty"`
+	AppliedHashes     map[string]string             `json:"appliedHashes,omitempty"`
+	PinnedAdapters    map[string]string             `json:"pinnedAdapters,omitempty"`
+	ChildIdentities   map[string]string             `json:"childIdentities,omitempty"`
+	Tombstones        map[string]bool               `json:"tombstones,omitempty"`
+	DSN               *DSNBinding                   `json:"dsn,omitempty"`
+	GrantedTeams      map[string]string             `json:"grantedTeams,omitempty"`
+	Destinations      map[string]DestinationBinding `json:"destinations,omitempty"`
+	Alerts            map[string]AlertBinding       `json:"alerts,omitempty"`
+	AlertPolicy       *AppliedAlertPolicy           `json:"alertPolicy,omitempty"`
 }
 
 type AppliedAlertPolicy struct {

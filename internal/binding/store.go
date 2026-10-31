@@ -387,6 +387,9 @@ func validateBinding(binding ProjectBinding) error {
 		if binding.AccessMode != AccessManage && binding.AccessMode != AccessReadOnly {
 			return ErrInvalidRecord
 		}
+		if binding.RegionalOwnership != nil && (binding.RegionalOwnership.Region == "" || binding.RegionalOwnership.Revision <= 0 || binding.RegionalOwnership.Owner != binding.Owner || binding.RegionalOwnership.Installation != binding.Marker.ManagedBy) {
+			return ErrInvalidRecord
+		}
 	} else if binding.Origin != OriginExternal || binding.AccessMode != AccessReadOnly || binding.Owner != "" || binding.ManagerUID != "" || binding.Marker != nil || binding.ClaimName != "" {
 		return ErrInvalidRecord
 	}

@@ -105,15 +105,19 @@ equal-revision conflict, stale-revision fencing, and write-delay-read takeover s
 Admission now prevents a configured ownership fence from being removed, rejects decreasing
 revisions, and requires a larger revision for region changes or Standby-to-Active promotion.
 The connection controller no longer echoes a requested Active revision as observed: it
-reports `RevisionUnverified`, keeps the effective role Standby, and the project controller
-blocks managed-project creation and deletion until the exact region and revision have
-verified remote evidence. This is a fail-closed controller boundary, not live failover.
+reports `RevisionUnverified` and keeps the aggregate effective role Standby because a
+connection has no single remote marker. For a newly managed project, the project engine now
+encodes compact region, revision, owner, and installation evidence in the remote project
+name, pins the complete marker in protected state, and marks that project Active only after
+an exact readback. Standby connections are rejected before project mutation.
 
-The controller does not yet persist or take over the regional marker in Sentry, promote
-standby project candidates, perform adoption, or revalidate the marker around every child
-mutation. Until that integration is complete, an ownership-enabled Active connection
-deliberately remains fenced and the new ownership fields must not be described as live
-failover support.
+All managed child authorizers re-read that remote project evidence immediately before a
+Sentry mutation and fail closed on a changed revision, fingerprint, or external identity;
+guarded project deletion performs the same check in the project engine. This has unit-test
+evidence only and must not be described as live failover support. The controller does not
+yet take over an existing lower-revision marker with the required write-delay-read sequence,
+promote standby project candidates, or perform adoption. Revision takeover is therefore the
+first remaining ownership task.
 
 The reusable alert-policy design decision is complete: `SentryAlertPolicy` is cluster
 scoped, ordinary cluster RBAC controls policy CRUD, and any project may opt in. There is no
