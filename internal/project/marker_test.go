@@ -40,6 +40,20 @@ func TestManagedNameExactRoundTripAndBudget(t *testing.T) {
 	}
 }
 
+func TestManagedNameFromSlugTruncatesOnlyDisplayPrefix(t *testing.T) {
+	t.Parallel()
+
+	marker := binding.Marker{Origin: "managed", Owner: "payments", ManagedBy: "company-sentry-op"}
+	name, err := FormatManagedNameFromSlug("project-test-resource", marker)
+	if err != nil || name != "project-t [managed;o=payments;m=company-sentry-op]" {
+		t.Fatalf("FormatManagedNameFromSlug = %q, %v", name, err)
+	}
+	parsed, found := ParseManagedName(name)
+	if !found || parsed != marker {
+		t.Fatalf("ParseManagedName = %#v, %v", parsed, found)
+	}
+}
+
 func TestManagedNameRejectsLookalikesInjectionAndNesting(t *testing.T) {
 	t.Parallel()
 

@@ -40,9 +40,9 @@ type probeObject struct {
 		Name string `json:"name"`
 	} `json:"metadata"`
 	Spec struct {
-		Project      map[string]any `json:"project"`
-		Destinations map[string]any `json:"destinations,omitempty"`
-		DSN          map[string]any `json:"dsn,omitempty"`
+		Project             map[string]any `json:"project"`
+		NotificationTargets map[string]any `json:"notificationTargets,omitempty"`
+		DSN                 map[string]any `json:"dsn,omitempty"`
 	} `json:"spec"`
 }
 

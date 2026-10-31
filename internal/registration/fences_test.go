@@ -105,8 +105,9 @@ func TestServiceKeepsFencesUntilResumablePublishCompletes(t *testing.T) {
 		Origin: binding.OriginManaged, AccessMode: binding.AccessManage, ExternalIdentity: "project-id",
 		Marker:     &binding.Marker{Origin: "managed", Owner: challenge.Owner, ManagedBy: "company-op"},
 		ManagerUID: challenge.Project.UID, ClaimName: "claim",
-		Destinations: map[string]binding.DestinationBinding{"telegram": {
-			Kind: "telegram", SelectorHash: challenge.SelectorHash, ResourceName: "payments-alerts",
+		Destinations: map[string]binding.DestinationBinding{"telegram/payments-alerts": {
+			Owner: binding.ChildOwner{Kind: binding.ChildOwnerProject, Name: challenge.Project.Name, UID: challenge.Project.UID, Generation: challenge.Project.Generation},
+			Kind:  "telegram", SelectorHash: challenge.SelectorHash, ResourceName: "payments-alerts",
 			State: destination.StateRegistrationRequired,
 		}},
 	})
@@ -184,21 +185,22 @@ func fenceFixture(t *testing.T) (client.Client, binding.TelegramChallenge, time.
 			Access: []sentryv1alpha1.AccessRule{{
 				Owner: "payments", Namespaces: sentryv1alpha1.NamespaceAccess{MatchNames: []string{"payments"}},
 				Teams: []string{"payments"}, AllowCreate: true,
-				Destinations: &sentryv1alpha1.DestinationAccess{Telegram: &sentryv1alpha1.TelegramDestinationGrant{Targets: []string{"payments-alerts"}}},
+				NotificationTargets: &sentryv1alpha1.NotificationTargetAccess{TelegramTargets: []string{"payments-alerts"}},
 			}},
 		},
 	}
 	project := &sentryv1alpha1.SentryProject{
 		ObjectMeta: metav1.ObjectMeta{Name: "checkout", Namespace: "payments", UID: types.UID("project-uid"), Generation: 3, ResourceVersion: "1"},
 		Spec: sentryv1alpha1.SentryProjectSpec{
-			Connection: "company", Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments", Slug: "checkout"}},
-			Destinations: map[string]sentryv1alpha1.DestinationSpec{"telegram": {Telegram: &sentryv1alpha1.TelegramDestination{Target: "payments-alerts"}}},
+			Sentry: "company", Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
+			NotificationTargets: &sentryv1alpha1.NotificationTargets{Telegram: []string{"payments-alerts"}},
 		},
-		Status: sentryv1alpha1.SentryProjectStatus{Destinations: map[string]sentryv1alpha1.DestinationStatus{
-			"telegram": {Type: "telegram", State: destination.StateRegistrationRequired, Reason: "TelegramRegistrationRequired"},
+		Status: sentryv1alpha1.SentryProjectStatus{NotificationTargets: map[string]sentryv1alpha1.DestinationStatus{
+			"telegram/payments-alerts": {Type: "telegram", State: destination.StateRegistrationRequired, Reason: "TelegramRegistrationRequired"},
 		}},
 	}
-	_, selectorHash, err := destination.SelectorFingerprint(connection.Spec, project.Spec.Destinations["telegram"])
+	flattened, _ := project.Spec.NotificationTargets.Flatten()
+	_, selectorHash, err := destination.SelectorFingerprint(connection.Spec, flattened["telegram/payments-alerts"])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +209,7 @@ func fenceFixture(t *testing.T) (client.Client, binding.TelegramChallenge, time.
 		WithObjects(connection, project).Build()
 	challenge := binding.TelegramChallenge{
 		Project:     binding.ProjectReference{Namespace: project.Namespace, Name: project.Name, UID: string(project.UID), Generation: project.Generation},
-		Destination: "telegram", SelectorHash: selectorHash, Owner: "payments", Connection: connection.Name,
+		Destination: "telegram/payments-alerts", SelectorHash: selectorHash, Owner: "payments", Connection: connection.Name,
 		PolicyGeneration: connection.Generation, PolicyResourceVersion: connection.ResourceVersion, ExpiresAt: now.Add(10 * time.Minute),
 	}
 	return k8sClient, challenge, now
@@ -223,7 +225,7 @@ func assertFenceState(t *testing.T, k8sClient client.Client, challenge binding.T
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: challenge.Project.Namespace, Name: challenge.Project.Name}, project); err != nil {
 		t.Fatal(err)
 	}
-	projectCommit := project.Status.Destinations[challenge.Destination].RegistrationCommit
+	projectCommit := project.Status.NotificationTargets[challenge.Destination].RegistrationCommit
 	if present {
 		if connection.Status.RegistrationCommit == nil || connection.Status.RegistrationCommit.OperationHash != operationHash || projectCommit == nil || projectCommit.OperationHash != operationHash {
 			t.Fatalf("connection commit=%#v project commit=%#v", connection.Status.RegistrationCommit, projectCommit)

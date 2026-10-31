@@ -39,6 +39,18 @@ func TestAbsentAlertsDoesNotManageExistingChildren(t *testing.T) {
 	}
 }
 
+func TestManagedOwnershipMetadataIsRequired(t *testing.T) {
+	adapter := newFakeAdapter()
+	input := baseInput(adapter, func(context.Context) error { return nil })
+	input.AllowedOwnerUIDs = map[string]bool{"project-uid": true}
+	input.Desired = map[string]Desired{"rule": {Trigger: TriggerFirstSeen, Enabled: true, Notify: []string{"chat"}}}
+
+	result := newTestEngine(adapter).Reconcile(context.Background(), input)
+	if !errors.Is(result.Statuses["rule"].Err, ErrInvalidInput) || len(adapter.operations) != 0 {
+		t.Fatalf("missing protected owner did not fail closed: result=%#v operations=%v", result, adapter.operations)
+	}
+}
+
 func TestLifecyclePinsAdapterOrdersDeleteBeforeCreateAndTombstones(t *testing.T) {
 	adapter := newFakeAdapter()
 	engine := newTestEngine(adapter)
@@ -228,7 +240,7 @@ func TestCanonicalHashIgnoresNotifyOrderAndRejectsDuplicates(t *testing.T) {
 		t.Fatal("canonical hash changed with destination order")
 	}
 	destinations := map[string]binding.DestinationBinding{"chat": {State: "Active"}}
-	if !errors.Is(validateDesired("rule", Desired{Trigger: TriggerFirstSeen, Enabled: true, Notify: []string{"chat", "chat"}}, destinations), ErrInvalidInput) {
+	if !errors.Is(validateDesired("rule", Desired{Trigger: TriggerFirstSeen, Enabled: true, Notify: []string{"chat", "chat"}}, destinations, false), ErrInvalidInput) {
 		t.Fatal("duplicate destination reference was accepted")
 	}
 }

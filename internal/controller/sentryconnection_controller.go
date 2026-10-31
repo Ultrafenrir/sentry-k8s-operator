@@ -129,6 +129,14 @@ func (r *SentryConnectionReconciler) connectionsForSecret(ctx context.Context, o
 func (r *SentryConnectionReconciler) setCredentialCondition(ctx context.Context, connection *sentryconfigurationv1alpha1.SentryConnection, status metav1.ConditionStatus, reason, message string) error {
 	base := connection.DeepCopy()
 	connection.Status.ObservedGeneration = connection.Generation
+	connection.Status.Region = ""
+	connection.Status.ObservedRevision = 0
+	connection.Status.EffectiveRole = string(sentryconfigurationv1alpha1.ConnectionRoleStandby)
+	if connection.Spec.Ownership != nil {
+		connection.Status.Region = connection.Spec.Ownership.Region
+		connection.Status.ObservedRevision = connection.Spec.Ownership.Revision
+		connection.Status.EffectiveRole = string(connection.Spec.Ownership.Role)
+	}
 	meta.SetStatusCondition(&connection.Status.Conditions, metav1.Condition{
 		Type:               "CredentialsReady",
 		Status:             status,

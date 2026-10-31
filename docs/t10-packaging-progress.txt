@@ -75,9 +75,9 @@ does not claim production Alertmanager routing or notification delivery.
 `make verify-samples` loads every YAML resource listed by `config/samples/kustomization.yaml`
 into a real envtest API server using server-side dry-run. The test fails when a sample is
 omitted from the kustomization, violates a built-in or generated CRD schema, is rejected by
-admission, or bypasses the live SentryProject defaulting webhook. The same test runs in the
-Kubernetes 1.35/1.36 test matrix. The GitHub test workflow installs pinned controller-gen
-and per-job envtest assets before running `make test` for both versions on a clean runner;
+admission, or bypasses the live SentryProject defaulting webhook. The same test can run in
+the local Kubernetes 1.35/1.36 test matrix. The GitHub test workflow installs pinned
+controller-gen and Kubernetes 1.35 envtest assets before running one `make test` job;
 it does not mutate dependency files with `go mod tidy`. Public examples use readable names/slugs only; the
 name-resolution contract explicitly rejects external IDs as selectors or workarounds.
 
@@ -173,9 +173,11 @@ Production deploy aliases now require `cosign verify` of the exact image digest 
 exact GitHub release workflow identity at a version tag and the fixed GitHub Actions OIDC
 issuer. `make verify-signature-policy` uses a fake cosign boundary to prove exact arguments
 and rejection of mutable images, broad/branch identities and verification failure. The
-tag-only `.github/workflows/release.yml` uses SHA-pinned actions, minimal permissions,
-keyless signing of the exact pushed digest and immediate verification of its exact
-workflow/tag identity; `make verify-release-workflow` locks that source contract. No hosted
+tag-only `.github/workflows/release.yml` publishes
+`docker.io/ultrafenrir/sentry-k8s-operator` with the `DOCKERHUB_TOKEN` repository secret,
+uses SHA-pinned actions, minimal permissions, keyless signing of the exact pushed digest
+and immediate verification of its exact workflow/tag identity; `make
+verify-release-workflow` locks that source contract. No hosted
 workflow run occurred and no image was pushed, signed or verified against a real registry.
 
 This does not make T10 complete. There is no published registry/chart repository, signed

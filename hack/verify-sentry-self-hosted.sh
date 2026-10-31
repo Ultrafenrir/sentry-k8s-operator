@@ -33,6 +33,10 @@ if SENTRY_VERSION=24.7.1 SENTRY_PROFILE=invalid sh "$manager" metadata >/dev/nul
   echo 'invalid Sentry profile unexpectedly accepted' >&2
   exit 1
 fi
+if SENTRY_VERSION=24.7.1 SENTRY_SKIP_PULL=invalid sh "$manager" metadata >/dev/null 2>&1; then
+  echo 'invalid Sentry skip-pull value unexpectedly accepted' >&2
+  exit 1
+fi
 if SENTRY_VERSION=24.7.1 SENTRY_PORT=80 sh "$manager" metadata >/dev/null 2>&1; then
   echo 'privileged Sentry port unexpectedly accepted' >&2
   exit 1
@@ -52,6 +56,9 @@ grep -q "grep -Eq '\^sntryu_\[0-9a-f\]" "$manager"
 grep -q 'chmod 600 "$temporary_token"' "$manager"
 grep -q 'remove_managed_token' "$manager"
 grep -q 'select_bash' "$manager"
+grep -q 'verify_cached_images' "$manager"
+grep -q 'SENTRY_SKIP_PULL=true requires every rendered Compose image' "$manager"
+grep -q 'Relay image presence is verified by the managed wrapper' "$manager"
 grep -q 'Sentry installer requires Bash >=4.4' "$manager"
 grep -q "replace_token .*'export BUILDX_BUILDER=default' 'unset BUILDX_BUILDER'" "$manager"
 grep -q 'getsentry/sentry:' "$manager"

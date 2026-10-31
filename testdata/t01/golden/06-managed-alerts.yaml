@@ -4,28 +4,26 @@ metadata:
   name: checkout-alerts
   namespace: checkout-prod
 spec:
-  connection: company-sentry
+  sentry: company-sentry
   project:
     create:
       team: payments
-  destinations:
-    team:
-      slack:
-        workspace: Company Slack
-        channel: payments-alerts
-    oncall:
-      pagerDuty:
-        account: Company PagerDuty
-        service: Payments Primary
+  notificationTargets:
+    slack:
+      company-slack:
+        - payments-alerts
+    pagerDuty:
+      company-pagerduty:
+        - Payments Primary
   alerts:
     new-errors:
       trigger: first-seen
       notify:
-        - team
+        - slack/payments-alerts
     error-volume:
       trigger: event-count
       windowMinutes: 5
       threshold: 200
       notify:
-        - team
-        - oncall
+        - slack/payments-alerts
+        - pagerDuty/Payments Primary

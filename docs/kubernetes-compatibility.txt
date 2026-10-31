@@ -1,329 +1,76 @@
-SENTRY CONFIGURATION OPERATOR — T00 KUBERNETES/TOOLCHAIN FREEZE
-Дата проверки источников: 2026-10-29
-Статус: Kubernetes/toolchain freeze принят для начала T01 scaffold. Envtest и
-обязательная exact-patch real-cluster matrix выполнены; неизвестные product-level
-протоколы явно оставлены Unknown и не объявляются поддержанными.
+SENTRY KUBERNETES OPERATOR — KUBERNETES COMPATIBILITY
+Reviewed: 2026-10-31
+Status: Kubernetes 1.35/1.36 source, envtest, and kind baseline established for alpha.
 
-1. Целевые версии
+1. Toolchain freeze
 
-Kubernetes 1.35 latest patch: v1.35.9 (released 2026-09-15)
-Kubernetes 1.36 latest patch: v1.36.5 (released 2026-09-15)
-Kubernetes 1.37.1: Unknown и не входит в advertised support.
+- Go toolchain: repository-pinned Go 1.26.x.
+- controller-runtime and Kubernetes libraries: pinned by `go.mod` and `go.sum`.
+- CI envtest: Kubernetes 1.35.0 lower-bound assets in one test job.
+- Local compatibility matrix: Kubernetes 1.35.0 and 1.36.2 through `make test-matrix`.
+- kind default e2e node: pinned Kubernetes 1.35.5 image and digest.
+- cert-manager: v1.21.1 in the current real-cluster probes.
+- Prometheus Operator: v0.94.2 in monitoring acceptance.
 
-Официальный источник:
-https://kubernetes.io/releases/
+Version changes require dependency review, regenerated CRDs/deepcopy/RBAC/chart artifacts,
+admission tests, the local envtest matrix, and the relevant kind gates.
 
-2. Proposed toolchain freeze
+2. API contract
 
-Go                  1.26.10
-Kubebuilder         4.16.0
-controller-runtime  0.24.1
-controller-tools    0.21.0
-kind                0.32.0
-kubectl local       1.35.3
+The alpha API uses structural OpenAPI schemas, CEL validation, status subresources, printer
+columns, and admission webhooks. It serves and stores one version. Required negative tests
+cover create-or-use exclusivity, field limits, transport combinations, policy selectors,
+alert compatibility, destination shapes, lifecycle choices, and immutable protected-state
+rules.
 
-Source identities:
-- Go 1.26.10 released 2026-10-19:
-  https://go.dev/doc/devel/release
-- Kubebuilder v4.16.0 release commit 4d01fcd; darwin/arm64 binary SHA-256:
-  69f5e207cf35193c78546b0e6dccfc42c44b24ceba81d3e22bab453ae118c328
-  https://github.com/kubernetes-sigs/kubebuilder/releases/tag/v4.16.0
-- controller-runtime v0.24.1 release commit 3be3f1b:
-  https://github.com/kubernetes-sigs/controller-runtime/releases/tag/v0.24.1
-- controller-tools v0.21.0:
-  https://github.com/kubernetes-sigs/controller-tools/releases/tag/v0.21.0
-- kind v0.32.0 release commit cda67ef:
-  darwin/arm64 binary SHA-256:
-  dca67911095a110c2b5c36e26df6cac860c602033e456c0db47be498cdef1ebb
-  https://github.com/kubernetes-sigs/kind/releases/tag/v0.32.0
+3. Verification matrix
 
-Важное несовпадение baseline: стандартный go/v4 scaffold Kubebuilder 4.16.0 был
-опубликован с controller-runtime 0.22.x и Go 1.24/1.25 generation baseline, тогда как
-план требует controller-runtime 0.24.1 и Go 1.26. Это допустимо только как явный
-post-scaffold dependency upgrade с regenerated manifests и полной матрицей. Нельзя
-называть неизменённый Kubebuilder 4.16.0 scaffold требуемым dependency set.
+| Gate | 1.35 | 1.36 | Evidence |
+| --- | --- | --- | --- |
+| CRD generation and schema | Pass | Pass | Generated artifact and source checks. |
+| Envtest admission/defaulting | Pass | Pass | Real API server and webhook. |
+| Controller unit/envtest suite | Pass | Pass | `make test-matrix`. |
+| Published samples | Pass | Pass | Server-side validation through webhooks. |
+| kind deployment/admission | Pass | Supplemental | Pinned local node images. |
+| HA/monitoring special probes | Pass | Not all repeated | Dedicated disposable clusters. |
 
-Generated dependency set ещё не существует, потому что T01 scaffold не создан.
-Итоговый go.mod/go.sum должен быть закреплён отдельным T01 review после успешных тестов.
+Consult the matching `verify-tNN-*` script for exact scope. A specialized gate on 1.35 does
+not imply the same external dependency was exercised on every Kubernetes patch.
 
-T00 envtest probe имеет отдельный непроизводственный dependency set в
-tools/t00-envtest-probe/: Go 1.26.10, controller-runtime 0.24.1 и Kubernetes modules
-v0.36.0. Он доказывает исполнимость test stack, но не заменяет будущий product go.mod.
+4. Local development findings
 
-Установленный Kubebuilder 4.16.0 сообщает embedded Kubernetes 1.37.0. Это ещё одна причина
-не считать CLI version доказательством target compatibility: 1.35/1.36 проверяются
-отдельными envtest/cluster матрицами.
+Use `.tools/bin/kind`, not an arbitrary system kind. A previously installed system kind
+v0.31.0 could create the cluster but failed to load the local image, while the pinned
+repository binary completed the standard load path.
 
-3. Envtest assets
+The persistent development context is `kind-sentry-operator-dev`. Disposable matrix and
+failure-injection scripts must refuse to reuse an existing cluster name and delete only the
+cluster they created. After a disposable probe, restore or explicitly report the active
+context.
 
-Официальный controller-tools index на дату проверки содержит стабильные assets:
+5. Runtime deployment evidence
 
-Kubernetes v1.35.0, darwin/arm64, SHA-512:
-bb5d0bb3975956331b0aa0c039955b4c4dc6c5c288e5af369364c7d2fbeac11a025227dabb127569080b259dd29b697cc77fa77abd27ae26721ddb23e8ee0613
-https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v1.35.0/envtest-v1.35.0-darwin-arm64.tar.gz
+The default manager has two replicas, leader election, health probes, graceful shutdown,
+preferred anti-affinity, PodDisruptionBudget, restricted pod security settings, admission
+webhooks, cert-manager certificates, and authenticated TLS metrics. Dedicated kind probes
+cover leader loss, certificate rotation, NetworkPolicy, least-privilege metrics access,
+Prometheus rule loading, and selected failure windows.
 
-Kubernetes v1.36.2, darwin/arm64, SHA-512:
-9278f9e5af556b2f1f2d139769c1f0d717c7b4426917fdebdba898bcb725a916e4910d6160886194ff9be9589ea7c5c32c2b8ae0754703874b7c8ba8ddfc41ce
-https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v1.36.2/envtest-v1.36.2-darwin-arm64.tar.gz
+6. Commands
 
-Индекс не содержит v1.35.9 или v1.36.5. Поэтому proposed matrix разделяет:
-- envtest: 1.35.0 и 1.36.2, с указанными hashes;
-- real clusters: latest patches 1.35.9 и 1.36.5.
+```sh
+make verify-t01-generated
+make verify-samples
+make test-matrix
+make test-e2e
+```
 
-Index:
-https://raw.githubusercontent.com/kubernetes-sigs/controller-tools/master/envtest-releases.yaml
+Run the narrower `verify-tNN-*` targets first while iterating. `make test-e2e` creates and
+deletes its explicitly named kind cluster unless configured otherwise.
 
-4. Real-cluster images
+7. Evidence boundary
 
-kind v0.32.0 публикует:
-- kindest/node:v1.35.5@sha256:ce977ae6d65918d0b58a5f8b5e940429c2ce42fa3a5619ec2bbc60b949c0ac95
-- kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
-
-Они подходят для smoke/dev, но не удовлетворяют требованию latest patch 1.35.9/1.36.5.
-
-Для exact matrix локально построены arm64 node images из официальных release artifacts
-командой pinned kind v0.32.0:
-
-  make build-t00-kind-image KUBERNETES_VERSION=v1.35.9
-  make build-t00-kind-image KUBERNETES_VERSION=v1.36.5
-
-Builder base:
-docker.io/kindest/base:v20260601-995e8fa5@
-sha256:f10f029b85aa89e7b47a2e6afacf560595c8abcefaa0e96096b854361b740127
-
-Точные local image IDs, server commits и результаты закреплены в
-testdata/contracts/t00-kind-images.json. Local image ID является идентичностью
-проверенного локального артефакта, а не обещанием опубликованного registry digest.
-
-Практический dev finding: system kind v0.31.0 не выполняет kind load docker-image для
-v1.35.5 node с containerd config version 4 (поддерживает только 2/3). Локальный pinned
-kind v0.32.0 поддерживает config v4. Multi-arch BusyBox index всё ещё нельзя загрузить из
-неполного Docker save с --all-platforms; exact linux/arm64 manifest + local tag успешно
-проходит обычный kind load path.
-
-5. Локальная инвентаризация 2026-10-29
-
-macOS Darwin 25.6.0 arm64
-kubectl v1.35.3
-kind v0.31.0
-Docker CLI/daemon 28.3.2 (daemon доступен вне filesystem sandbox)
-Helm v3.18.0
-Go: .tools/go-1.26.10, checksum verified
-kubebuilder: .tools/bin/kubebuilder v4.16.0, commit/checksum verified
-controller-gen: .tools/bin/controller-gen v0.21.0
-kind target: .tools/bin/kind v0.32.0, release-asset checksum verified
-envtest: .tools/envtest/1.35.0 и 1.36.2, SHA-512 verified
-setup-envtest: не требуется; assets установлены напрямую по pinned URL/hash
-project dev context: kind-sentry-operator-dev
-project dev API server: Kubernetes v1.35.5, linux/arm64, git commit
-6636cbce3bbef91ff61d36658757179426f9e1b2
-
-30 октября 2026 отдельный ephemeral e2e cluster на том же pinned v1.35.5 node digest
-прошёл 8/8 product/deployment specs: two-replica manager, probes, cert-manager webhook/metrics
-certificates and CA injection, authenticated CA-verified metrics through NetworkPolicy,
-hot reload перевыпущенного metrics certificate на обеих replica без restart и real redacted
-SentryConnection transition Event. Расширенный image scenario делает rollout v0.0.1 ->
-v0.0.2 -> v0.0.1, сохраняет UID/condition живого CR, повторно проверяет admission и точно
-сравнивает UID/labels/immutable/data шести state/routing/delivery records. После устранения
-его скрытой зависимости от предыдущего readiness spec отдельный focused run прошёл 1/1 за
-141.5s. Оба тега содержали один commit, поэтому это Kubernetes rollout/rollback acceptance,
-не live Sentry test и не межверсионная semantic migration. Target удалил временный кластер
-после каждого suite.
-
-29 октября 2026 создан отдельный single-node kind cluster:
-
-  kind create cluster --name sentry-operator-dev \
-    --image kindest/node:v1.35.5@sha256:ce977ae6d65918d0b58a5f8b5e940429c2ce42fa3a5619ec2bbc60b949c0ac95
-
-Node Ready; CoreDNS, kindnet, control-plane и local-path-provisioner Running; default
-StorageClass существует. Повторная read-only проверка: make verify-kind.
-
-Это постоянный dev smoke cluster. Envtest subset выполнен отдельно; временный published
-kind v1.36.1 cluster также проверен и удалён. Обязательная release matrix выполнена на
-отдельных локально собранных exact-patch v1.35.9/v1.36.5 clusters, описанных ниже.
-Product CRD/webhook/RBAC/PDB/NetworkPolicy ещё отсутствуют: matrix проверяет закреплённый
-T00 probe contract и не подменяет будущую product acceptance.
-
-5.1. T00 API-server probes на dev v1.35.5
-
-Команда: make verify-kubernetes-probes
-Fixtures: testdata/kubernetes/t00-probes/
-Probe API group: t00.sentry-operator.dev (не является выбранным product API group).
-
-Подтверждено реальным API server v1.35.5:
-- structural apiextensions.k8s.io/v1 CRD устанавливается и получает Established;
-- defaulting выставляет spec.paused=false и lifecycle.onDelete=Retain;
-- CEL требует ровно один project.create/project.use, включая negative neither/both;
-- CEL запрещает settings/destinations/alerts вместе с project.use;
-- CEL запрещает lifecycle.onDelete=DeleteProject вместе с project.use;
-- status subresource обновляет status без изменения generation/spec;
-- probe Role разрешает get/list/watch CR и update/patch только status subresource;
-- тот же ServiceAccount не может update/delete main resource и читать Secrets;
-- policy/v1 PDB minAvailable=1 реально блокирует Eviction единственного Ready pod;
-- после удаления probe PDB тот же Eviction проходит;
-- networking.k8s.io/v1 default-deny реально блокирует новую HTTP связь между probe pods;
-- два client-go LeaseLock кандидата проходят leader failover после ReleaseOnCancel;
-- Lease holder после failover совпадает со вторым кандидатом;
-- conversion.strategy=None сохраняется сервером.
-
-Первая версия probe была реально отклонена API server: properties нельзя сочетать с
-additionalProperties:false в тех же structural schema nodes. Исправленная версия полагается
-на стандартное CRD pruning неизвестных полей. Это ограничение нужно сохранить при T01
-generation/review, а не переносить JSON Schema механически.
-
-Скрипт использует отдельный namespace sentry-operator-t00-probe и удаляет namespace и
-probe CRD после выполнения. Он не устанавливает product CRD; RBAC result доказывает только
-subresource separation для probe Role, а не полный product permission set. PDB result
-доказывает Eviction behavior на single-node v1.35.5, но не HA failover. NetworkPolicy
-enforcement проверен только для default-deny на kindnet; allow-list/DNS/egress policy ещё
-не спроектированы. Conversion webhook deployment не проверен.
-
-Отдельный make verify-kind-admission собирает минимальный linux probe из
-tools/t00-admission-probe/, загружает его напрямую в kind и временно устанавливает
-admissionregistration.k8s.io/v1 MutatingWebhookConfiguration и
-ValidatingWebhookConfiguration с failurePolicy=Fail, TLS Service и CA bundle. На v1.35.5
-и v1.36.1 API server подтвердил default dsn.secret=<metadata.name>-sentry и отклонил
-изменение immutable spec.project. После scale-to-zero новый объект fail-closed отклоняется
-API server, то есть failurePolicy=Fail проверена поведением, а не только manifest. Namespace,
-webhook registrations и probe CRD удаляются после каждого запуска. Это проверяет
-deployment/registration path, но не certificate rotation, recovery после outage или
-product webhook code.
-
-Leader probe запускается отдельно командой make verify-leader-election, использует
-namespace sentry-operator-leader-probe и удаляет его после проверки. Это подтверждает
-Lease acquisition/release/failover на одном API server, но не replica crash, network
-partition, multi-node scheduling или controller state recovery.
-
-Connectivity image source:
-busybox@sha256:d82c2ab94640ded77cf76514ce6a84870761105058a4a9e51b05a8a79be97a6c
-(BusyBox 1.37.0 linux/arm64 manifest). Локальный tag busybox:t00-arm64 загружается pinned
-kind v0.32.0; workload использует imagePullPolicy=Never. Подготовка:
-make prepare-kind-probes.
-
-5.2. Envtest results
-
-Команда: make verify-envtest
-Go module: tools/t00-envtest-probe/
-
-Один и тот же dynamic-client test успешно выполнен с controller-runtime 0.24.1:
-- envtest Kubernetes 1.35.0: Passed;
-- envtest Kubernetes 1.36.2: Passed.
-
-Test устанавливает тот же CRD и TLS admission webhooks, затем проверяет:
-- schema defaults и mutating default dsn.secret=<metadata.name>-sentry;
-- validating rejection изменения immutable spec.project;
-- fail-closed запрет изменения destinations при активном project registration fence;
-- разрешение изменения destinations после снятия fence;
-- optimistic concurrency: stale resourceVersion получает Conflict;
-- оба positive objects и пять negative CEL fixtures;
-- status UpdateStatus без generation change;
-- conversion=None.
-
-Процессы etcd/kube-apiserver и webhook server временные и останавливаются после каждого
-test run. Это подтверждает admission code path в envtest, но не deployment/certificate
-rotation/readiness на real cluster.
-
-5.3. Supplemental kind matrix
-
-Один и тот же shell/Go probe set запущен без version-specific веток:
-
-Проверка                         kind v1.35.5  kind v1.36.1
-node/system pods health          Passed        Passed
-structural CRD/defaults/CEL      Passed        Passed
-TLS admission webhook            Passed        Passed
-status subresource               Passed        Passed
-probe RBAC separation            Passed        Passed
-PDB Eviction enforcement         Passed        Passed
-default-deny NetworkPolicy       Passed        Passed
-conversion=None                  Passed        Passed
-Lease leader failover            Passed        Passed
-
-v1.36.1 использовал image
-kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5.
-Временный cluster sentry-operator-t00-136 удалён после теста; постоянный dev context снова
-kind-sentry-operator-dev. Эти версии являются опубликованными kind images, но не заменяют
-обязательные exact latest patches v1.35.9/v1.36.5.
-
-5.4. Exact latest-patch kind matrix
-
-29 октября 2026 официальный release tarball каждой версии был передан pinned
-kind v0.32.0 build node-image. Для каждой версии создан отдельный single-node cluster,
-без version-specific веток выполнены make verify-kind, make verify-kubernetes-probes,
-make verify-kind-admission и make verify-leader-election, после чего cluster удалён и
-kubectl context возвращён на kind-sentry-operator-dev.
-
-Проверка                         kind v1.35.9  kind v1.36.5
-node/system pods health          Passed        Passed
-structural CRD/defaults/CEL      Passed        Passed
-TLS admission webhook            Passed        Passed
-status subresource               Passed        Passed
-probe RBAC separation            Passed        Passed
-PDB Eviction enforcement         Passed        Passed
-default-deny NetworkPolicy       Passed        Passed
-conversion=None                  Passed        Passed
-Lease leader failover            Passed        Passed
-
-v1.35.9:
-- source: https://dl.k8s.io/v1.35.9/kubernetes-server-linux-arm64.tar.gz
-- server commit: 329000efd0b26bd78155e51e4df449130f0fca00
-- local image: kindest/node:v1.35.9-t00
-- local image ID:
-  sha256:249a9cabd9b4a2de331b53d05a5cc9aa13ae5c2be78ec3e345120aee52f0581e
-
-v1.36.5:
-- source: https://dl.k8s.io/v1.36.5/kubernetes-server-linux-arm64.tar.gz
-- server commit: ad950d1cc78b0183c476bd4d3f1934c104229727
-- local image: kindest/node:v1.36.5-t00
-- local image ID:
-  sha256:f5e2cdc1ca963da83d702ba58827871b8dfda2409781aaae6e7651a68ccd72b6
-
-Первый exact admission run выявил race между Deployment readiness и программированием
-Service ClusterIP: API server получил connection refused. Probe теперь до регистрации
-failurePolicy=Fail webhook проверяет HTTPS ClusterIP из network namespace control-plane.
-Повторные exact tests прошли. Это исправление тестового стенда, а также обязательное
-требование к будущему installation ordering product webhook.
-
-6. Матрица, обязательная до T01 approval
-
-Проверка                                 envtest 1.35.0  envtest 1.36.2  real 1.35.9  real 1.36.5
-structural CRD                           Passed          Passed          Passed       Passed
-OpenAPI schema defaults                  Passed          Passed          Passed       Passed
-CEL create+use XOR                       Passed          Passed          Passed       Passed
-CEL use forbids settings/alerts          Passed          Passed          Passed       Passed
-validating/defaulting webhook            Passed          Passed          Passed       Passed
-status subresource                       Passed          Passed          Passed       Passed
-project registration fence/CAS           Passed          Passed          Unknown      Unknown
-two-resource policy fence protocol        Passed          Passed          Unknown      Unknown
-leader election/failover                 N/A             N/A             Passed       Passed
-PDB                                      N/A             N/A             Passed       Passed
-RBAC probe least privilege               Unknown         Unknown         Passed       Passed
-NetworkPolicy default-deny               N/A             N/A             Passed       Passed
-conversion strategy=None                 Passed          Passed          Passed       Passed
-conversion webhook                       Unknown         Unknown         Unknown      Unknown
-
-7. Решение
-
-Kubernetes/toolchain freeze принят для начала T01 scaffold:
-- exact-patch v1.35.9/v1.36.5 probe matrix выполнена;
-- toolchain, envtest assets, node-image builder/base и проверенные local image IDs
-  закреплены;
-- failure evidence admission readiness сохранено как установка ordering requirement;
-- Unknown строки не объявляются поддержкой и переносятся в соответствующие product tasks.
-
-Product generated dependency set и generated CRD появятся только при T01 scaffold.
-T01 закрепил итоговые go.mod/go.sum и generated artifacts. Двухресурсный policy fence
-проверен на real status subresources envtest 1.35/1.36; его real-cluster HA/expiry recovery,
-certificate rotation, multi-node HA и conversion webhook остаются Unknown.
-conversion.strategy=None является выбранной alpha стратегией и проверена. Source
-availability сама по себе не считается proof.
-
-Текущий default manifest рендерит controller Deployment с двумя replicas,
-`--leader-elect`, preferred pod anti-affinity и policy/v1 PDB minAvailable=1. Это
-структурная готовность к HA и не заменяет multi-node/failure acceptance; соответствующая
-строка остаётся Unknown за пределами уже выполненного Lease failover probe.
-
-Дополнительный development probe 2026-10-30 (не часть exact-patch support matrix):
-persistent single-node kind v1.35.5 с cert-manager v1.21.1 поднял новый default manifest
-2/2, certificates Ready, PDB allowedDisruptions=1 и обе ingress NetworkPolicy. Удаление
-точно определённого Lease leader pod передало holderIdentity второй реплике, а Deployment
-вернулся к 2/2. Single-node probe не доказывает node failure или topology availability.
+Envtest proves Kubernetes API/controller behavior, not container networking or Sentry.
+kind proves the selected local dataplane and images, not a managed Kubernetes distribution.
+Production distribution acceptance, long-running upgrade soak, and hosted release evidence
+remain separate work.

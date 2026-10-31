@@ -13,11 +13,10 @@ concurrency:
 
 jobs:
   image:
-    name: Build, sign and verify immutable image
+    name: Build and publish Docker Hub image
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
       id-token: write
     steps:
       - name: Clone the code
@@ -30,8 +29,7 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s\n' "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'
-          repository=$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
-          printf 'RELEASE_TAG=ghcr.io/%s:%s\n' "$repository" "$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+          printf 'RELEASE_TAG=docker.io/ultrafenrir/sentry-k8s-operator:%s\n' "$GITHUB_REF_NAME" >> "$GITHUB_ENV"
 
       - name: Set up cross-platform emulation
         uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
@@ -44,13 +42,14 @@ jobs:
         with:
           cosign-release: v3.1.4
 
-      - name: Log in to GitHub Container Registry
+      - name: Log in to Docker Hub
         shell: bash
         env:
-          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
-          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          test -n "$DOCKERHUB_TOKEN"
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io --username ultrafenrir --password-stdin
 
       - name: Build and push digest with SBOM and provenance
         run: make docker-buildx IMG="$RELEASE_TAG"

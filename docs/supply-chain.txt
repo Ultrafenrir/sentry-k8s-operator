@@ -41,9 +41,11 @@ the controller and opt-in executables from the same image digest.
 Signing boundary
 
 `.github/workflows/release.yml` runs only for pushed version tags. It grants the image job
-read-only repository access plus package-write and OIDC-token permissions, uses SHA-pinned
-actions and a pinned cosign release, builds the release image, signs the exact digest with
-GitHub OIDC and immediately verifies that digest against the exact workflow/tag identity.
+read-only repository access plus OIDC-token permission, authenticates to Docker Hub as
+`ultrafenrir` with the `DOCKERHUB_TOKEN` repository secret, uses SHA-pinned actions and a
+pinned cosign release, builds `docker.io/ultrafenrir/sentry-k8s-operator`, signs the exact
+digest with GitHub OIDC and immediately verifies that digest against the exact workflow/tag
+identity.
 `make verify-release-workflow` source-checks that closed trigger, least-privilege permissions,
 pinned actions, digest signing and exact self-verification sequence.
 

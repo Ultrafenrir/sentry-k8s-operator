@@ -51,6 +51,26 @@ func FormatManagedName(displayName string, marker binding.Marker) (string, error
 	return name, nil
 }
 
+// FormatManagedNameFromSlug derives the Sentry display name from the Kubernetes resource
+// name while preserving the complete ownership marker inside Sentry's name limit. The slug
+// itself is never truncated.
+func FormatManagedNameFromSlug(slug string, marker binding.Marker) (string, error) {
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return "", ErrInvalidMarker
+	}
+	suffix := fmt.Sprintf(" [managed;o=%s;m=%s]", marker.Owner, marker.ManagedBy)
+	budget := sentryProjectNameMaxRunes - utf8.RuneCountInString(suffix)
+	if budget < 1 {
+		return "", ErrMarkerNameTooLong
+	}
+	runes := []rune(slug)
+	if len(runes) > budget {
+		runes = runes[:budget]
+	}
+	return FormatManagedName(string(runes), marker)
+}
+
 // ParseManagedName accepts only the complete reserved suffix and exact component grammar.
 func ParseManagedName(name string) (binding.Marker, bool) {
 	matches := managedNamePattern.FindStringSubmatch(name)

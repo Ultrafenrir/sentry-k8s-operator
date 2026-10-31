@@ -24,20 +24,31 @@ rules:
 - apiGroups:
   - sentryconfiguration.io
   resources:
-  - sentryconnections
+  - sentryalertpolicies
   verbs:
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - sentryconfiguration.io
   resources:
+  - sentryalertpolicies/status
   - sentryconnections/status
   - sentryprojects/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - sentryconfiguration.io
+  resources:
+  - sentryconnections
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - sentryconfiguration.io
   resources:

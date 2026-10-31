@@ -90,22 +90,24 @@ func (v *SentryProjectValidator) ValidateUpdate(_ context.Context, oldObj, newOb
 	sentryprojectlog.Info("Validation for SentryProject upon update", "name", newObj.GetName())
 
 	allErrs := field.ErrorList{}
-	if oldObj.Spec.Connection != newObj.Spec.Connection {
-		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "connection"), "connection is immutable"))
+	if oldObj.Spec.Sentry != newObj.Spec.Sentry {
+		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "sentry"), "sentry is immutable"))
 	}
 	if !reflect.DeepEqual(oldObj.Spec.Project, newObj.Spec.Project) {
 		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "project"), "project identity is immutable"))
 	}
-	for name, status := range oldObj.Status.Destinations {
+	for name, status := range oldObj.Status.NotificationTargets {
 		if status.RegistrationCommit == nil {
 			continue
 		}
-		oldDestination, oldFound := oldObj.Spec.Destinations[name]
-		newDestination, newFound := newObj.Spec.Destinations[name]
+		oldTargets, _ := oldObj.Spec.NotificationTargets.Flatten()
+		newTargets, _ := newObj.Spec.NotificationTargets.Flatten()
+		oldDestination, oldFound := oldTargets[name]
+		newDestination, newFound := newTargets[name]
 		if !oldFound || !newFound || !reflect.DeepEqual(oldDestination, newDestination) {
 			allErrs = append(allErrs, field.Forbidden(
-				field.NewPath("spec", "destinations").Key(name),
-				"destination update is blocked while registrationCommit is active",
+				field.NewPath("spec", "notificationTargets"),
+				"notification target update is blocked while registrationCommit is active",
 			))
 		}
 	}
@@ -124,14 +126,14 @@ func (v *SentryProjectValidator) ValidateUpdate(_ context.Context, oldObj, newOb
 func (v *SentryProjectValidator) ValidateDelete(_ context.Context, obj *sentryconfigurationv1alpha1.SentryProject) (admission.Warnings, error) {
 	sentryprojectlog.Info("Validation for SentryProject upon deletion", "name", obj.GetName())
 
-	for name, status := range obj.Status.Destinations {
+	for name, status := range obj.Status.NotificationTargets {
 		if status.RegistrationCommit == nil {
 			continue
 		}
 		return nil, apierrors.NewInvalid(
 			schema.GroupKind{Group: sentryconfigurationv1alpha1.GroupVersion.Group, Kind: "SentryProject"},
 			obj.Name,
-			field.ErrorList{field.Forbidden(field.NewPath("status", "destinations").Key(name).Child("registrationCommit"), "deletion is blocked while registrationCommit is active")},
+			field.ErrorList{field.Forbidden(field.NewPath("status", "notificationTargets").Key(name).Child("registrationCommit"), "deletion is blocked while registrationCommit is active")},
 		)
 	}
 
@@ -141,19 +143,25 @@ func (v *SentryProjectValidator) ValidateDelete(_ context.Context, obj *sentryco
 func validateSentryProject(obj *sentryconfigurationv1alpha1.SentryProject) error {
 	specPath := field.NewPath("spec")
 	allErrs := field.ErrorList{}
+	if obj.Spec.Role == sentryconfigurationv1alpha1.ProjectRoleStandby {
+		if obj.Spec.Settings != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("settings"), "Standby cannot manage project settings"))
+		}
+		if obj.Spec.Lifecycle.OnDelete == sentryconfigurationv1alpha1.OnDeleteDeleteProject {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("lifecycle", "onDelete"), "Standby cannot delete the project"))
+		}
+	}
 	create := obj.Spec.Project.Create != nil
 	use := obj.Spec.Project.Use != nil
 	if create == use {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("project"), obj.Spec.Project, "exactly one of create or use is required"))
 	}
-	if obj.Spec.Connection != "" {
-		for _, message := range validation.IsDNS1123Subdomain(obj.Spec.Connection) {
-			allErrs = append(allErrs, field.Invalid(specPath.Child("connection"), obj.Spec.Connection, message))
-		}
+	for _, message := range validation.IsDNS1123Subdomain(obj.Spec.Sentry) {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("sentry"), obj.Spec.Sentry, message))
 	}
-	if create && obj.Spec.Project.Create.Slug != "" {
-		for _, message := range validation.IsDNS1123Label(obj.Spec.Project.Create.Slug) {
-			allErrs = append(allErrs, field.Invalid(specPath.Child("project", "create", "slug"), obj.Spec.Project.Create.Slug, message))
+	if obj.Spec.AlertPolicy != "" {
+		for _, message := range validation.IsDNS1123Subdomain(obj.Spec.AlertPolicy) {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("alertPolicy"), obj.Spec.AlertPolicy, message))
 		}
 	}
 	if use {
@@ -163,11 +171,14 @@ func validateSentryProject(obj *sentryconfigurationv1alpha1.SentryProject) error
 		if obj.Spec.Settings != nil {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("settings"), "project.use is read-only"))
 		}
-		if obj.Spec.Destinations != nil {
-			allErrs = append(allErrs, field.Forbidden(specPath.Child("destinations"), "project.use is read-only"))
+		if obj.Spec.NotificationTargets != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("notificationTargets"), "project.use is read-only"))
 		}
 		if obj.Spec.Alerts != nil {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("alerts"), "project.use is read-only"))
+		}
+		if obj.Spec.AlertPolicy != "" {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("alertPolicy"), "project.use is read-only"))
 		}
 		if obj.Spec.Lifecycle.OnDelete == sentryconfigurationv1alpha1.OnDeleteDeleteProject {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("lifecycle", "onDelete"), "project.use cannot delete an external project"))
@@ -178,11 +189,12 @@ func validateSentryProject(obj *sentryconfigurationv1alpha1.SentryProject) error
 			allErrs = append(allErrs, field.Invalid(specPath.Child("dsn", "secret"), obj.Spec.DSN.Secret, message))
 		}
 	}
-	for name, destination := range obj.Spec.Destinations {
-		destinationPath := specPath.Child("destinations").Key(name)
-		for _, message := range validation.IsDNS1123Label(name) {
-			allErrs = append(allErrs, field.Invalid(destinationPath, name, message))
-		}
+	targets, targetErr := obj.Spec.NotificationTargets.Flatten()
+	if targetErr != nil {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("notificationTargets"), obj.Spec.NotificationTargets, "target names must be unique within each provider"))
+	}
+	for _, destination := range targets {
+		destinationPath := specPath.Child("notificationTargets")
 		count := 0
 		if destination.Slack != nil {
 			count++
@@ -226,7 +238,7 @@ func validateSentryProject(obj *sentryconfigurationv1alpha1.SentryProject) error
 					continue
 				}
 				seen[destinationName] = true
-				destination, found := obj.Spec.Destinations[destinationName]
+				destination, found := targets[destinationName]
 				if !found {
 					allErrs = append(allErrs, field.NotFound(notifyPath, destinationName))
 					continue

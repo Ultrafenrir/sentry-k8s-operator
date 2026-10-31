@@ -52,8 +52,9 @@ var _ = Describe("Telegram registration status fences", func() {
 			Installation: "https://sentry.example", Organization: "company", Slug: "checkout",
 			Owner: "payments", Origin: binding.OriginManaged, AccessMode: binding.AccessManage,
 			ExternalIdentity: "project-id", Marker: &marker, ManagerUID: reference.UID, ClaimName: "claim",
-			Destinations: map[string]binding.DestinationBinding{"telegram": {
-				Kind: "telegram", SelectorHash: "selector-hash", ResourceName: "payments-alerts", State: "RegistrationRequired",
+			Destinations: map[string]binding.DestinationBinding{"telegram/payments-alerts": {
+				Owner: binding.ChildOwner{Kind: binding.ChildOwnerProject, Name: reference.Name, UID: reference.UID, Generation: reference.Generation},
+				Kind:  "telegram", SelectorHash: "selector-hash", ResourceName: "payments-alerts", State: "RegistrationRequired",
 			}},
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -68,7 +69,7 @@ var _ = Describe("Telegram registration status fences", func() {
 			},
 		}
 		code, err := service.Issue(ctx, registration.IssueInput{
-			Project: reference, Destination: "telegram", Owner: "payments", Connection: "company",
+			Project: reference, Destination: "telegram/payments-alerts", Owner: "payments", Connection: "company",
 			PolicyGeneration: 7, PolicyResourceVersion: "policy-rv", TTL: 10 * time.Minute,
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -82,7 +83,7 @@ var _ = Describe("Telegram registration status fences", func() {
 				defer GinkgoRecover()
 				defer wait.Done()
 				<-start
-				errorsChannel <- service.Redeem(ctx, reference.UID, "telegram", code, binding.TelegramTarget{ChatIdentity: chatIdentity}, func(context.Context, binding.TelegramChallenge) error { return nil })
+				errorsChannel <- service.Redeem(ctx, reference.UID, "telegram/payments-alerts", code, binding.TelegramTarget{ChatIdentity: chatIdentity}, func(context.Context, binding.TelegramChallenge) error { return nil })
 			}(identity)
 		}
 		close(start)
@@ -98,7 +99,7 @@ var _ = Describe("Telegram registration status fences", func() {
 
 		record, err := store.GetBinding(ctx, reference.UID)
 		Expect(err).NotTo(HaveOccurred())
-		telegram := record.Binding.Destinations["telegram"].Telegram
+		telegram := record.Binding.Destinations["telegram/payments-alerts"].Telegram
 		Expect(telegram).NotTo(BeNil())
 		Expect(telegram.Target).NotTo(BeNil())
 		Expect(telegram.RouteKey).NotTo(BeEmpty())
@@ -125,7 +126,7 @@ var _ = Describe("Telegram registration status fences", func() {
 				Access: []sentryv1alpha1.AccessRule{{
 					Owner: "payments", Namespaces: sentryv1alpha1.NamespaceAccess{MatchNames: []string{namespace}},
 					Teams: []string{"payments"}, AllowCreate: true,
-					Destinations: &sentryv1alpha1.DestinationAccess{Telegram: &sentryv1alpha1.TelegramDestinationGrant{Targets: []string{"payments-alerts"}}},
+					NotificationTargets: &sentryv1alpha1.NotificationTargetAccess{TelegramTargets: []string{"payments-alerts"}},
 				}},
 			},
 		}
@@ -133,9 +134,9 @@ var _ = Describe("Telegram registration status fences", func() {
 		project := &sentryv1alpha1.SentryProject{
 			ObjectMeta: metav1.ObjectMeta{Name: projectName, Namespace: namespace},
 			Spec: sentryv1alpha1.SentryProjectSpec{
-				Connection:   connectionName,
-				Project:      sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments", Slug: "fence-project"}},
-				Destinations: map[string]sentryv1alpha1.DestinationSpec{"telegram": {Telegram: &sentryv1alpha1.TelegramDestination{Target: "payments-alerts"}}},
+				Sentry:              connectionName,
+				Project:             sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
+				NotificationTargets: &sentryv1alpha1.NotificationTargets{Telegram: []string{"payments-alerts"}},
 			},
 		}
 		Expect(k8sClient.Create(ctx, project)).To(Succeed())
@@ -146,11 +147,12 @@ var _ = Describe("Telegram registration status fences", func() {
 
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: connectionName}, connection)).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: projectName}, project)).To(Succeed())
-		_, selectorHash, err := destination.SelectorFingerprint(connection.Spec, project.Spec.Destinations["telegram"])
+		flattened, _ := project.Spec.NotificationTargets.Flatten()
+		_, selectorHash, err := destination.SelectorFingerprint(connection.Spec, flattened["telegram/payments-alerts"])
 		Expect(err).NotTo(HaveOccurred())
 		challenge := binding.TelegramChallenge{
 			Project:     binding.ProjectReference{Namespace: namespace, Name: projectName, UID: string(project.UID), Generation: project.Generation},
-			Destination: "telegram", SelectorHash: selectorHash, Owner: "payments", Connection: connectionName,
+			Destination: "telegram/payments-alerts", SelectorHash: selectorHash, Owner: "payments", Connection: connectionName,
 			PolicyGeneration: connection.Generation, PolicyResourceVersion: connection.ResourceVersion,
 			ExpiresAt: time.Now().UTC().Add(10 * time.Minute),
 		}
@@ -162,13 +164,13 @@ var _ = Describe("Telegram registration status fences", func() {
 		Expect(connection.Status.RegistrationCommit).NotTo(BeNil())
 		Expect(connection.Status.RegistrationCommit.OperationHash).To(Equal(operationHash))
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: projectName}, project)).To(Succeed())
-		Expect(project.Status.Destinations["telegram"].RegistrationCommit).NotTo(BeNil())
-		Expect(project.Status.Destinations["telegram"].RegistrationCommit.OperationHash).To(Equal(operationHash))
+		Expect(project.Status.NotificationTargets["telegram/payments-alerts"].RegistrationCommit).NotTo(BeNil())
+		Expect(project.Status.NotificationTargets["telegram/payments-alerts"].RegistrationCommit.OperationHash).To(Equal(operationHash))
 
 		Expect(coordinator.Clear(ctx, challenge, operationHash)).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: connectionName}, connection)).To(Succeed())
 		Expect(connection.Status.RegistrationCommit).To(BeNil())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: namespace, Name: projectName}, project)).To(Succeed())
-		Expect(project.Status.Destinations["telegram"].RegistrationCommit).To(BeNil())
+		Expect(project.Status.NotificationTargets["telegram/payments-alerts"].RegistrationCommit).To(BeNil())
 	})
 })

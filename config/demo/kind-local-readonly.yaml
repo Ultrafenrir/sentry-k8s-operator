@@ -4,9 +4,9 @@ metadata:
   name: readonly-demo
   namespace: sentry-demo-modern
 spec:
-  connection: demo-modern
+  sentry: demo-modern
   project:
-    use: operator-modern-demo
+    use: modern-demo
   dsn:
     secret: readonly-demo-dsn
   lifecycle:

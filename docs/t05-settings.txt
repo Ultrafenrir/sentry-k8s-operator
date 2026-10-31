@@ -1,95 +1,26 @@
-T05 — FILTERS, PII И GROUPING
-Дата: 2026-10-30
-Статус: Complete для опубликованной alpha surface (filters + PII); HTTP round-trip и
-controller-level drift repair Verified на локальных self-hosted 24.7.1 и 26.10.1.
-Profile, grouping/fingerprintRules, advanced и reset остаются Unsupported по T00/ADR 0001.
-PII scrubbing нового synthetic event и event semantics всех трёх опубликованных inbound
-filters Verified на обеих локальных self-hosted версиях. Historical reprocessing остаётся
-Unknown.
+T05 — FILTERS AND PII SETTINGS
+Updated: 2026-10-31
+Status: Complete for the published alpha surface with live HTTP round-trip evidence
 
-1. Граница публичного контракта
+Published settings are limited to:
 
-Реализованы только поля, одинаково подтверждённые source и version-pinned fixtures:
+- inbound filters: browser extensions, localhost, and web crawlers;
+- PII: scrub data, scrub defaults, scrub IP addresses, sensitive fields, and safe fields.
 
-- filters.browserExtensions -> browser-extensions / active;
-- filters.localhost -> localhost / active;
-- filters.webCrawlers -> web-crawlers / active;
-- pii.scrubData -> dataScrubber;
-- pii.scrubDefaults -> dataScrubberDefaults;
-- pii.scrubIPAddresses -> scrubIPAddresses;
-- pii.sensitiveFields -> sensitiveFields;
-- pii.safeFields -> safeFields.
+Omitted settings remain unmanaged. Present settings are normalized, diffed against the
+live project, updated through the narrow public endpoints, and read back. Reconciliation
+does not overwrite unrelated project fields and becomes mutation-free after convergence.
 
-Raw fingerprintingRules Sentry DSL не принимается. 24.7.1 и 26.10.1 имеют различия
-parser/diagnostics, а одинаковый typed AST и real round-trip не доказаны. Поэтому
-recommended-v1/strict-pii-v1, grouping, settings.advanced и reset не добавлены скрыто и
-не объявлены реализованными. Это обязательное source-only решение T00, а не пропуск
-runtime реализации.
+Settings mutation requires managed project ownership. A read-only existing-project binding
+cannot modify settings. Component conditions separate settings readiness from project/DSN,
+destination, and alert readiness so one failure does not erase useful progress.
 
-2. Reconcile semantics
+Sanitized fixtures cover both supported Sentry versions. Disposable live acceptance has
+updated and read back all published fields, introduced external drift, required one
+controller reconcile to repair it, and confirmed a following no-op reconcile.
 
-internal/settings выполняет preflight validation всего desired settings до любых reads
-или writes. Для каждого присутствующего блока:
+Grouping profiles and arbitrary raw settings remain outside v1alpha1 because their portable
+semantics are not proven.
 
-- fresh GET получает текущее состояние;
-- отсутствующее поле не управляется;
-- false и [] являются явным desired state;
-- списки сравниваются и применяются целиком с сохранением порядка;
-- удалённый filters/PII/settings block прекращает управление без reset;
-- drift по управляемому полю исправляется;
-- перед каждой отдельной mutation повторяется manager authorization.
-
-Filters читаются всеми страницами GET filters и меняются только PUT exact filter ID с
-body {active: bool}. PII использует fresh project GET, строит узкий partial PUT только из
-изменившихся управляемых полей и передаёт If-Match, когда GET вернул ETag. Соседние ручные
-поля не копируются в body и не сбрасываются. 409/412 классифицируются Conflict и приводят
-к новому fresh GET на следующем reconcile; PUT не retry-safe.
-
-Sensitive/safe lists с blank/control/duplicate values отклоняются до Sentry. Ошибка не
-заменяет рабочую remote конфигурацию.
-
-3. Ownership и partial components
-
-Settings доступны только active Managed manager. Controller перед каждым PUT перечитывает
-exact SentryProject UID/generation, policy, protected binding/identity и manager claim без
-handoff. project.use запрещён API и runtime.
-
-Filters и PII являются независимыми компонентами: ошибка одного не отменяет успешно
-проверенный/применённый другой. SettingsReady получает SettingsPartiallyApplied, а DSN
-продолжает независимый reconcile. Аналогично DSN failure больше не блокирует settings.
-Ready=True требует все применимые компоненты; отсутствующий settings или reader без DSN
-получает соответствующий NotApplicable condition и не блокирует Ready.
-
-4. HTTP и fixture evidence
-
-Используются public routes:
-
-- GET /api/0/projects/{org}/{slug}/filters/;
-- PUT /api/0/projects/{org}/{slug}/filters/{filter-id}/;
-- GET /api/0/projects/{org}/{slug}/;
-- PUT /api/0/projects/{org}/{slug}/.
-
-Fixtures 24.7.1/26.10.1 фиксируют filter response, filter update body и project settings
-update body. Local TLS tests доказывают exact route, fresh GET -> conditional PUT, узкий
-body и отсутствие blind retry.
-
-5. Проверки и честные ограничения
-
-- make verify-t05: race engine/HTTP tests, vet, fixture и public-schema fences, controller
-  envtest с partial settings + независимым DSN;
-- make test-matrix: весь набор на Kubernetes envtest 1.35.0 и 1.36.2.
-
-Live disposable Sentry подтвердил transport и точный read-after-write для трёх filters и
-пяти PII fields. Full SentryProjectReconciler acceptance на real envtest API создал managed
-project, записал binding/claim/DSN Secret, затем после внешнего drift восстановил все три
-filters и пять PII fields. Счётчики TLS proxy подтвердили ровно три filter PUT и один узкий
-project settings PUT; следующий reconcile не выполнил ни одной settings mutation, а
-SettingsReady и Ready остались True. Guarded deletion удалил project и CR на обеих версиях.
-Затем обе версии приняли synthetic event через active Default DSN;
-event-detail GET по точному ID вернул sensitive extras как [Filtered], сохранил контрольное
-несекретное значение и не вернул исходные sentinels. При localhost=true обе версии приняли
-envelope, но не сохранили event с user.ip_address=127.0.0.1. Отдельные matching events для
-browser-extensions и web-crawlers сначала были читаемы при active=false, а в отдельном
-одноразовом project остались 404 при active=true. Grouping и историческая перегруппировка
-ещё не проверены. Grouping и profiles требуют отдельного adapter-neutral design/round-trip,
-а не передачи raw DSL.
+Verification: `make verify-t05` plus the configuration portion of
+`make sentry-live-config-api` on the disposable target.

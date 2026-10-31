@@ -55,7 +55,7 @@ spec:
                 settings:
                   type: object
                   x-kubernetes-preserve-unknown-fields: true
-                destinations:
+                notificationTargets:
                   type: object
                   maxProperties: 20
                   additionalProperties:
@@ -87,8 +87,8 @@ spec:
                         - Retain
                         - DeleteProject
               x-kubernetes-validations:
-                - rule: "!has(self.project.use) || !(has(self.settings) || has(self.destinations) || has(self.alerts))"
-                  message: project.use forbids settings, destinations and alerts
+                - rule: "!has(self.project.use) || !(has(self.settings) || has(self.notificationTargets) || has(self.alerts))"
+                  message: project.use forbids settings, notification targets and alerts
                 - rule: "!has(self.project.use) || self.lifecycle.onDelete != 'DeleteProject'"
                   message: project.use forbids lifecycle.onDelete DeleteProject
             status:

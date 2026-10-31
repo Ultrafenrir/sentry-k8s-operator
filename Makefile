@@ -8,8 +8,9 @@ PINNED_GO := $(TOOLS_DIR)/go-1.26.10/bin/go
 GO ?= $(if $(wildcard $(PINNED_GO)),$(PINNED_GO),go)
 export PATH := $(TOOLS_DIR)/go-1.26.10/bin:$(PATH)
 export GOTOOLCHAIN := local
-export GOMODCACHE ?= /private/tmp/sentry-operator-gomodcache
-export GOCACHE ?= /private/tmp/sentry-operator-gocache
+CACHE_ROOT := $(if $(RUNNER_TEMP),$(RUNNER_TEMP),$(if $(TMPDIR),$(TMPDIR),/tmp))
+export GOMODCACHE ?= $(CACHE_ROOT)/sentry-operator-gomodcache
+export GOCACHE ?= $(CACHE_ROOT)/sentry-operator-gocache
 
 KIND_CONTEXT ?= kind-sentry-operator-dev
 KUBERNETES_VERSION ?=
@@ -28,6 +29,7 @@ SENTRY_VERSION ?= 24.7.1
 SENTRY_PROFILE ?= feature-complete
 SENTRY_PORT ?=
 SENTRY_WAIT_TIMEOUT ?= 1800
+SENTRY_SKIP_PULL ?= false
 SENTRY_SELF_HOSTED_CACHE ?= $(CURDIR)/.cache/sentry-self-hosted
 SENTRY_VERSIONS ?= 24.7.1 26.10.1
 SENTRY_BASH_BIN ?=
@@ -65,6 +67,10 @@ all: build
 help: ## Display this help.
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
 
+.PHONY: verify-english
+verify-english: ## Reject Cyrillic text in repository documentation, comments, and source files.
+	sh hack/verify-english-repository.sh
+
 ##@ Development
 
 .PHONY: verify-sentry-self-hosted verify-sentry-compose sentry-up sentry-bootstrap sentry-live-api sentry-live-config-api sentry-controller-live sentry-smoke sentry-status sentry-logs sentry-down sentry-reset sentry-clean sentry-matrix
@@ -75,7 +81,7 @@ verify-sentry-compose: ## Fetch one official pinned Sentry tree and verify its i
 	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PROFILE="$(SENTRY_PROFILE)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_WAIT_TIMEOUT="$(SENTRY_WAIT_TIMEOUT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" sh hack/manage-sentry-self-hosted.sh verify
 
 sentry-up: ## Recreate one Sentry version from empty version-scoped volumes and wait for health.
-	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PROFILE="$(SENTRY_PROFILE)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_WAIT_TIMEOUT="$(SENTRY_WAIT_TIMEOUT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" SENTRY_BASH_BIN="$(SENTRY_BASH_BIN)" sh hack/manage-sentry-self-hosted.sh up
+	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PROFILE="$(SENTRY_PROFILE)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_WAIT_TIMEOUT="$(SENTRY_WAIT_TIMEOUT)" SENTRY_SKIP_PULL="$(SENTRY_SKIP_PULL)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" SENTRY_BASH_BIN="$(SENTRY_BASH_BIN)" sh hack/manage-sentry-self-hosted.sh up
 
 sentry-bootstrap: ## Create and verify an ephemeral local API user/token without printing the token.
 	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PROFILE="$(SENTRY_PROFILE)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_WAIT_TIMEOUT="$(SENTRY_WAIT_TIMEOUT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" sh hack/manage-sentry-self-hosted.sh bootstrap

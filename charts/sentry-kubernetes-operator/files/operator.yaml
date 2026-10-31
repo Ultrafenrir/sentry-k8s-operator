@@ -97,20 +97,31 @@ rules:
 - apiGroups:
   - sentryconfiguration.io
   resources:
-  - sentryconnections
+  - sentryalertpolicies
   verbs:
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - sentryconfiguration.io
   resources:
+  - sentryalertpolicies/status
   - sentryconnections/status
   - sentryprojects/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - sentryconfiguration.io
+  resources:
+  - sentryconnections
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - sentryconfiguration.io
   resources:
@@ -146,6 +157,77 @@ metadata:
 rules:
 - nonResourceURLs:
   - /metrics
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: sentry-kubernetes-operator
+  name: sentry-kubernetes-operator-sentryalertpolicy-admin-role
+rules:
+- apiGroups:
+  - sentryconfiguration.io
+  resources:
+  - sentryalertpolicies
+  verbs:
+  - '*'
+- apiGroups:
+  - sentryconfiguration.io
+  resources:
+  - sentryalertpolicies/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: sentry-kubernetes-operator
+  name: sentry-kubernetes-operator-sentryalertpolicy-editor-role
+rules:
+- apiGroups:
+  - sentryconfiguration.io
+  resources:
+  - sentryalertpolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - sentryconfiguration.io
+  resources:
+  - sentryalertpolicies/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: sentry-kubernetes-operator
+  name: sentry-kubernetes-operator-sentryalertpolicy-viewer-role
+rules:
+- apiGroups:
+  - sentryconfiguration.io
+  resources:
+  - sentryalertpolicies
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - sentryconfiguration.io
+  resources:
+  - sentryalertpolicies/status
   verbs:
   - get
 ---
@@ -671,6 +753,27 @@ metadata:
     cert-manager.io/inject-ca-from: sentry-kubernetes-operator-system/sentry-kubernetes-operator-serving-cert
   name: sentry-kubernetes-operator-validating-webhook-configuration
 webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: sentry-kubernetes-operator-webhook-service
+      namespace: sentry-kubernetes-operator-system
+      path: /validate-sentryconfiguration-io-v1alpha1-sentryalertpolicy
+  failurePolicy: Fail
+  name: vsentryalertpolicy-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - sentryconfiguration.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - sentryalertpolicies
+  sideEffects: None
 - admissionReviewVersions:
   - v1
   clientConfig:

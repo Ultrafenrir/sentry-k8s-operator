@@ -6,7 +6,7 @@ and do not paste raw Sentry responses into an issue.
 ```sh
 kubectl get sentryconnection
 kubectl -n <namespace> get sentryproject <name> -o json \
-  | jq '{generation: .metadata.generation, observed: .status.observedGeneration, dsnClientKey: .status.dsnClientKey, conditions: .status.conditions, destinations: .status.destinations, alerts: .status.alerts}'
+  | jq '{generation: .metadata.generation, observed: .status.observedGeneration, dsnClientKey: .status.dsnClientKey, conditions: .status.conditions, notificationTargets: .status.notificationTargets, alerts: .status.alerts}'
 ```
 
 `metadata.generation != status.observedGeneration` means the latest spec has not completed

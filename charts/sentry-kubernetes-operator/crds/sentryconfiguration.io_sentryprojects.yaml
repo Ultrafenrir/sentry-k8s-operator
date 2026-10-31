@@ -52,6 +52,10 @@ spec:
           spec:
             description: spec defines the desired state of SentryProject
             properties:
+              alertPolicy:
+                maxLength: 253
+                minLength: 1
+                type: string
               alerts:
                 additionalProperties:
                   description: AlertSpec is adapter-neutral and references notification
@@ -62,8 +66,9 @@ spec:
                       type: boolean
                     notify:
                       items:
-                        maxLength: 63
+                        maxLength: 211
                         minLength: 1
+                        pattern: ^(slack|pagerDuty|telegram)/[^/[:space:]][^/]*$
                         type: string
                       maxItems: 20
                       minItems: 1
@@ -100,62 +105,6 @@ spec:
                   deletes all protected operator-owned alerts.
                 maxProperties: 100
                 type: object
-              connection:
-                maxLength: 253
-                minLength: 1
-                type: string
-              destinations:
-                additionalProperties:
-                  description: DestinationSpec contains exactly one adapter-neutral
-                    destination selector.
-                  properties:
-                    pagerDuty:
-                      description: PagerDutyDestination selects a PagerDuty service
-                        by readable names.
-                      properties:
-                        account:
-                          maxLength: 100
-                          type: string
-                        service:
-                          maxLength: 100
-                          minLength: 1
-                          type: string
-                      required:
-                      - service
-                      type: object
-                    slack:
-                      description: SlackDestination selects a Slack channel by readable
-                        names.
-                      properties:
-                        channel:
-                          maxLength: 100
-                          minLength: 1
-                          type: string
-                        workspace:
-                          maxLength: 100
-                          type: string
-                      required:
-                      - channel
-                      type: object
-                    telegram:
-                      description: TelegramDestination selects a logical Telegram
-                        target; numeric IDs stay internal.
-                      properties:
-                        target:
-                          maxLength: 100
-                          minLength: 1
-                          type: string
-                      required:
-                      - target
-                      type: object
-                  type: object
-                  x-kubernetes-validations:
-                  - message: exactly one destination type is required
-                    rule: (has(self.slack) && !has(self.pagerDuty) && !has(self.telegram))
-                      || (!has(self.slack) && has(self.pagerDuty) && !has(self.telegram))
-                      || (!has(self.slack) && !has(self.pagerDuty) && has(self.telegram))
-                maxProperties: 20
-                type: object
               dsn:
                 description: DSNSpec customizes the public DSN output without exposing
                   external IDs.
@@ -182,6 +131,38 @@ spec:
                     - DeleteProject
                     type: string
                 type: object
+              notificationTargets:
+                description: |-
+                  NotificationTargets selects readable resources inside platform-declared integrations.
+                  Channel and service names must be unique within their provider because alerts reference
+                  them as slack/<channel> and pagerDuty/<service>.
+                properties:
+                  pagerDuty:
+                    additionalProperties:
+                      items:
+                        type: string
+                      type: array
+                    description: PagerDuty maps one account catalog name to visible
+                      service names.
+                    maxProperties: 20
+                    type: object
+                  slack:
+                    additionalProperties:
+                      items:
+                        type: string
+                      type: array
+                    description: Slack maps one workspace catalog name to visible
+                      channel names.
+                    maxProperties: 20
+                    type: object
+                  telegram:
+                    description: Telegram contains registered readable targets.
+                    items:
+                      type: string
+                    maxItems: 100
+                    type: array
+                    x-kubernetes-list-type: set
+                type: object
               paused:
                 default: false
                 type: boolean
@@ -193,15 +174,7 @@ spec:
                     description: ProjectCreate identifies a new project entirely through
                       readable values.
                     properties:
-                      displayName:
-                        maxLength: 50
-                        minLength: 1
-                        type: string
                       platform:
-                        maxLength: 64
-                        minLength: 1
-                        type: string
-                      slug:
                         maxLength: 64
                         minLength: 1
                         type: string
@@ -220,6 +193,19 @@ spec:
                 x-kubernetes-validations:
                 - message: exactly one of project.create or project.use is required
                   rule: has(self.create) != has(self.use)
+              role:
+                default: Active
+                description: |-
+                  ProjectRole is a request to acquire management or remain a non-owning candidate. Active
+                  never authorizes stealing an existing claim.
+                enum:
+                - Active
+                - Standby
+                type: string
+              sentry:
+                maxLength: 253
+                minLength: 1
+                type: string
               settings:
                 description: ProjectSettings is deliberately limited to the T00 source-confirmed
                   alpha surface.
@@ -261,15 +247,19 @@ spec:
                 type: object
             required:
             - project
+            - sentry
             type: object
             x-kubernetes-validations:
-            - message: project.use forbids settings, destinations and alerts
-              rule: '!has(self.project.use) || (!has(self.settings) && !has(self.destinations)
+            - message: project.use forbids settings, notification targets and alerts
+              rule: '!has(self.project.use) || (!has(self.settings) && !has(self.notificationTargets)
                 && !has(self.alerts))'
+            - message: project.use forbids alertPolicy
+              rule: '!has(self.project.use) || !has(self.alertPolicy)'
             - message: project.use forbids lifecycle.onDelete DeleteProject
               rule: '!has(self.project.use) || self.lifecycle.onDelete != ''DeleteProject'''
-            - message: destination names must be lowercase DNS labels
-              rule: '!has(self.destinations) || self.destinations.all(k, k.matches(''^[a-z](?:[a-z0-9-]*[a-z0-9])?$''))'
+            - message: Standby forbids settings and DeleteProject lifecycle
+              rule: self.role != 'Standby' || (!has(self.settings) && self.lifecycle.onDelete
+                != 'DeleteProject')
             - message: alert names must be lowercase DNS labels
               rule: '!has(self.alerts) || self.alerts.all(k, k.matches(''^[a-z](?:[a-z0-9-]*[a-z0-9])?$''))'
           status:
@@ -359,10 +349,26 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              destinations:
+              dsnClientKey:
+                description: |-
+                  DSNClientKey is the current readable Sentry client-key name or label. The
+                  protected binding, not this display value, pins the external identity.
+                maxLength: 253
+                type: string
+              dsnSecret:
+                maxLength: 253
+                type: string
+              effectiveRole:
+                enum:
+                - Active
+                - Standby
+                - Fenced
+                - Conflict
+                type: string
+              notificationTargets:
                 additionalProperties:
-                  description: DestinationStatus is the safe status for one spec.destinations
-                    local key.
+                  description: DestinationStatus is the safe status for one canonical
+                    notification target key.
                   properties:
                     reason:
                       maxLength: 64
@@ -403,19 +409,10 @@ spec:
                   - type
                   type: object
                 description: |-
-                  Destinations exposes only local names and safe lifecycle state. External
+                  NotificationTargets exposes only local names and safe lifecycle state. External
                   integration, channel, service and Telegram identities remain protected.
                 type: object
                 x-kubernetes-map-type: granular
-              dsnClientKey:
-                description: |-
-                  DSNClientKey is the current readable Sentry client-key name or label. The
-                  protected binding, not this display value, pins the external identity.
-                maxLength: 253
-                type: string
-              dsnSecret:
-                maxLength: 253
-                type: string
               observedGeneration:
                 format: int64
                 type: integer
@@ -426,6 +423,11 @@ spec:
                 type: string
               projectURL:
                 maxLength: 2048
+                type: string
+              requestedRole:
+                enum:
+                - Active
+                - Standby
                 type: string
             type: object
         required:

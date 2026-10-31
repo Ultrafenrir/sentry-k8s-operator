@@ -4,19 +4,16 @@ metadata:
   name: checkout-destinations
   namespace: checkout-prod
 spec:
-  connection: company-sentry
+  sentry: company-sentry
   project:
     create:
       team: payments
-  destinations:
-    team:
-      slack:
-        workspace: Company Slack
-        channel: payments-alerts
-    oncall:
-      pagerDuty:
-        account: Company PagerDuty
-        service: Payments Primary
-    chat:
-      telegram:
-        target: payments-alerts
+  notificationTargets:
+    slack:
+      company-slack:
+        - payments-alerts
+    pagerDuty:
+      company-pagerduty:
+        - Payments Primary
+    telegram:
+      - payments-alerts

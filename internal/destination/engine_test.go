@@ -32,17 +32,32 @@ func TestPolicyDenialCreatesRevokeStateBeforeCatalogLookup(t *testing.T) {
 	t.Parallel()
 
 	project, connection := destinationInput()
-	connection.Access[0].Destinations = nil
+	connection.Access[0].NotificationTargets = nil
 	catalog := &fakeCatalog{}
 	current := map[string]binding.DestinationBinding{
-		"ops": {Kind: "slack", IntegrationIdentity: "workspace-id", ResourceIdentity: "channel-id", State: StateActive},
+		"slack/incidents": {Kind: "slack", IntegrationIdentity: "workspace-id", ResourceIdentity: "channel-id", State: StateActive},
 	}
 	result := (&Engine{Catalog: catalog}).Reconcile(context.Background(), Input{Namespace: "payments", Project: project, Connection: connection, Current: current})
 	if !result.RevokeOnly || !policy.IsKind(result.PolicyErr, policy.ErrorDestinationAccessDenied) || catalog.calls != 0 {
 		t.Fatalf("result=%#v catalog calls=%d", result, catalog.calls)
 	}
-	if result.Bindings["ops"].State != StateRevoked || result.Bindings["ops"].ResourceIdentity != "channel-id" {
-		t.Fatalf("revoked binding=%#v", result.Bindings["ops"])
+	if result.Bindings["slack/incidents"].State != StateRevoked || result.Bindings["slack/incidents"].ResourceIdentity != "channel-id" {
+		t.Fatalf("revoked binding=%#v", result.Bindings["slack/incidents"])
+	}
+}
+
+func TestManagedOwnershipMetadataIsRequired(t *testing.T) {
+	t.Parallel()
+
+	project, connection := destinationInput()
+	project.NotificationTargets = &sentryv1alpha1.NotificationTargets{Telegram: []string{"payments-alerts"}}
+	connection.Access[0].NotificationTargets = &sentryv1alpha1.NotificationTargetAccess{TelegramTargets: []string{"payments-alerts"}}
+	result := (&Engine{}).Reconcile(context.Background(), Input{
+		Namespace: "payments", Project: project, Connection: connection,
+		Owners: map[string]binding.ChildOwner{}, AllowedOwnerUIDs: map[string]bool{"project-uid": true},
+	})
+	if !errors.Is(result.Statuses["telegram/payments-alerts"].Err, ErrInvalidDestination) || len(result.Bindings) != 0 {
+		t.Fatalf("missing protected owner did not fail closed: %#v", result)
 	}
 }
 
@@ -62,11 +77,11 @@ func TestResolvePinsReadableSlackAndPagerDutyIdentities(t *testing.T) {
 	if err := result.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if result.Bindings["ops"].IntegrationIdentity != "slack-workspace-id" || result.Bindings["ops"].ResourceIdentity != "channel-id" || result.Bindings["oncall"].ResourceIdentity != "service-id" {
+	if result.Bindings["slack/incidents"].IntegrationIdentity != "slack-workspace-id" || result.Bindings["slack/incidents"].ResourceIdentity != "channel-id" || result.Bindings["pagerDuty/checkout"].ResourceIdentity != "service-id" {
 		t.Fatalf("bindings=%#v", result.Bindings)
 	}
-	if result.Statuses["ops"].State != StateActive || result.Statuses["ops"].Reason != "DestinationResolved" {
-		t.Fatalf("safe status=%#v", result.Statuses["ops"])
+	if result.Statuses["slack/incidents"].State != StateActive || result.Statuses["slack/incidents"].Reason != "DestinationResolved" {
+		t.Fatalf("safe status=%#v", result.Statuses["slack/incidents"])
 	}
 }
 
@@ -74,13 +89,13 @@ func TestOneDestinationGrantRevokeDoesNotBlockAllowedSibling(t *testing.T) {
 	t.Parallel()
 
 	project, connection := destinationInput()
-	connection.Access[0].Destinations.Slack = nil
+	connection.Access[0].NotificationTargets.SlackWorkspaces = nil
 	catalog := &fakeCatalog{
 		integrations: map[string][]Integration{"pagerduty": {{Identity: "pd-account-id", Name: "primary"}}},
 		pagerDuty:    map[string][]Resource{"pd-account-id": {{Identity: "service-id", Name: "checkout"}}},
 	}
 	current := map[string]binding.DestinationBinding{
-		"ops": {
+		"slack/incidents": {
 			Kind: "slack", SelectorHash: "old-selector", IntegrationIdentity: "workspace-id",
 			IntegrationName: "company", ResourceIdentity: "channel-id", ResourceName: "incidents", State: StateActive,
 		},
@@ -91,11 +106,11 @@ func TestOneDestinationGrantRevokeDoesNotBlockAllowedSibling(t *testing.T) {
 	if result.RevokeOnly || result.PolicyErr != nil {
 		t.Fatalf("unexpected global revoke=%#v", result)
 	}
-	if !policy.IsKind(result.Statuses["ops"].Err, policy.ErrorDestinationAccessDenied) || result.Bindings["ops"].State != StateRevoked || result.Bindings["ops"].ResourceIdentity != "channel-id" {
-		t.Fatalf("revoked sibling=%#v status=%#v", result.Bindings["ops"], result.Statuses["ops"])
+	if !policy.IsKind(result.Statuses["slack/incidents"].Err, policy.ErrorDestinationAccessDenied) || result.Bindings["slack/incidents"].State != StateRevoked || result.Bindings["slack/incidents"].ResourceIdentity != "channel-id" {
+		t.Fatalf("revoked sibling=%#v status=%#v", result.Bindings["slack/incidents"], result.Statuses["slack/incidents"])
 	}
-	if result.Bindings["oncall"].State != StateActive || result.Bindings["oncall"].ResourceIdentity != "service-id" || catalog.calls != 2 {
-		t.Fatalf("allowed sibling=%#v catalog calls=%d", result.Bindings["oncall"], catalog.calls)
+	if result.Bindings["pagerDuty/checkout"].State != StateActive || result.Bindings["pagerDuty/checkout"].ResourceIdentity != "service-id" || catalog.calls != 2 {
+		t.Fatalf("allowed sibling=%#v catalog calls=%d", result.Bindings["pagerDuty/checkout"], catalog.calls)
 	}
 }
 
@@ -103,7 +118,7 @@ func TestPinnedDestinationNeverSwitchesToSameNameReplacement(t *testing.T) {
 	t.Parallel()
 
 	project, connection := destinationInput()
-	delete(project.Destinations, "oncall")
+	project.NotificationTargets.PagerDuty = nil
 	catalog := &fakeCatalog{
 		integrations: map[string][]Integration{"slack": {{Identity: "workspace-old", Name: "company"}}},
 		slack:        map[string][]Resource{"workspace-old": {{Identity: "channel-old", Name: "incidents"}}},
@@ -116,11 +131,11 @@ func TestPinnedDestinationNeverSwitchesToSameNameReplacement(t *testing.T) {
 	catalog.integrations["slack"] = []Integration{{Identity: "workspace-new", Name: "company"}}
 	catalog.slack = map[string][]Resource{"workspace-new": {{Identity: "channel-new", Name: "incidents"}}}
 	second := engine.Reconcile(context.Background(), Input{Namespace: "payments", Project: project, Connection: connection, Current: first.Bindings})
-	if !errors.Is(second.Statuses["ops"].Err, ErrExternalObjectReplaced) {
-		t.Fatalf("replacement status=%#v", second.Statuses["ops"])
+	if !errors.Is(second.Statuses["slack/incidents"].Err, ErrExternalObjectReplaced) {
+		t.Fatalf("replacement status=%#v", second.Statuses["slack/incidents"])
 	}
-	if second.Bindings["ops"].IntegrationIdentity != "workspace-old" || second.Bindings["ops"].ResourceIdentity != "channel-old" {
-		t.Fatalf("pin switched: %#v", second.Bindings["ops"])
+	if second.Bindings["slack/incidents"].IntegrationIdentity != "workspace-old" || second.Bindings["slack/incidents"].ResourceIdentity != "channel-old" {
+		t.Fatalf("pin switched: %#v", second.Bindings["slack/incidents"])
 	}
 }
 
@@ -128,7 +143,7 @@ func TestPinnedDestinationReportsExternalRename(t *testing.T) {
 	t.Parallel()
 
 	project, connection := destinationInput()
-	delete(project.Destinations, "oncall")
+	project.NotificationTargets.PagerDuty = nil
 	catalog := &fakeCatalog{
 		integrations: map[string][]Integration{"slack": {{Identity: "workspace-id", Name: "company"}}},
 		slack:        map[string][]Resource{"workspace-id": {{Identity: "channel-id", Name: "incidents"}}},
@@ -137,8 +152,8 @@ func TestPinnedDestinationReportsExternalRename(t *testing.T) {
 	first := engine.Reconcile(context.Background(), Input{Namespace: "payments", Project: project, Connection: connection})
 	catalog.slack["workspace-id"] = []Resource{{Identity: "channel-id", Name: "renamed"}}
 	second := engine.Reconcile(context.Background(), Input{Namespace: "payments", Project: project, Connection: connection, Current: first.Bindings})
-	if !errors.Is(second.Statuses["ops"].Err, ErrExternalNameChanged) {
-		t.Fatalf("rename status=%#v", second.Statuses["ops"])
+	if !errors.Is(second.Statuses["slack/incidents"].Err, ErrExternalNameChanged) {
+		t.Fatalf("rename status=%#v", second.Statuses["slack/incidents"])
 	}
 }
 
@@ -146,19 +161,17 @@ func TestTelegramRequiresRegistrationAndRemovalKeepsCleanupTombstone(t *testing.
 	t.Parallel()
 
 	project, connection := destinationInput()
-	project.Destinations = map[string]sentryv1alpha1.DestinationSpec{
-		"telegram": {Telegram: &sentryv1alpha1.TelegramDestination{Target: "payments-alerts"}},
-	}
-	connection.Access[0].Destinations = &sentryv1alpha1.DestinationAccess{Telegram: &sentryv1alpha1.TelegramDestinationGrant{Targets: []string{"payments-alerts"}}}
+	project.NotificationTargets = &sentryv1alpha1.NotificationTargets{Telegram: []string{"payments-alerts"}}
+	connection.Access[0].NotificationTargets = &sentryv1alpha1.NotificationTargetAccess{TelegramTargets: []string{"payments-alerts"}}
 	catalog := &fakeCatalog{}
 	engine := &Engine{Catalog: catalog}
 	first := engine.Reconcile(context.Background(), Input{Namespace: "payments", Project: project, Connection: connection})
-	if first.Bindings["telegram"].State != StateRegistrationRequired || catalog.calls != 0 {
+	if first.Bindings["telegram/payments-alerts"].State != StateRegistrationRequired || catalog.calls != 0 {
 		t.Fatalf("first=%#v calls=%d", first, catalog.calls)
 	}
-	project.Destinations = map[string]sentryv1alpha1.DestinationSpec{}
+	project.NotificationTargets = &sentryv1alpha1.NotificationTargets{}
 	second := engine.Reconcile(context.Background(), Input{Namespace: "payments", Project: project, Connection: connection, Current: first.Bindings})
-	if second.Bindings["telegram"].State != StateCleanupPending || second.Statuses["telegram"].Reason != "DestinationRemoved" {
+	if second.Bindings["telegram/payments-alerts"].State != StateCleanupPending || second.Statuses["telegram/payments-alerts"].Reason != "DestinationRemoved" {
 		t.Fatalf("second=%#v", second)
 	}
 }
@@ -167,13 +180,13 @@ func TestProviderDestinationRemovalKeepsPinnedIdentityUntilAlertCleanup(t *testi
 	t.Parallel()
 
 	project, connection := destinationInput()
-	project.Destinations = map[string]sentryv1alpha1.DestinationSpec{}
+	project.NotificationTargets = &sentryv1alpha1.NotificationTargets{}
 	current := map[string]binding.DestinationBinding{
-		"ops": {
+		"slack/incidents": {
 			Kind: "slack", SelectorHash: "selector", IntegrationIdentity: "workspace-id",
 			ResourceIdentity: "channel-id", ResourceName: "incidents", State: StateActive,
 		},
-		"oncall": {
+		"pagerDuty/checkout": {
 			Kind: "pagerduty", SelectorHash: "selector", IntegrationIdentity: "account-id",
 			ResourceIdentity: "service-id", ResourceName: "checkout", State: StateActive,
 		},
@@ -181,7 +194,7 @@ func TestProviderDestinationRemovalKeepsPinnedIdentityUntilAlertCleanup(t *testi
 	result := (&Engine{}).Reconcile(context.Background(), Input{
 		Namespace: "payments", Project: project, Connection: connection, Current: current,
 	})
-	for _, name := range []string{"ops", "oncall"} {
+	for _, name := range []string{"slack/incidents", "pagerDuty/checkout"} {
 		if result.Bindings[name].State != StateCleanupPending || result.Bindings[name].ResourceIdentity != current[name].ResourceIdentity {
 			t.Fatalf("%s cleanup binding=%#v", name, result.Bindings[name])
 		}
@@ -195,10 +208,8 @@ func TestTelegramSelectorChangeRequiresOldRouteRevocationBeforeNewRegistration(t
 	t.Parallel()
 
 	project, connection := destinationInput()
-	project.Destinations = map[string]sentryv1alpha1.DestinationSpec{
-		"telegram": {Telegram: &sentryv1alpha1.TelegramDestination{Target: "new-target"}},
-	}
-	connection.Access[0].Destinations = &sentryv1alpha1.DestinationAccess{Telegram: &sentryv1alpha1.TelegramDestinationGrant{Targets: []string{"new-target"}}}
+	project.NotificationTargets = &sentryv1alpha1.NotificationTargets{Telegram: []string{"new-target"}}
+	connection.Access[0].NotificationTargets = &sentryv1alpha1.NotificationTargetAccess{TelegramTargets: []string{"new-target"}}
 	old := binding.DestinationBinding{
 		Kind: "telegram", SelectorHash: selectorHash("telegram", "", "old-target"), ResourceName: "old-target", State: StateActive,
 		Telegram: &binding.TelegramBinding{Target: &binding.TelegramTarget{ChatIdentity: "-100123"}, RouteKey: strings.Repeat("a", 64)},
@@ -206,34 +217,32 @@ func TestTelegramSelectorChangeRequiresOldRouteRevocationBeforeNewRegistration(t
 	engine := &Engine{}
 	cleanup := engine.Reconcile(context.Background(), Input{
 		Namespace: "payments", Project: project, Connection: connection,
-		Current: map[string]binding.DestinationBinding{"telegram": old},
+		Current: map[string]binding.DestinationBinding{"telegram/new-target": old},
 	})
-	if cleanup.Bindings["telegram"].State != StateCleanupPending || cleanup.Bindings["telegram"].Reason != "DestinationChanged" || cleanup.Bindings["telegram"].Telegram.Target.ChatIdentity != "-100123" {
-		t.Fatalf("cleanup=%#v", cleanup.Bindings["telegram"])
+	if cleanup.Bindings["telegram/new-target"].State != StateCleanupPending || cleanup.Bindings["telegram/new-target"].Reason != "DestinationChanged" || cleanup.Bindings["telegram/new-target"].Telegram.Target.ChatIdentity != "-100123" {
+		t.Fatalf("cleanup=%#v", cleanup.Bindings["telegram/new-target"])
 	}
-	revoked := cleanup.Bindings["telegram"]
+	revoked := cleanup.Bindings["telegram/new-target"]
 	revoked.Telegram.RouteRevoked = true
 	revertedProject := project
-	revertedProject.Destinations = map[string]sentryv1alpha1.DestinationSpec{
-		"telegram": {Telegram: &sentryv1alpha1.TelegramDestination{Target: "old-target"}},
-	}
+	revertedProject.NotificationTargets = &sentryv1alpha1.NotificationTargets{Telegram: []string{"old-target"}}
 	revertedConnection := connection
 	revertedConnection.Access = append([]sentryv1alpha1.AccessRule(nil), connection.Access...)
-	revertedConnection.Access[0].Destinations = &sentryv1alpha1.DestinationAccess{Telegram: &sentryv1alpha1.TelegramDestinationGrant{Targets: []string{"old-target"}}}
+	revertedConnection.Access[0].NotificationTargets = &sentryv1alpha1.NotificationTargetAccess{TelegramTargets: []string{"old-target"}}
 	restored := engine.Reconcile(context.Background(), Input{
 		Namespace: "payments", Project: revertedProject, Connection: revertedConnection,
-		Current: map[string]binding.DestinationBinding{"telegram": revoked},
+		Current: map[string]binding.DestinationBinding{"telegram/old-target": revoked},
 	})
-	if restored.Bindings["telegram"].State != StateRestorePending || restored.Bindings["telegram"].Telegram.Target.ChatIdentity != "-100123" {
-		t.Fatalf("reverted=%#v", restored.Bindings["telegram"])
+	if restored.Bindings["telegram/old-target"].State != StateRestorePending || restored.Bindings["telegram/old-target"].Telegram.Target.ChatIdentity != "-100123" {
+		t.Fatalf("reverted=%#v", restored.Bindings["telegram/old-target"])
 	}
 
 	next := engine.Reconcile(context.Background(), Input{
 		Namespace: "payments", Project: project, Connection: connection,
-		Current: map[string]binding.DestinationBinding{"telegram": revoked},
+		Current: map[string]binding.DestinationBinding{"telegram/new-target": revoked},
 	})
-	if next.Bindings["telegram"].State != StateRegistrationRequired || next.Bindings["telegram"].ResourceName != "new-target" || next.Bindings["telegram"].Telegram != nil {
-		t.Fatalf("next=%#v", next.Bindings["telegram"])
+	if next.Bindings["telegram/new-target"].State != StateRegistrationRequired || next.Bindings["telegram/new-target"].ResourceName != "new-target" || next.Bindings["telegram/new-target"].Telegram != nil {
+		t.Fatalf("next=%#v", next.Bindings["telegram/new-target"])
 	}
 }
 
@@ -241,11 +250,10 @@ func TestTelegramGrantRestoreKeepsPinnedTargetAndRequestsExactRouteRestore(t *te
 	t.Parallel()
 
 	project, connection := destinationInput()
-	project.Destinations = map[string]sentryv1alpha1.DestinationSpec{
-		"telegram": {Telegram: &sentryv1alpha1.TelegramDestination{Target: "payments-alerts"}},
-	}
-	connection.Access[0].Destinations = &sentryv1alpha1.DestinationAccess{Telegram: &sentryv1alpha1.TelegramDestinationGrant{Targets: []string{"payments-alerts"}}}
-	_, selector, err := SelectorFingerprint(connection, project.Destinations["telegram"])
+	project.NotificationTargets = &sentryv1alpha1.NotificationTargets{Telegram: []string{"payments-alerts"}}
+	connection.Access[0].NotificationTargets = &sentryv1alpha1.NotificationTargetAccess{TelegramTargets: []string{"payments-alerts"}}
+	flattened, _ := project.NotificationTargets.Flatten()
+	_, selector, err := SelectorFingerprint(connection, flattened["telegram/payments-alerts"])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,9 +266,9 @@ func TestTelegramGrantRestoreKeepsPinnedTargetAndRequestsExactRouteRestore(t *te
 	}
 	result := (&Engine{}).Reconcile(context.Background(), Input{
 		Namespace: "payments", Project: project, Connection: connection,
-		Current: map[string]binding.DestinationBinding{"telegram": current},
+		Current: map[string]binding.DestinationBinding{"telegram/payments-alerts": current},
 	})
-	got := result.Bindings["telegram"]
+	got := result.Bindings["telegram/payments-alerts"]
 	if got.State != StateRestorePending || got.Telegram == nil || got.Telegram.Target == nil || *got.Telegram.Target != *current.Telegram.Target {
 		t.Fatalf("restored=%#v", got)
 	}
@@ -270,36 +278,30 @@ func TestDuplicateReadableNamesRemainAmbiguous(t *testing.T) {
 	t.Parallel()
 
 	project, connection := destinationInput()
-	delete(project.Destinations, "oncall")
+	project.NotificationTargets.PagerDuty = nil
 	catalog := &fakeCatalog{integrations: map[string][]Integration{"slack": {
 		{Identity: "one", Name: "company"}, {Identity: "two", Name: "company"},
 	}}}
 	result := (&Engine{Catalog: catalog}).Reconcile(context.Background(), Input{Namespace: "payments", Project: project, Connection: connection})
-	if !resolver.IsKind(result.Statuses["ops"].Err, resolver.ErrorAmbiguous) {
-		t.Fatalf("status=%#v", result.Statuses["ops"])
+	if !resolver.IsKind(result.Statuses["slack/incidents"].Err, resolver.ErrorAmbiguous) {
+		t.Fatalf("status=%#v", result.Statuses["slack/incidents"])
 	}
 }
 
 func destinationInput() (sentryv1alpha1.SentryProjectSpec, sentryv1alpha1.SentryConnectionSpec) {
 	project := sentryv1alpha1.SentryProjectSpec{
-		Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
-		Destinations: map[string]sentryv1alpha1.DestinationSpec{
-			"ops":    {Slack: &sentryv1alpha1.SlackDestination{Channel: "#incidents"}},
-			"oncall": {PagerDuty: &sentryv1alpha1.PagerDutyDestination{Service: "checkout"}},
-		},
+		Project:             sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
+		NotificationTargets: &sentryv1alpha1.NotificationTargets{Slack: map[string][]string{"company": {"incidents"}}, PagerDuty: map[string][]string{"primary": {"checkout"}}},
 	}
 	connection := sentryv1alpha1.SentryConnectionSpec{
 		Organization: "company",
 		Integrations: &sentryv1alpha1.ConnectionIntegrations{
-			Slack:     &sentryv1alpha1.SlackIntegration{DefaultWorkspace: "company"},
-			PagerDuty: &sentryv1alpha1.PagerDutyIntegration{DefaultAccount: "primary"},
+			Slack:     &sentryv1alpha1.SlackIntegration{Workspaces: []sentryv1alpha1.IntegrationCatalogEntry{{Name: "company", SentryName: "company"}}},
+			PagerDuty: &sentryv1alpha1.PagerDutyIntegration{Accounts: []sentryv1alpha1.IntegrationCatalogEntry{{Name: "primary", SentryName: "primary"}}},
 		},
 		Access: []sentryv1alpha1.AccessRule{{
 			Owner: "payments", Namespaces: sentryv1alpha1.NamespaceAccess{MatchNames: []string{"payments"}}, Teams: []string{"payments"}, AllowCreate: true,
-			Destinations: &sentryv1alpha1.DestinationAccess{
-				Slack:     []sentryv1alpha1.SlackDestinationGrant{{Workspace: "company", Channels: []string{"incidents"}}},
-				PagerDuty: []sentryv1alpha1.PagerDutyDestinationGrant{{Account: "primary", Services: []string{"checkout"}}},
-			},
+			NotificationTargets: &sentryv1alpha1.NotificationTargetAccess{SlackWorkspaces: []string{"company"}, PagerDutyAccounts: []string{"primary"}},
 		}},
 	}
 	return project, connection

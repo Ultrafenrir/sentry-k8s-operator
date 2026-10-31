@@ -124,11 +124,12 @@ func validateLive(challenge binding.TelegramChallenge, project *sentryv1alpha1.S
 	if string(project.UID) != challenge.Project.UID || project.Generation != challenge.Project.Generation || !project.DeletionTimestamp.IsZero() || project.Spec.Paused || connection.Name != challenge.Connection || connection.Generation != challenge.PolicyGeneration || !connection.DeletionTimestamp.IsZero() {
 		return ErrFenceStale
 	}
-	if project.Spec.Connection != challenge.Connection && !(project.Spec.Connection == "" && connection.Spec.Default) {
+	if project.Spec.Sentry != challenge.Connection {
 		return ErrFenceStale
 	}
-	desired, found := project.Spec.Destinations[challenge.Destination]
-	if !found {
+	desiredTargets, flattenErr := project.Spec.NotificationTargets.Flatten()
+	desired, found := desiredTargets[challenge.Destination]
+	if flattenErr != nil || !found {
 		return ErrFenceStale
 	}
 	kind, selectorHash, err := destination.SelectorFingerprint(connection.Spec, desired)
@@ -160,10 +161,10 @@ func (c *FenceCoordinator) acquireConnection(ctx context.Context, connection *se
 }
 
 func (c *FenceCoordinator) acquireProject(ctx context.Context, project *sentryv1alpha1.SentryProject, challenge binding.TelegramChallenge, commit sentryv1alpha1.RegistrationCommit) error {
-	if project.Status.Destinations == nil {
-		project.Status.Destinations = make(map[string]sentryv1alpha1.DestinationStatus)
+	if project.Status.NotificationTargets == nil {
+		project.Status.NotificationTargets = make(map[string]sentryv1alpha1.DestinationStatus)
 	}
-	status := project.Status.Destinations[challenge.Destination]
+	status := project.Status.NotificationTargets[challenge.Destination]
 	if current := status.RegistrationCommit; current != nil && current.OperationHash != commit.OperationHash && c.now().Before(current.ExpiresAt.Time) {
 		return ErrFenceConflict
 	}
@@ -179,7 +180,7 @@ func (c *FenceCoordinator) acquireProject(ctx context.Context, project *sentryv1
 		status.Reason = "TelegramRegistrationRequired"
 	}
 	status.RegistrationCommit = commit.DeepCopy()
-	project.Status.Destinations[challenge.Destination] = status
+	project.Status.NotificationTargets[challenge.Destination] = status
 	if err := c.Client.Status().Update(ctx, project); err != nil {
 		if apierrors.IsConflict(err) {
 			return ErrFenceConflict
@@ -202,12 +203,12 @@ func (c *FenceCoordinator) clearProject(ctx context.Context, challenge binding.T
 		if string(project.UID) != challenge.Project.UID {
 			return nil
 		}
-		status, found := project.Status.Destinations[challenge.Destination]
+		status, found := project.Status.NotificationTargets[challenge.Destination]
 		if !found || status.RegistrationCommit == nil || status.RegistrationCommit.OperationHash != operationHash {
 			return nil
 		}
 		status.RegistrationCommit = nil
-		project.Status.Destinations[challenge.Destination] = status
+		project.Status.NotificationTargets[challenge.Destination] = status
 		return c.Client.Status().Update(ctx, project)
 	})
 }
@@ -230,7 +231,7 @@ func (c *FenceCoordinator) clearConnection(ctx context.Context, challenge bindin
 }
 
 func matchesProjectCommit(project *sentryv1alpha1.SentryProject, destinationName, operationHash string, policyGeneration int64) bool {
-	status, found := project.Status.Destinations[destinationName]
+	status, found := project.Status.NotificationTargets[destinationName]
 	return found && matchesCommit(status.RegistrationCommit, operationHash, policyGeneration)
 }
 

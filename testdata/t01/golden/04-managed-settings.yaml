@@ -4,7 +4,7 @@ metadata:
   name: checkout-settings
   namespace: checkout-prod
 spec:
-  connection: company-sentry
+  sentry: company-sentry
   project:
     create:
       team: payments

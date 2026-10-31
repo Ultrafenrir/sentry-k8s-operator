@@ -1,329 +1,62 @@
-T08 — TELEGRAM RECEIVER И DELIVERY (IN PROGRESS / CONTRACT-TESTED CORE)
-Дата: 2026-10-30
+T08 — TELEGRAM HOOK INGRESS AND DELIVERY
+Updated: 2026-10-31
+Status: Contract-tested durable core and kind dataplane; real Telegram delivery is deferred
 
-1. Что реализовано
+Queue and worker
 
-- Kubernetes-backed at-least-once queue в отдельном
-  sentry-kubernetes-operator-delivery namespace. Dedupe key и route key — только
-  canonical SHA-256; chat/topic identity и message text не попадают в object metadata.
-- Идемпотентный Enqueue, конфликт при повторном dedupe key с другим content hash,
-  консервативный admission capacity check, ResourceVersion CAS claim, lease expiry
-  reclaim, bounded exponential retry, DLQ и retention sweep exact-delete.
-- Admission выполняется через отдельный immutable candidate Secret: producer использует
-  только create/delete, после capacity List создаёт детерминированную final запись и затем
-  exact-delete кандидата. Worker видит только final `telegram-delivery` records. List/delete
-  outage оставляет bounded, resumable и не claimable candidate; identical enqueue
-  продолжает тот же intent, потерянный ответ final Create распознаётся чтением committed
-  записи, а janitor удаляет только истёкшие abandoned candidates. Это закрывает API-server
-  failure window без выдачи producer прав update/patch и без удаления admitted Pending work.
-- После успеха payload и route key удаляются из записи; остаётся только dedupe tombstone
-  с content hash до окончания retention. DLQ сохраняет защищённый payload до отдельной
-  retention границы. Queue хранится в Secret и требует encryption-at-rest от установки.
-- Worker не обещает exactly-once: если Telegram принял запрос, а CAS Complete не прошёл,
-  lease recovery может повторить отправку. Это явно проверенная at-least-once граница.
-- Telegram sendMessage adapter отправляет числовые chat_id/message_thread_id и plain text
-  без parse mode, отключает link preview, ограничивает текст 4096 Unicode code points и
-  response body. 429 учитывает bounded retry_after; 5xx/transport повторяются; 4xx и
-  invalid route идут в DLQ. Bot token, URL, response body, target и message не входят в
-  возвращаемые ошибки.
-- Bot token перечитывается из projected Secret перед каждой отправкой. Worker readiness
-  меняется на 503 при невалидной ротации, liveness остаётся отдельным /healthz.
-- Worker имеет две реплики и PDB. Он не имеет Sentry credentials и project/binding RBAC.
-  В routing namespace у него только get Secret; в queue namespace — get/list/update/delete
-  без create. Отдельный producer имеет get source и необходимые для идемпотентности/
-  backpressure get/list/create/delete queue, но не update/patch. Registration
-  writer/controller пишут route records в третьем изолированном
-  sentry-kubernetes-operator-routing namespace.
-- Egress worker ограничен DNS и TCP/443; Telegram Bot API и Kubernetes API используют 443.
-- Source-derived service-hook verifier проверяет exact path/method/media type, bounded raw
-  body, single signature/timestamp/GUID headers, clock skew и HMAC-SHA256 до JSON parsing.
-  Он сверяет signed project slug с локально настроенным source binding и передаёт sink
-  только этот local binding key и SHA-256 dedupe key от local source + authenticated event
-  ID; raw body, event ID, issue title, URL
-  и tags не входят в envelope.
-- PII-minimal renderer строит bounded plain text только из локальных project/alert/
-  environment names и фиксированной severity. У него намеренно нет входа для event body,
-  issue title, URL, user/request/stack trace или external ID.
-- Producer-core получает source-to-route deliveries только через protected resolver,
-  валидирует и рендерит весь batch до первой записи, сортирует routes и выводит отдельный
-  canonical dedupe key на route. После частичного enqueue повтор использует те же ключи,
-  поэтому уже записанные items идемпотентны, а оставшиеся можно безопасно продолжить.
-- Durable source resolver теперь хранит отдельный revisioned CAS record в изолированном
-  `sentry-kubernetes-operator-hook-sources`, а не в общем binding state. Ключ и route keys
-  должны быть canonical SHA-256, deliveries строго отсортированы и уникальны, renderer
-  input проходит полную валидацию до записи. Source identity/project slug нельзя изменить
-  CAS update: для этого нужен новый source key. Запись включена в semantic backup/restore,
-  а admin-report выводит только aggregate count. Controller publication этого record и
-  синхронизация public source config остаются следующим wiring-подэтапом.
-- Internal producer handoff теперь имеет отдельный closed endpoint
-  `/internal/v1/sentry-hooks/deliveries`: принимает только canonical source/dedupe hashes,
-  exact POST/JSON без query/encoding/unknown fields, verified TLS 1.3 client certificate с
-  точным URI SAN и ECDSA/Ed25519/RSA-PSS подпись exact method/path/operation/body hash.
-  CommonName и proxy identity headers игнорируются. Public-side client отклоняет не-HTTPS
-  URL и любой ответ кроме 204; response body bounded/discarded. Producer опубликован как
-  HA workload с отдельным health port, PDB, server certificate и NetworkPolicy.
-- Internal producer перечитывает client CA bundle на каждом TLS handshake, а public
-  receiver перечитывает producer CA и client leaf на каждом новом соединении. Внутренний
-  transport намеренно не использует proxy и keep-alive: projected old+new trust overlap,
-  cutover leaf и удаление old CA начинают действовать без restart; malformed replacement
-  bundle fail closed для нового handshake.
-- Tokenless public `sentry-hook-receiver` опубликован отдельным HA workload без Kubernetes
-  API token/RBAC. Он выбирает source только по canonical hash в `/events/<hash>`, на каждый
-  запрос строго перечитывает bounded JSON из projected admin Secret, проверяет Sentry HMAC
-  и передаёт producer только два hash через подписанный mTLS handoff. Public TLS, source
-  Secret, Ingress/Gateway и DNS остаются ответственностью установки; receiver egress
-  разрешён только к producer и DNS.
-- Projected verifier config принимает ровно один active HMAC secret либо bounded overlap
-  из old+new во время ротации. Оба canonical-base64 ключа проверяются без раннего выхода;
-  пустой, повторяющийся или третий ключ fail closed. После переключения Sentry старый ключ
-  удаляется из массива без restart/token/RBAC у receiver.
-- Rotation planner строит отдельные overlap и retired payload: из одного текущего ключа
-  получается old+new перед внешним переключением и только new после его независимой
-  проверки. Повторный reconcile и rollback к одному из двух ключей идемпотентны, а попытка
-  добавить третий параллельный ключ fail closed; payload всегда заново проходит строгую
-  verifier validation.
-- Resumable rotator применяет этот план через byte-exact CAS одного aggregate entry:
-  overlap публикуется до idempotent external switch+independent verify, retired payload —
-  только после подтверждения. Ошибка switch/verify или финального CAS оставляет old+new;
-  повторный reconcile безопасно завершает тот же intent, а stale/third-key plan не делает
-  внешний вызов. Конкретный Sentry adapter всё ещё gated T07 live API evidence.
-- Receiver readiness отдельно перечитывает все visible projected entries: malformed key,
-  filename или JSON дают bodyless 503 на `/readyz`, но `/healthz` остаётся 200 и не создаёт
-  restart-loop. Пустой aggregate Secret допустим до появления первого alert source.
-- Publication core выводит opaque source key только из Kubernetes connection/project UID,
-  формирует exact `<receiverURL>/events/<hash>` без external ID и обновляет один entry в
-  заранее созданном aggregate Secret через resourceVersion CAS, сохраняя siblings. Порядок
-  fail-closed: protected source создаётся/обновляется до public verifier entry; при удалении
-  verifier entry exact-delete выполняется раньше protected source. Ошибка между шагами
-  оставляет безопасное resumable состояние, а отсутствующий admin Secret не создаётся
-  controller-ом самовольно. Реальное controller alert wiring всё ещё gated T07 API/adapters.
-  Real envtest API-server round-trip дополнительно моделирует overlap rotation между
-  publish и stale cleanup: byte-different verifier entry блокирует unpublish и сохраняет
-  protected source; exact retry удаляет только свою пару и не меняет sibling entry.
-- Worker публикует отдельный `/metrics` endpoint с fixed-enum counters для sent/retry/
-  dead-letter/error, processing histogram, aggregate queue records по fixed state, age
-  oldest outstanding и refresh-error counter. Метрики не принимают project/route/chat/
-  record/payload/upstream-error labels. Scrape ingress разрешён только namespace с label
-  `metrics: enabled`; health остаётся на отдельном порту.
-- Внешний `sendMessage` окружён закрытым audit-контрактом. До сетевого вызова worker обязан
-  записать `delivery/deliver/started`; после ответа — только фиксированный accepted/failed
-  outcome. Audit event содержит constant local resource и queue revision, но не dedupe/route
-  hash, record name, chat/topic, message, token или raw error. Недоступный sink до Send
-  блокирует сеть и оставляет InFlight claim для lease recovery. Недоступный sink после 2xx
-  не выполняет Complete, поэтому честно сохраняет уже заявленную at-least-once границу.
-- Optional `config/registration-monitoring` содержит ServiceMonitor и PrometheusRule для
-  queue age >5m, новых dead letters и metrics refresh failures. Он не входит в default
-  install: make target сначала требует обе Prometheus Operator CRD, а operator-specific
-  discovery labels должны добавляться installation overlay.
+The delivery namespace stores an at-least-once Kubernetes-backed queue. Object names contain
+only canonical hashes. Records use deterministic dedupe, content-hash conflict detection,
+conservative capacity checks, ResourceVersion compare-and-swap claims, expiring leases,
+bounded exponential retry, dead letters, and exact retention deletion.
 
-2. Контракты и источники
+Admission uses an immutable candidate Secret followed by a deterministic final record so the
+producer needs create/delete but not update/patch. Lost final-create responses are recovered
+by reading the committed record. Abandoned candidates are bounded and janitor-cleaned.
 
-Официальный Telegram Bot API sendMessage задаёт chat_id, optional message_thread_id и
-text 1–4096 characters after entities parsing:
-https://core.telegram.org/bots/api#sendmessage
+After success, route and payload data are removed and only a dedupe tombstone remains. Dead
+letters retain a protected payload until their separate retention boundary. Secrets require
+Kubernetes encryption at rest. Exactly-once delivery is not promised: a Telegram success
+followed by a failed completion CAS can be sent again after lease recovery.
 
-Официальный ResponseParameters.retry_after задаёт число секунд flood-control ожидания:
-https://core.telegram.org/bots/api#responseparameters
+Telegram adapter
 
-Адаптер намеренно не использует новые rich/ephemeral возможности и не принимает raw
-Telegram payload от пользователя.
+The adapter sends numeric chat/topic identity and bounded plain text without parse mode,
+disables link preview, and limits response bodies. HTTP 429 honors bounded `retry_after`;
+transport and 5xx failures retry; permanent 4xx and invalid routes go to the dead-letter
+state. Errors exclude bot token, route, target, response body, and message.
 
-3. Проверки
+The worker reloads the projected bot token before every operation. Invalid rotation makes
+readiness fail while liveness remains healthy. Two replicas and a PodDisruptionBudget are
+published. The worker has no Sentry credential or project-binding access.
 
-- make verify-t08-core: race queue/client/worker/health tests, go vet, three-namespace
-  isolation, worker RBAC, probes, PDB и NetworkPolicy manifest contracts;
-- make verify-t08-kind-ca-rotation: isolated old CA -> overlap -> new CA internal mTLS и
-  independent public receiver CA/leaf cutover на persistent kind без изменения pod
-  template во время cutover; old public trust отклоняется после смены leaf, probe cleanup
-  возвращает canonical cert-manager/admin Secrets и удаляет только собственные records;
-- make verify-t08-kind-queue-soak: bounded 128-event/16-concurrent signed public ingress
-  burst через реальные receiver/producer и Kubernetes API; требует пустую probe queue,
-  проверяет final revision/state, zero admission candidates/raw event-ID leaks/restarts и
-  exact-name cleanup;
-- queue tests: duplicate/conflict, immutable create/delete-only admission candidate,
-  post-candidate List/delete failure и resumable retry, lost final-Create response,
-  capacity rejection cleanup, retry due time, max-attempt DLQ, payload-free success
-  tombstone, retention sweep, expired lease и stale completion;
-- client tests: numeric target JSON, disabled link preview, 429 retry clamp, 4xx/5xx,
-  transport/token/response non-leak и invalid input before network;
-- redirect fail-closed: стандартный HTTP redirect отключён внутри adapter, чтобы Bot API
-  token из URL path не мог попасть на другой endpoint;
-- worker tests: success, idle, revoked route DLQ, Telegram retry_after, bounded backoff и
-  crypto jitter bounds. Отдельная failure injection проверяет границу после Telegram 2xx:
-  первый Complete получает ошибку Kubernetes, после lease expiry тот же item reclaim-ится,
-  отправляется второй раз и только затем становится payload-free Sent tombstone;
-- audit failure injection отдельно доказывает zero-send/zero-settlement при недоступном
-  start event и zero-settlement после принятого Telegram 2xx, когда success event записать
-  нельзя. Sentinel JSON не содержит message, route/dedupe hash или chat/topic identity;
-- real envtest API-server probe сначала заполняет queue до 12 records, затем запускает 48
-  одновременных unique producers. Все overflow requests получают ErrBackpressure, каждый
-  rejected Secret отсутствует после exact resourceVersion cleanup, исходные 12 records
-  остаются, а их повторный Enqueue идемпотентен. Probe входит в matrix 1.35/1.36 и race run;
-- protected-state backup envtest экспортирует одним integrity-checked bundle binding/claim,
-  Submitted journal, immutable challenge/route, immutable admission candidate и queue
-  InFlight/Retry/DLQ, удаляет records и восстанавливает их create-only. Повтор
-  идемпотентен; tamper, extra/changed record и unknown Secret fail closed. Bundle
-  чувствительный и требует внешнего шифрования;
-- service-hook tests прогоняют fixtures 24.7.1/26.10.1, auth-before-parse, tamper/skew,
-  duplicate headers, secret rotation, size limit, sink retry и стабильный dedupe при
-  изменённом unsigned GUID header; renderer tests отклоняют controls/unbounded fields.
-- producer tests проверяют protected resolver boundary, deterministic multi-route batch,
-  partial failure retry с теми же dedupe keys и zero-write при duplicate/invalid route или
-  невалидном локальном render input. File-source tests проверяют strict unknown-field
-  rejection, traversal/invalid hash, per-request secret rotation и отсутствие утечки.
-- metrics tests подставляют неизвестные outcome/error strings и подтверждают их clamp к
-  fixed `error`/`unknown`, aggregate queue state/age и отсутствие sensitive sentinels;
-  endpoint tests требуют exact bodyless GET `/metrics` без query.
+Authenticated hook path
 
-Persistent single-node kind v1.35.5 дополнительно подтвердил 2/2 Ready без restart для
-worker, PDB allowedDisruptions=1, bodyless GET /healthz и /readyz = 200, а query к health
-route = 404. Реальные RBAC decisions: worker get routing=yes, list/delete routing=no;
-get/list/update/delete queue=yes, create queue=no; state/system Secrets и SentryProject=no.
-Writer get/create/delete routing=yes, list/update=no. Routing и queue остались пустыми,
-поэтому тестовый token не использовался для внешнего запроса.
-После добавления metrics тот же kind workload пересобран и снова достиг 2/2 Ready. Через
-временный port-forward exact `/metrics` вернул queue states Pending/InFlight/Retry/Sent/
-DeadLetter=0, oldest age=0 и refresh errors=0; query к `/metrics` дал 404, а output не
-содержал project/route/chat/payload/record/dedupe labels. Metrics Service и NetworkPolicy
-применены, но реальное enforcement между namespaces в single-node kind не заявляется.
-После добавления audit worker обновлён образом
-`example.com/sentry-kubernetes-operator:dev-audit-20261030` и снова достиг 2/2 Ready без
-restart. Временная валидная Pending queue record ссылалась на отсутствующий route, поэтому
-никакого Telegram call не было: worker записал только fixed
-`delivery/deliver/failed/RouteUnavailable` с constant `delivery/queue` и revision=2, затем
-перевёл record в DeadLetter с attempts=1. Логи не содержали sentinel message, route/dedupe
-hash или chat/topic identity. Probe Secret удалён; это real Kubernetes audit/DLQ wiring
-evidence, но не live Telegram delivery acceptance.
-После wiring Sentry ingress образ
-`example.com/sentry-kubernetes-operator:dev-hook-ingress-20261030` развернул две реплики
-receiver и producer: обе службы достигли 2/2 Ready без restart. Runtime RBAC подтвердил
-producer get source + get/list/create/delete queue, но update/patch=no; tokenless receiver
-get/create Secret=no. Первый signed fixture выявил CNI-совместимую границу: Kubernetes API
-Service egress после DNAT использовал 6443, тогда как NetworkPolicy разрешала лишь 443.
-После явного разрешения обоих портов тот же HMAC fixture прошёл public TLS → signed mTLS
-→ producer и вернул bodyless 204. Повтор был идемпотентен; отдельный raw event/title
-sentinel fixture создал ровно один Pending record, а Kubernetes JSON не содержал sentinels.
-Две queue probe-записи и protected source record удалены, HMAC fixture очищен, worker
-возвращён к 2/2. Это real kind ingress/enqueue evidence без live Sentry и без Telegram call;
-реальное NetworkPolicy enforcement между pod sources отдельно не заявляется.
-Следующая kind-проверка на образе
-`example.com/sentry-kubernetes-operator:dev-hook-rotation-dedupe-20261030` выполнила
-настоящую projected-volume ротацию без restart receiver: old+new HMAC одного raw event оба
-дали bodyless 204, но source+authenticated-event dedupe оставил ровно один Pending record.
-После удаления old key kubelet обновил volume, old signature стала 401, new осталась 204,
-queue count не изменился. Raw event/title sentinels отсутствовали в Kubernetes JSON; probe
-record/source/HMAC удалены и worker возвращён к 2/2.
-Отдельная kind failure injection на
-`example.com/sentry-kubernetes-operator:dev-hook-ready-20261030` добавила malformed `{}`
-entry в projected Secret. После kubelet sync exact `/readyz` стал bodyless 503 и обе
-реплики перешли NotReady, тогда как `/healthz` остался 200 и restart count — 0. После
-удаления entry те же pods без rollout вернулись к 2/2 Ready; empty source set допустим.
-Образ `example.com/sentry-kubernetes-operator:dev-hook-ca-reload-20261030` затем прошёл
-воспроизводимый `make verify-t08-kind-ca-rotation` на том же kind v1.35.5. Изолированные
-копии trust и leaf Secrets прошли old CA -> old+new overlap с двумя новыми leaf -> new-only
-CA. На каждой фазе public signed request прошёл receiver -> mTLS producer и вернул bodyless
-204, queue содержала ровно одну Pending запись, а UID и restartCount=0 всех четырёх
-активных hook Pod не изменились во время cutover. Cleanup вернул cert-manager Secrets,
-worker replicas и удалил verifier/source/queue probes; это internal CA rotation evidence,
-не public Ingress CA и не live Sentry/Telegram acceptance.
-После исправления API-server failure window producer и worker обновлены образом
-`example.com/sentry-kubernetes-operator:dev-queue-candidate-20261030`. Повторный
-`make verify-t08-kind-ca-rotation` временно отозвал у producer queue `list/delete`: signed
-ingress fail-closed вернул 503, сохранил immutable admission candidate revision=1 и не
-создал claimable final record. После точного восстановления исходных Role rules повтор
-того же event завершил intent, удалил candidate и создал final Pending revision=2; затем
-old CA -> overlap/new leaf -> new-only CA снова дал bodyless 204 без producer update/patch
-RBAC. Проверка завершилась с producer/worker 2/2 Ready, всеми active system pods
-restartCount=0, каноническими TLS volume references и нулём временных CA, verifier, source,
-final queue и admission-candidate records после cleanup. Это подтверждает
-create/delete-only admission и recovery на реальном Kubernetes API; live Sentry и Telegram
-по-прежнему не использовались.
-Тот же воспроизводимый probe теперь дополнительно использует isolated copy публичного
-receiver TLS Secret. После initial signed 204 он заменяет leaf сертификатом независимого
-нового public CA: overlap trust old+new и new-only trust дают 204, тогда как old-only trust
-после подтверждённого cutover fail closed. `GetCertificate` применяет новый leaf без
-rollout; UID/restartCount тех же двух receiver и двух producer не меняются. Cleanup
-возвращает receiver `server-tls` к каноническому admin Secret и удаляет временный public
-Secret. Это service-level TLS hot-reload evidence; реальный Ingress/Gateway не участвовал.
-Отдельный real-kind `kubectl-sentry admin-report` с future-expiry candidate показал только
-`admissionPending=1`: candidate name, три hash и sentinel message отсутствовали в JSON.
-Probe удалён, delivery namespace снова пуст.
-Воспроизводимый `make verify-t08-kind-queue-soak` затем провёл 128 уникальных HMAC-signed
-events через две receiver и две producer replica с concurrency=16. Все запросы завершились
-204, Kubernetes содержал ровно 128 final Pending revision=2 и ноль admission candidates;
-raw event IDs/HMAC не попали ни в metadata, ни в decoded payload. UID/restartCount четырёх
-hook pod не изменились, exact-name cleanup вернул source/verifier/queue в пустое состояние,
-worker восстановлен 2/2. Это bounded single-node kind burst, не long-running production soak.
+The public Sentry hook receiver validates exact method/path/media type, bounded body,
+single signature/timestamp/GUID headers, clock skew, and HMAC-SHA256 before JSON parsing.
+It maps the authenticated source to local renderer input and passes only canonical hashes
+through a signed TLS 1.3 internal handoff.
 
-`make verify-t08-kind-gateway-api` создаёт отдельный одноразовый kind Kubernetes 1.35.5 с
-изолированным KUBECONFIG, ставит официальный Gateway API v1.5.0 Standard manifest и проверяет,
-что TLSRoute v1 одновременно served/storage. Канонические отдельные Telegram/Sentry routes
-прошли real API server dry-run; prerequisite verifier принял только TLS/Passthrough listener
-и отверг HTTPS/Terminate. Скрипт отказался бы переиспользовать одноимённый кластер и удалил
-созданный probe через trap. Gateway controller/dataplane в этом тесте намеренно отсутствует,
-поэтому Accepted/ResolvedRefs и внешний TLS traffic им не доказаны.
+The receiver has no Kubernetes API token. It reloads bounded source configuration for every
+request. HMAC rotation supports exactly one active key or a two-key old/new overlap and
+checks both without early exit. The internal producer reloads its trust bundle on each
+handshake and creates queue records through a protected source-to-route resolver.
 
-Отдельный `make verify-t08-kind-gateway-dataplane` собрал current operator image и поднял
-pinned Envoy Gateway v1.9.3 с patched Envoy proxy v1.39.6 в своём kind. Оба канонических
-TLSRoute получили Accepted=True/ResolvedRefs=True. Host curl через port-forward отправил SNI
-`sentry.example.com`, проверил уникальный probe CA и получил 200 от `/readyz` настоящего
-`sentry-hook-receiver`; два receiver UID/restartCount остались неизменны. Первые диагностические
-запуски выявили и исправили order-sensitive `kubectl wait` и endpoint-less Telegram fixture;
-они не считаются acceptance. Финальный кластер удалён trap-ом, рабочий dev cluster не менялся.
-Это реальный Gateway controller/dataplane и backend TLS acceptance, но не public IP/DNS и не
-внешний Sentry/Telegram traffic.
+Rendering and privacy
 
-`make verify-t08-kind-monitoring` отдельно создал kind Kubernetes 1.35.5, установил
-официальный Prometheus Operator v0.94.2 и current delivery worker. Canonical ServiceMonitor
-обнаружил обе replica через реальный EndpointSlice/NetworkPolicy path; Prometheus получил
-две identity-free `queue_records{state="Pending"}=0` series. Canonical PrometheusRule загрузил
-ровно три shipped alert, а отдельное disposable правило на той же product metric перешло в
-firing. Prometheus pod сохранил restartCount=0, probe cluster удалён trap-ом. Это подтверждает
-kind discovery/scrape/rule evaluation, но не production Alertmanager routing/notification.
+Messages are generated only from local project, alert, environment, and fixed severity
+values. Event payload, title, URL, user/request data, stack trace, external IDs, and raw
+Sentry body are not renderer inputs. Metrics contain no project, route, chat, record, or
+payload labels.
 
-4. Evidence boundary и оставшаяся работа
+Verification
 
-Это ContractTested core, не live Telegram acceptance. Настоящий Bot token и test chat не
-доступны; в kind применялся только синтаксически валидный локальный token, sendMessage не
-вызывался. Public receiver и internal producer теперь имеют binaries/manifests и
-source-tested contracts, но controller ещё не публикует согласованную пару protected
-source plan + projected public verifier config. Поэтому opt-in worker без ручного source
-provisioning по-прежнему видит пустую queue.
+`make verify-t08-core` covers queue failure windows, concurrency, retry, dead letters,
+retention, hook validation, HMAC rotation, internal signatures, rendering, redaction, and
+Secret rotation. Dedicated kind targets cover CA rotation, Gateway API TLS passthrough,
+Prometheus discovery/rules, and queue soak behavior.
 
-Duplicate budget намеренно не выражен ложным фиксированным числом. На один успешный claim
-приходится не более одного sendMessage, но ошибка/неопределённый результат Complete оставляет
-lease, и каждый следующий expiry допускает ещё одну отправку. При повторяющихся settlement
-failures глобального верхнего предела дублей нет; операционная граница — lease duration,
-здоровье Kubernetes API и alert на queue age. Exactly-once без идемпотентности Telegram API
-не заявляется.
+Remaining evidence boundary
 
-Project service-hook HMAC покрывает raw body, но не timestamp/GUID headers. Поэтому dedupe
-никогда не зависит от этих изменяемых headers или смены HMAC key: он стабилен по local
-source binding и event ID из проверенного signed body. Clock skew отсекает обычные stale deliveries, но сам по себе не
-останавливает атакующего с captured body/signature и новым timestamp. Durable dedupe и
-retention остаются обязательными, а source mechanism не получает завышенного replay claim.
-
-До T08 Complete остаются:
-
-- controller-driven ordered publication/rotation protected source plan и public projected
-  verifier config поверх будущих alert adapters; fail-closed publication/CAS/rotation core,
-  tokenless receiver, mTLS producer, resolver и least-privilege RBAC уже
-  source/race/manifest-tested;
-- реальная отправка, retry и DLQ acceptance с тестовым bot/chat/topic;
-- authenticated queue-administration audit остаётся; replay/delete намеренно не
-  публикуются до independently verified внешнего outcome и live acceptance. Внешний
-  delivery audit, identity-free worker metrics, durable immutable audit retention/export
-  и optional alerts уже source-tested; реальный kind Prometheus discovery/scrape/rule
-  firing теперь проверен, production Alertmanager routing/notification — нет;
-- production encrypted backup orchestration вместе с CR/input Secrets и реальный controller
-  upgrade/rollback поверх восстановленных admission/InFlight/Retry/DLQ records;
-  protected-state create-only round trip и same-commit rollout/rollback уже проверены;
-- large/long-running production soak; bounded 128×16 kind burst, concurrent envtest
-  backpressure, context-timeout recovery, real-kind RBAC denial/resume и post-2xx
-  settlement failure уже проверены;
-- internet-routable public IP/DNS acceptance из внешней сети; opt-in Gateway API v1
-  TLSRoute automation теперь source/Helm/API/dataplane-tested и fail-closed ждёт
-  Accepted/ResolvedRefs на заранее созданном TLS/Passthrough listener. GatewayClass,
-  public address и DNS остаются installation-owned; kind Envoy passthrough, backend public
-  CA validation, source HMAC, service-level public TLS и internal mTLS/CA rotation уже
-  проверены без receiver restart.
+Real Telegram send/retry/dead-letter behavior with bot/chat/topic credentials, public DNS,
+publicly trusted certificates, externally reachable ingress, and production Alertmanager
+routing are deferred. The existing tests prove local protocol and dataplane behavior only.

@@ -1,139 +1,31 @@
-T00 — ОТЧЁТ ПЕРВОГО ЭТАПА
-Дата: 2026-10-30
-Итог: source/contract часть и Kubernetes/toolchain freeze выполнены; локальный live-Sentry
-project lifecycle подтверждён для обеих целевых версий. Settings/alerts acceptance и M0
-не завершены. T01 scaffold разблокирован только на явно опубликованной alpha surface;
-Unknown возможности не считаются поддержанными.
+T00 — BASELINE AND EVIDENCE REPORT
+Updated: 2026-10-31
+Status: Complete for the alpha source/contract baseline
 
-1. Что изменено
+T00 pinned the supported Sentry and Kubernetes targets, established sanitized HTTP
+fixtures, documented readable-name resolution, selected the bounded alpha settings and
+alert surface, and separated source, mock, Kubernetes, live configuration, ingestion, and
+delivery evidence.
 
-- выбрана современная self-hosted target 26.10.1;
-- закреплены exact source commits для 24.7.1 и 26.10.1;
-- закреплены OCI index и linux/amd64+arm64 manifest digests образа 26.10.1;
-- описаны project/settings/keys/alerts/integration/service-hook contracts;
-- составлена name-resolution matrix без публичных external IDs;
-- зафиксирована proposed Kubernetes/toolchain matrix и реальные локальные ограничения;
-- recommended-v1, alert presets и advanced исключены из будущего alpha contract до
-  реальной проверки;
-- 26.10.1 typed PII и три общих inbound filter ID подтверждены source+fixtures; raw
-  fingerprinting DSL по-прежнему не публикуется как adapter-neutral typed API;
-- для 26.10.1 добавлены отдельные project create и client-key fixtures: platform omission,
-  default_rules=false, reserved marker и active Default key закреплены как source contract;
-- точная опубликованная alpha surface закреплена в docs/alpha-surface.txt и
-  testdata/contracts/t00-alpha-surface.json;
-- полный source catalog для 24.7.1 issue/metric и 26.10.1 detector/workflow закреплён в
-  docs/alert-catalog.txt и machine-readable contract; metric detector/workflow runtime
-  availability затем подтверждена на локальном 26.10.1;
-- добавлены обезличенные source-derived HTTP fixtures и executable verifier.
-- exact Kubernetes v1.35.9/v1.36.5 node images построены из официальных release
-  artifacts, полная T00 probe matrix пройдена и закреплена machine-readable evidence;
-- admission probe устранена race готовности Service ClusterIP до регистрации
-  failurePolicy=Fail webhook.
+Implemented outputs
 
-2. Затронутые файлы/интерфейсы
+- version-pinned fixtures for Sentry 24.7.1 and 26.10.1;
+- compatibility, alert catalog, alpha surface, Telegram design, and name-resolution docs;
+- pinned Go/envtest/kind toolchain and exact image digests where practical;
+- source probes for project creation, keys, filters, PII settings, legacy alerts, modern
+  detector/workflow objects, integrations, and hook authentication;
+- negative checks preventing tokens, DSNs, routing keys, raw payloads, or private IDs from
+  entering fixtures and public status.
 
-Добавлены docs/, source-derived fixtures, T00 Kubernetes fixtures, shell verifiers и
-изолированные Go probe modules под tools/. Публичный product CRD/API и product Go code
-по-прежнему отсутствуют и не менялись; probe API group t00.sentry-operator.dev не является
-будущим product API.
+Live evidence added later
 
-3. Выполненные проверки
+Disposable 24.7.1 configuration acceptance verified project/key/settings and legacy alert
+lifecycles. Disposable 26.10.1 errors-only acceptance verified project/key/settings and a
+modern metric detector/workflow lifecycle. The latter is not feature-complete ingestion or
+delivery evidence.
 
-- version-pinned source review Sentry 24.7.1;
-- version-pinned source review Sentry/self-hosted 26.10.1;
-- current official SaaS API docs review на 2026-10-29;
-- official Kubernetes/Go/Kubebuilder/controller-runtime/controller-tools/kind release review;
-- jq validation и field assertions для fixtures;
-- deterministic HMAC-SHA256 fixture check;
-- scan fixtures на очевидные real secret/token/DSN hosts.
-- supplemental v1.35.5 API-server probes: structural CRD, schema defaults, CEL
-  create/use constraints, status subresource, probe RBAC separation, PDB Eviction и
-  conversion=None; default-deny NetworkPolicy прошла connectivity enforcement.
-- client-go LeaseLock leader failover probe прошёл на dev v1.35.5.
-- тот же probe set прошёл на временном kind v1.36.1; временный cluster удалён, context
-  возвращён на kind-sentry-operator-dev.
-- отдельный fail-closed TLS admission deployment probe прошёл на kind v1.35.5 и v1.36.1:
-  default mutation, immutable validation и rejection при webhook outage подтверждены,
-  временные ресурсы очищены;
-- Go 1.26.10/Kubebuilder 4.16.0/controller-gen 0.21.0 и envtest assets установлены
-  локально с checksum verification;
-- один controller-runtime 0.24.1 probe прошёл на envtest 1.35.0 и 1.36.2, включая
-  TLS mutating/validating admission webhooks.
-- source-derived service-hook fixtures прошли receiver-contract positive, unsigned,
-  tampered-body, stale-timestamp и replay tests без живого Sentry.
-- name-resolution semantics прошла executable negative cases: scoped duplicates,
-  cross-page client-key ambiguity, pinned replacement и PermissionDenied.
-- managed marker grammar/50-character budget прошли round-trip, injection, nesting,
-  lookalike и marker-without-binding negative tests.
-- exact kind v1.35.9 и v1.36.5 прошли node health, structural CRD/defaults/CEL,
-  TLS admission defaulting/immutability/fail-closed outage, status, probe RBAC, PDB
-  Eviction, default-deny NetworkPolicy, conversion=None и Lease leader failover;
-- оба exact временных cluster удалены, context возвращён на kind-sentry-operator-dev.
+Unknown or deferred
 
-Команды: make verify-t00-tools; make verify-t00; make verify-envtest; make verify-kind;
-make verify-kubernetes-probes; make verify-kind-admission; make verify-leader-election;
-make verify-webhook-contract; make verify-name-resolution; make build-t00-kind-image
-KUBERNETES_VERSION=<v1.35.9|v1.36.5>
-
-4. Реальные версии
-
-Sentry real calls: официальные self-hosted 24.7.1 и 26.10.1 установлены с нуля и прошли
-health-check. В каждой версии local user token выполнил public-API create/read/delete
-marker-bearing project без platform и подтвердил active Default key с DSN. 24.7.1 также
-подтвердил отсутствие legacy rules при default_rules=false. Обе версии выполнили точный
-PUT/GET round-trip трёх inbound filters и пяти typed PII fields. Synthetic events
-с настроенными sensitive extras приняты через Default DSN обеих версий и прочитаны по
-точному event ID: secrets заменены на [Filtered], control value сохранён. Обе версии
-подтвердили rejection для localhost, browser-extensions и web-crawlers при active=true;
-для двух pattern-based filters matching controls были читаемы при active=false. Отдельный
-project-create response был намеренно отброшен, после чего identity/marker восстановлены
-безопасным GET без второго POST. Alert delivery, external action lifecycle и SaaS calls ещё
-не выполнялись. Controller-level вариант этого сбоя также Verified на обеих версиях: TLS
-fault proxy закрыл connection после успешного upstream POST, real Kubernetes Secret сохранил
-Submitted journal, а новый store/client/engine восстановил marker без второго POST и выполнил
-guarded delete. Full SentryProjectReconciler на real envtest API также восстановил внешний
-drift всех трёх filters и пяти PII fields на обеих версиях ровно тремя filter PUT и одним
-narrow project PUT; повторный reconcile был идемпотентным, SettingsReady/Ready=True, guarded
-delete завершён. 24.7.1 legacy issue/metric CRUD и 26.10.1 workflow плюс
-attached events/count() metric detector CRUD/toggle проверены live; external actions нет.
-Kubernetes: постоянный dev smoke работает на v1.35.5; exact v1.35.9/v1.36.5 release
-matrix выполнена на локально построенных arm64 kind images. Тот же probe set ранее
-прошёл на временном kind v1.36.1, а envtest subset — на control planes 1.35.0 и 1.36.2.
-Локально обнаружены kubectl 1.35.3, kind 0.31.0, Docker CLI/daemon 28.3.2, Helm 3.18.0;
-создан отдельный Ready context kind-sentry-operator-dev. Это не заменяет release matrix.
-
-5. Fixture/mock only
-
-Все HTTP payloads и HMAC tests являются source-derived fixtures. Они не доказывают
-Sentry feature flags, permissions, transport, retries или delivery.
-
-6. Не проверено и почему
-
-- Sentry 24.7.1/26.10.1: project/settings и частичный alert lifecycle выполнены;
-  synthetic PII scrubbing, semantics трёх опубликованных filters и API-level lost-response
-  recovery выполнены, controller+journal recovery и modern metric detector/workflow lifecycle
-  также выполнены, но actions, integrations, delivery и SaaS calls не выполнены;
-- Kubernetes matrix: envtest и exact-patch real-cluster probe matrix пройдены;
-  project-side prototype registration fence и resourceVersion CAS проверены только в
-  envtest, а двухресурсный Connection -> Project protocol и multi-node HA отсутствуют;
-- Slack/PagerDuty/Telegram delivery: нет integrations/recipients и внешних credentials;
-- generated product CRD/CEL/webhooks: появляются в T01 и требуют повторной matrix;
-- conversion webhook deployment, full product RBAC, HA PDB behavior и allow-list egress
-  NetworkPolicy не покрыты минимальным dev API-server probe; validating/defaulting
-  webhook deployment проверен только как временный probe без certificate rotation, а
-  leader election — только single-node failover.
-
-7. Ограничения и риски
-
-- 24.7.1 public alert API не доказал non-destructive disable; presets заблокированы;
-- service hook source использует verify_ssl=False; Telegram production route заблокирован;
-- usable active key после create подтверждён только на локальных self-hosted стендах;
-- marker strategy пока reserved display-name suffix, а не native metadata;
-- Kubebuilder 4.16 default dependencies не совпадают с planned controller-runtime 0.24.1;
-- exact kind images являются локальными артефактами с записанными image IDs, не
-  опубликованными registry images; повторяемость зависит от pinned official release и base;
-- T01 разблокирован Kubernetes freeze; M0 и оставшаяся live-Sentry acceptance открыты.
-- ADR 0001 разблокирует source-only T01 с уменьшенной честной alpha surface; исходные
-  common/advanced alert golden scenarios перенесены в T07, а не отмечены выполненными.
-- source-only T01 после этого выполнен отдельно: generated CRD/webhooks прошли envtest и
-  exact kind matrix; live evidence меняет только явно перечисленные capability statuses.
+SaaS behavior and least-privilege scopes, stable Slack channel enumeration, public ingress,
+real provider delivery, and hosted release execution remain unverified. See
+`docs/project-status.md` for the current owner-approved boundary.

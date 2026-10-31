@@ -73,12 +73,12 @@ func TestManagedCreateCapabilityGateRequiresBothContracts(t *testing.T) {
 	}
 }
 
-func TestManagedCreateRejectsOversizedMarkedNameBeforeDurableIntent(t *testing.T) {
+func TestManagedCreateRejectsOversizedMarkerBeforeDurableIntent(t *testing.T) {
 	t.Parallel()
 
 	engine, adapter, store := testEngine(t)
 	input := managedInput("checkout", "uid-one", "payments")
-	input.Project.Spec.Project.Create.DisplayName = strings.Repeat("x", 50)
+	engine.ManagedBy = strings.Repeat("m", 40)
 
 	if _, err := engine.Reconcile(context.Background(), input); !IsReason(err, ReasonInvalidState) {
 		t.Fatalf("oversized marked name error = %v", err)
@@ -296,8 +296,7 @@ func TestAdminHandoffBindsTargetWithoutPOSTAndRevokesSource(t *testing.T) {
 	t.Parallel()
 
 	engine, adapter, store := testEngine(t)
-	source := managedInput("source", "source-uid", "payments")
-	source.Project.Spec.Project.Create.Slug = "shared"
+	source := managedInput("shared", "source-uid", "payments")
 	if _, err := engine.Reconcile(context.Background(), source); err != nil {
 		t.Fatalf("source create: %v", err)
 	}
@@ -305,10 +304,9 @@ func TestAdminHandoffBindsTargetWithoutPOSTAndRevokesSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := managedInput("target", "target-uid", "payments")
+	target := managedInput("shared", "target-uid", "payments")
 	target.Project.Generation = 3
-	target.Project.Spec.Project.Create.Slug = "shared"
-	targetRef := binding.ProjectReference{Namespace: "payments", Name: "target", UID: "target-uid", Generation: 3}
+	targetRef := binding.ProjectReference{Namespace: "payments", Name: "shared", UID: "target-uid", Generation: 3}
 	if _, err := store.Handoff(context.Background(), claim, "source-uid", targetRef); err != nil {
 		t.Fatalf("admin handoff: %v", err)
 	}

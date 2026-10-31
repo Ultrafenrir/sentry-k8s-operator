@@ -27,6 +27,9 @@ resources:
 - sentryproject_admin_role.yaml
 - sentryproject_editor_role.yaml
 - sentryproject_viewer_role.yaml
+- sentryalertpolicy_admin_role.yaml
+- sentryalertpolicy_editor_role.yaml
+- sentryalertpolicy_viewer_role.yaml
 - sentryconnection_admin_role.yaml
 - sentryconnection_editor_role.yaml
 - sentryconnection_viewer_role.yaml

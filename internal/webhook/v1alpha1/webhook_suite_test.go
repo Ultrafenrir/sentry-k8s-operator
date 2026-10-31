@@ -115,6 +115,9 @@ var _ = BeforeSuite(func() {
 	err = SetupSentryProjectWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
+	err = SetupSentryAlertPolicyWebhookWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
 	// +kubebuilder:scaffold:webhook
 
 	go func() {

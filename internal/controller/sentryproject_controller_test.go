@@ -49,13 +49,13 @@ import (
 var _ = Describe("SentryProject Controller", func() {
 	Context("When reconciling a managed project", func() {
 		const (
-			resourceName      = "project-test-resource"
 			resourceNamespace = "default"
 			connectionName    = "project-test-connection"
 		)
 
 		ctx := context.Background()
-		key := types.NamespacedName{Name: resourceName, Namespace: resourceNamespace}
+		var resourceName string
+		var key types.NamespacedName
 		var reconciler *SentryProjectReconciler
 		var adapter *controllerFakeProjectAdapter
 		var keyListCalls int
@@ -73,6 +73,8 @@ var _ = Describe("SentryProject Controller", func() {
 			keyActive = true
 			keyLabel = "automatic"
 			projectSerial++
+			resourceName = fmt.Sprintf("project-test-resource-%d", projectSerial)
+			key = types.NamespacedName{Name: resourceName, Namespace: resourceNamespace}
 			staleSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: resourceName + sentryconfigurationv1alpha1.DefaultDSNSecretSuffix, Namespace: resourceNamespace}}
 			if err := k8sClient.Delete(ctx, staleSecret); err != nil && !apierrors.IsNotFound(err) {
 				Expect(err).NotTo(HaveOccurred())
@@ -82,7 +84,6 @@ var _ = Describe("SentryProject Controller", func() {
 				Spec: sentryconfigurationv1alpha1.SentryConnectionSpec{
 					URL:          "https://sentry.example.test",
 					Organization: "company",
-					Default:      true,
 					Credentials:  sentryconfigurationv1alpha1.ConnectionCredentials{TokenSecretRef: sentryconfigurationv1alpha1.SecretKeyReference{Name: "unused", Key: "token"}},
 					Access: []sentryconfigurationv1alpha1.AccessRule{{
 						Owner:       "payments",
@@ -101,11 +102,9 @@ var _ = Describe("SentryProject Controller", func() {
 			resource := &sentryconfigurationv1alpha1.SentryProject{
 				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: resourceNamespace},
 				Spec: sentryconfigurationv1alpha1.SentryProjectSpec{
-					Connection: connectionName,
+					Sentry: connectionName,
 					Project: sentryconfigurationv1alpha1.ProjectSelector{Create: &sentryconfigurationv1alpha1.ProjectCreate{
-						Team:        "payments",
-						DisplayName: fmt.Sprintf("C%d", projectSerial),
-						Slug:        fmt.Sprintf("checkout-%d", projectSerial),
+						Team: "payments",
 					}},
 				},
 			}
@@ -366,9 +365,9 @@ var _ = Describe("SentryProject Controller", func() {
 			reader := &sentryconfigurationv1alpha1.SentryProject{
 				ObjectMeta: metav1.ObjectMeta{Name: readerName, Namespace: resourceNamespace},
 				Spec: sentryconfigurationv1alpha1.SentryProjectSpec{
-					Connection: connectionName,
-					Project:    sentryconfigurationv1alpha1.ProjectSelector{Use: &slug},
-					DSN:        &sentryconfigurationv1alpha1.DSNSpec{},
+					Sentry:  connectionName,
+					Project: sentryconfigurationv1alpha1.ProjectSelector{Use: &slug},
+					DSN:     &sentryconfigurationv1alpha1.DSNSpec{},
 				},
 			}
 			Expect(k8sClient.Create(ctx, reader)).To(Succeed())
@@ -400,9 +399,9 @@ var _ = Describe("SentryProject Controller", func() {
 			reader := &sentryconfigurationv1alpha1.SentryProject{
 				ObjectMeta: metav1.ObjectMeta{Name: readerName, Namespace: resourceNamespace},
 				Spec: sentryconfigurationv1alpha1.SentryProjectSpec{
-					Connection: connectionName,
-					Project:    sentryconfigurationv1alpha1.ProjectSelector{Use: &slug},
-					DSN:        &sentryconfigurationv1alpha1.DSNSpec{},
+					Sentry:  connectionName,
+					Project: sentryconfigurationv1alpha1.ProjectSelector{Use: &slug},
+					DSN:     &sentryconfigurationv1alpha1.DSNSpec{},
 				},
 			}
 			Expect(k8sClient.Create(ctx, reader)).To(Succeed())
@@ -454,17 +453,13 @@ var _ = Describe("SentryProject Controller", func() {
 			connection := &sentryconfigurationv1alpha1.SentryConnection{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: connectionName}, connection)).To(Succeed())
 			connection.Spec.Integrations = &sentryconfigurationv1alpha1.ConnectionIntegrations{
-				Slack: &sentryconfigurationv1alpha1.SlackIntegration{DefaultWorkspace: "company"},
+				Slack: &sentryconfigurationv1alpha1.SlackIntegration{Workspaces: []sentryconfigurationv1alpha1.IntegrationCatalogEntry{{Name: "company", SentryName: "company"}}},
 			}
-			connection.Spec.Access[0].Destinations = &sentryconfigurationv1alpha1.DestinationAccess{
-				Slack: []sentryconfigurationv1alpha1.SlackDestinationGrant{{Workspace: "company", Channels: []string{"incidents"}}},
-			}
+			connection.Spec.Access[0].NotificationTargets = &sentryconfigurationv1alpha1.NotificationTargetAccess{SlackWorkspaces: []string{"company"}}
 			Expect(k8sClient.Update(ctx, connection)).To(Succeed())
 			resource := &sentryconfigurationv1alpha1.SentryProject{}
 			Expect(k8sClient.Get(ctx, key, resource)).To(Succeed())
-			resource.Spec.Destinations = map[string]sentryconfigurationv1alpha1.DestinationSpec{
-				"ops": {Slack: &sentryconfigurationv1alpha1.SlackDestination{Channel: "#incidents"}},
-			}
+			resource.Spec.NotificationTargets = &sentryconfigurationv1alpha1.NotificationTargets{Slack: map[string][]string{"company": {"incidents"}}}
 			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
 			destinationCatalog.integrations = map[string][]destination.Integration{
 				"slack": {{Identity: "private-workspace-id", Name: "company"}},
@@ -478,49 +473,49 @@ var _ = Describe("SentryProject Controller", func() {
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(k8sClient.Get(ctx, key, resource)).To(Succeed())
-			Expect(resource.Status.Destinations).To(HaveKeyWithValue("ops", sentryconfigurationv1alpha1.DestinationStatus{Type: "slack", State: destination.StateActive, Reason: "DestinationResolved"}))
+			Expect(resource.Status.NotificationTargets).To(HaveKeyWithValue("slack/incidents", sentryconfigurationv1alpha1.DestinationStatus{Type: "slack", State: destination.StateActive, Reason: "DestinationResolved"}))
 			statusJSON, err := json.Marshal(resource.Status)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(strings.Contains(string(statusJSON), "private-workspace-id")).To(BeFalse())
 			Expect(strings.Contains(string(statusJSON), "private-channel-id")).To(BeFalse())
 			record, err := reconciler.Bindings.GetBinding(ctx, string(resource.UID))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(record.Binding.Destinations["ops"].IntegrationIdentity).To(Equal("private-workspace-id"))
-			Expect(record.Binding.Destinations["ops"].ResourceIdentity).To(Equal("private-channel-id"))
-			status := resource.Status.Destinations["ops"]
+			Expect(record.Binding.Destinations["slack/incidents"].IntegrationIdentity).To(Equal("private-workspace-id"))
+			Expect(record.Binding.Destinations["slack/incidents"].ResourceIdentity).To(Equal("private-channel-id"))
+			status := resource.Status.NotificationTargets["slack/incidents"]
 			status.RegistrationCommit = &sentryconfigurationv1alpha1.RegistrationCommit{OperationHash: strings.Repeat("b", 64), PolicyGeneration: connection.Generation, ExpiresAt: metav1.Now()}
-			resource.Status.Destinations["ops"] = status
+			resource.Status.NotificationTargets["slack/incidents"] = status
 			Expect(k8sClient.Status().Update(ctx, resource)).To(Succeed())
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(k8sClient.Get(ctx, key, resource)).To(Succeed())
-			Expect(resource.Status.Destinations["ops"].RegistrationCommit).NotTo(BeNil())
+			Expect(resource.Status.NotificationTargets["slack/incidents"].RegistrationCommit).NotTo(BeNil())
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: connectionName}, connection)).To(Succeed())
-			connection.Spec.Access[0].Destinations = nil
+			connection.Spec.Access[0].NotificationTargets = nil
 			Expect(k8sClient.Update(ctx, connection)).To(Succeed())
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(k8sClient.Get(ctx, key, resource)).To(Succeed())
-			Expect(resource.Status.Destinations["ops"].State).To(Equal(destination.StateRevoked))
+			Expect(resource.Status.NotificationTargets["slack/incidents"].State).To(Equal(destination.StateRevoked))
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + sentryconfigurationv1alpha1.DefaultDSNSecretSuffix, Namespace: resourceNamespace}, &corev1.Secret{})).To(Succeed())
 			record, err = reconciler.Bindings.GetBinding(ctx, string(resource.UID))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(record.Binding.Destinations["ops"].State).To(Equal(destination.StateRevoked))
-			Expect(record.Binding.Destinations["ops"].ResourceIdentity).To(Equal("private-channel-id"))
+			Expect(record.Binding.Destinations["slack/incidents"].State).To(Equal(destination.StateRevoked))
+			Expect(record.Binding.Destinations["slack/incidents"].ResourceIdentity).To(Equal("private-channel-id"))
 		})
 
 		It("reconciles legacy alerts through protected bindings and safe status", func() {
 			connection := &sentryconfigurationv1alpha1.SentryConnection{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: connectionName}, connection)).To(Succeed())
 			connection.Spec.Compatibility = &sentryconfigurationv1alpha1.ConnectionCompatibility{Alerts: sentryconfigurationv1alpha1.AlertCompatibilityLegacy24}
-			connection.Spec.Integrations = &sentryconfigurationv1alpha1.ConnectionIntegrations{Slack: &sentryconfigurationv1alpha1.SlackIntegration{DefaultWorkspace: "company"}}
-			connection.Spec.Access[0].Destinations = &sentryconfigurationv1alpha1.DestinationAccess{Slack: []sentryconfigurationv1alpha1.SlackDestinationGrant{{Workspace: "company", Channels: []string{"incidents"}}}}
+			connection.Spec.Integrations = &sentryconfigurationv1alpha1.ConnectionIntegrations{Slack: &sentryconfigurationv1alpha1.SlackIntegration{Workspaces: []sentryconfigurationv1alpha1.IntegrationCatalogEntry{{Name: "company", SentryName: "company"}}}}
+			connection.Spec.Access[0].NotificationTargets = &sentryconfigurationv1alpha1.NotificationTargetAccess{SlackWorkspaces: []string{"company"}}
 			Expect(k8sClient.Update(ctx, connection)).To(Succeed())
 			resource := &sentryconfigurationv1alpha1.SentryProject{}
 			Expect(k8sClient.Get(ctx, key, resource)).To(Succeed())
-			resource.Spec.Destinations = map[string]sentryconfigurationv1alpha1.DestinationSpec{"ops": {Slack: &sentryconfigurationv1alpha1.SlackDestination{Channel: "incidents"}}}
-			alerts := map[string]sentryconfigurationv1alpha1.AlertSpec{"new-errors": {Trigger: sentryconfigurationv1alpha1.AlertTriggerFirstSeen, Notify: []string{"ops"}}}
+			resource.Spec.NotificationTargets = &sentryconfigurationv1alpha1.NotificationTargets{Slack: map[string][]string{"company": {"incidents"}}}
+			alerts := map[string]sentryconfigurationv1alpha1.AlertSpec{"new-errors": {Trigger: sentryconfigurationv1alpha1.AlertTriggerFirstSeen, Notify: []string{"slack/incidents"}}}
 			resource.Spec.Alerts = &alerts
 			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
 			destinationCatalog.integrations = map[string][]destination.Integration{"slack": {{Identity: "12", Name: "company"}}}
@@ -543,7 +538,7 @@ var _ = Describe("SentryProject Controller", func() {
 
 			emptyAlerts := map[string]sentryconfigurationv1alpha1.AlertSpec{}
 			resource.Spec.Alerts = &emptyAlerts
-			resource.Spec.Destinations = map[string]sentryconfigurationv1alpha1.DestinationSpec{}
+			resource.Spec.NotificationTargets = &sentryconfigurationv1alpha1.NotificationTargets{}
 			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
 			alertAdapter.deleteErr = errors.New("temporary Sentry delete failure")
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
@@ -551,7 +546,7 @@ var _ = Describe("SentryProject Controller", func() {
 			record, err = reconciler.Bindings.GetBinding(ctx, string(resource.UID))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(record.Binding.Alerts).To(HaveKey("new-errors"))
-			Expect(record.Binding.Destinations["ops"].State).To(Equal(destination.StateCleanupPending))
+			Expect(record.Binding.Destinations["slack/incidents"].State).To(Equal(destination.StateCleanupPending))
 			Expect(alertAdapter.deleteCalls).To(Equal(0))
 
 			alertAdapter.deleteErr = nil
@@ -571,20 +566,14 @@ var _ = Describe("SentryProject Controller", func() {
 			connection := &sentryconfigurationv1alpha1.SentryConnection{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: connectionName}, connection)).To(Succeed())
 			connection.Spec.Integrations = &sentryconfigurationv1alpha1.ConnectionIntegrations{
-				Slack:     &sentryconfigurationv1alpha1.SlackIntegration{DefaultWorkspace: "company"},
-				PagerDuty: &sentryconfigurationv1alpha1.PagerDutyIntegration{DefaultAccount: "primary"},
+				Slack:     &sentryconfigurationv1alpha1.SlackIntegration{Workspaces: []sentryconfigurationv1alpha1.IntegrationCatalogEntry{{Name: "company", SentryName: "company"}}},
+				PagerDuty: &sentryconfigurationv1alpha1.PagerDutyIntegration{Accounts: []sentryconfigurationv1alpha1.IntegrationCatalogEntry{{Name: "primary", SentryName: "primary"}}},
 			}
-			connection.Spec.Access[0].Destinations = &sentryconfigurationv1alpha1.DestinationAccess{
-				Slack:     []sentryconfigurationv1alpha1.SlackDestinationGrant{{Workspace: "company", Channels: []string{"incidents"}}},
-				PagerDuty: []sentryconfigurationv1alpha1.PagerDutyDestinationGrant{{Account: "primary", Services: []string{"checkout"}}},
-			}
+			connection.Spec.Access[0].NotificationTargets = &sentryconfigurationv1alpha1.NotificationTargetAccess{SlackWorkspaces: []string{"company"}, PagerDutyAccounts: []string{"primary"}}
 			Expect(k8sClient.Update(ctx, connection)).To(Succeed())
 			resource := &sentryconfigurationv1alpha1.SentryProject{}
 			Expect(k8sClient.Get(ctx, key, resource)).To(Succeed())
-			resource.Spec.Destinations = map[string]sentryconfigurationv1alpha1.DestinationSpec{
-				"ops":    {Slack: &sentryconfigurationv1alpha1.SlackDestination{Channel: "incidents"}},
-				"oncall": {PagerDuty: &sentryconfigurationv1alpha1.PagerDutyDestination{Service: "checkout"}},
-			}
+			resource.Spec.NotificationTargets = &sentryconfigurationv1alpha1.NotificationTargets{Slack: map[string][]string{"company": {"incidents"}}, PagerDuty: map[string][]string{"primary": {"checkout"}}}
 			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
 			destinationCatalog.integrations = map[string][]destination.Integration{
 				"slack": {{Identity: "workspace-id", Name: "company"}}, "pagerduty": {{Identity: "account-id", Name: "primary"}},
@@ -598,20 +587,20 @@ var _ = Describe("SentryProject Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: connectionName}, connection)).To(Succeed())
-			connection.Spec.Access[0].Destinations.Slack = nil
+			connection.Spec.Access[0].NotificationTargets.SlackWorkspaces = nil
 			Expect(k8sClient.Update(ctx, connection)).To(Succeed())
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(k8sClient.Get(ctx, key, resource)).To(Succeed())
-			Expect(resource.Status.Destinations["ops"].State).To(Equal(destination.StateRevoked))
-			Expect(resource.Status.Destinations["oncall"].State).To(Equal(destination.StateActive))
+			Expect(resource.Status.NotificationTargets["slack/incidents"].State).To(Equal(destination.StateRevoked))
+			Expect(resource.Status.NotificationTargets["pagerDuty/checkout"].State).To(Equal(destination.StateActive))
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + sentryconfigurationv1alpha1.DefaultDSNSecretSuffix, Namespace: resourceNamespace}, &corev1.Secret{})).To(Succeed())
 			record, err := reconciler.Bindings.GetBinding(ctx, string(resource.UID))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(record.Binding.Destinations["ops"].State).To(Equal(destination.StateRevoked))
-			Expect(record.Binding.Destinations["ops"].ResourceIdentity).To(Equal("channel-id"))
-			Expect(record.Binding.Destinations["oncall"].State).To(Equal(destination.StateActive))
-			Expect(record.Binding.Destinations["oncall"].ResourceIdentity).To(Equal("service-id"))
+			Expect(record.Binding.Destinations["slack/incidents"].State).To(Equal(destination.StateRevoked))
+			Expect(record.Binding.Destinations["slack/incidents"].ResourceIdentity).To(Equal("channel-id"))
+			Expect(record.Binding.Destinations["pagerDuty/checkout"].State).To(Equal(destination.StateActive))
+			Expect(record.Binding.Destinations["pagerDuty/checkout"].ResourceIdentity).To(Equal("service-id"))
 		})
 	})
 })

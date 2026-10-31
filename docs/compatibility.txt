@@ -1,435 +1,82 @@
-SENTRY CONFIGURATION OPERATOR — T00 COMPATIBILITY MATRIX
-Дата source review: 2026-10-30
-Статус документа: draft, пригоден для contract tests; не является M0 approval.
-
-1. Правила статуса
-
-Verified       — выполнен реальный вызов в указанной среде и сохранён очищенный результат.
-ContractTested — контракт подтверждён version-pinned исходником/официальной документацией
-                 и локальной проверкой обезличенного fixture.
-Unsupported    — подтверждённый контракт не позволяет сохранить обязательную семантику.
-Unknown        — реальный вызов или достаточный version-pinned контракт отсутствует.
-
-На 2026-10-30 обе self-hosted версии прошли fresh install, полные миграции, health-check,
-Bearer authentication и реальный public-API lifecycle create/read/key/delete на полностью
-одноразовых volumes. Обе версии также приняли synthetic event через созданный Default DSN,
-вернули его по точному event ID и отфильтровали настроенные sensitiveFields. В 24.7.1
-дополнительно подтверждено отсутствие legacy rules после default_rules=false. В 26.10.1
-GET project detectors не опубликован и отвечает 403, поэтому эффект default_rules=false
-остаётся ContractTested. SaaS token отсутствует.
-
-2. Зафиксированные среды
-
-Среда                         Версия/срез                  Source identity
-self-hosted legacy            self-hosted/Sentry 24.7.1   f330f3040d3ab81055f92b4ac4265fbbfe17487c /
-                                                           89c30ddef8bcf56f113b1e92b28e4e286ef0b4f0
-self-hosted current target    self-hosted/Sentry 26.10.1   192a826421decd7f8ce6673bb9a299737d0d6916 /
-                                                           75be212fba6d4a1c43fc98030fc5e56edcdf176a
-SaaS                          API docs на 2026-10-29       rolling, commit неизвестен
-
-26.10.1 выбран как современная self-hosted версия: release опубликован
-2026-10-29T00:46:59Z и закрепляет image ghcr.io/getsentry/sentry:26.10.1.
-OCI registry inspection 2026-10-29:
-- index: sha256:b71e270ec991ebb60cbf5551a8127318d9202ee3842d5d3d19de285d298c59f5;
-- linux/amd64: sha256:d834fe66df104c4b1600606f9276f613f4554c4c9d726710dc6e0595f5ade1db;
-- linux/arm64: sha256:547e21b54faf082af8a52c6c855638f32c732e422ba7623765dae5d5d0342471.
-Snapshot: testdata/contracts/sentry-26.10.1-image.json. Это identity опубликованного
-образа, не доказательство запуска self-hosted stack или Sentry capability.
-
-3. Сводная capability matrix
-
-Capability                         24.7.1             26.10.1            SaaS 2026-10-29
-project list/read by slug           Verified            Verified            ContractTested*
-project create                      Verified            Verified            ContractTested*
-create without platform             Verified            Verified            Unknown
-atomic default_rules=false           Verified            ContractTested      ContractTested*
-automatic usable active key         Verified            Verified            Unknown
-project update                       ContractTested      ContractTested*     ContractTested*
-async project delete                Verified            Verified            ContractTested*
-lost-POST recovery by marker         Verified            Verified            Unknown
-client-key list/pagination           ContractTested      ContractTested      ContractTested*
-inbound filters                      Verified            Verified            ContractTested*
-PII typed fields                     Verified            Verified            ContractTested*
-typed fingerprint rules              Unknown             Unknown             Unknown
-recommended-v1 profile               Unsupported         Unsupported         Unsupported
-legacy issue alert CRUD              Verified            ContractTested*     Unknown/deprecated
-legacy issue alert disable+enable    Unsupported         Unknown             Unknown/deprecated
-legacy metric alert CRUD             Verified            ContractTested*     Unknown/deprecated
-legacy metric disable+enable         Unsupported         Unknown             Unknown/deprecated
-modern workflow enabled flag         N/A/Unknown         Verified            ContractTested
-modern detector/workflow lifecycle   N/A/Unknown         Verified            ContractTested*
-Slack workspace exact-name lookup    ContractTested      ContractTested*     ContractTested*
-Slack channel exact-name lookup      ContractTested      ContractTested*     ContractTested*
-PagerDuty account/service lookup     ContractTested      ContractTested*     ContractTested*
-signed Telegram-source webhook       ContractTested      ContractTested      ContractTested*
-real notification delivery           Unknown             Unknown             Unknown
-
-Звёздочка означает, что контракт проверен актуальным source/docs, но для этой строки
-ещё нет отдельного version-specific HTTP fixture. Она не повышает статус до Verified.
-
-4. Project и DSN — выводы по Sentry 24.7.1
-
-Route create:
-POST /api/0/teams/{organization_slug}/{team_slug}/projects/
-Scope: project:write или project:admin; при запрете member project creation также org:write.
-
-Source:
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/team_projects.py
-
-Подтверждённые request fields: name, slug, optional platform, optional default_rules.
-platform допускает отсутствие/None на уровне serializer и Project.objects.create.
-default_rules=false передаётся в synchronous project_created signal внутри transaction;
-receiver не создаёт default Rule при false.
-
-Source:
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/receivers/rules.py
-https://github.com/getsentry/sentry/blob/24.7.1/tests/sentry/api/endpoints/test_team_projects.py
-
-Project post_save receiver синхронно создаёт ProjectKey с label=Default. Key создаётся
-в transaction wrapper, но обработчик специально подавляет ProgrammingError/OperationalError.
-Live 24.7.1 acceptance подтвердил один active Default key с непустым локальным DSN сразу
-после реального POST.
-
-Source:
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/receivers/core.py
-
-26.10.1 сохраняет public Team Projects POST, optional nullable platform, max name length
-50 и default_rules. Create выполняется внутри Project transaction, после чего
-project_created получает default_rules. Modern create_default_workflows возвращается до
-ensure_default_workflows при false. Отдельные request/response fixtures подтверждают
-platform omission и reserved marker transport. Это source-level atomic normal path;
-реальная проверка отсутствия workflow после POST всё ещё обязательна до Verified.
-
-Modern Project post_save синхронно создаёт Default ProjectKey, а public paginated GET
-project keys фильтрует active/inactive и сериализует name/label, isActive и dsn.public.
-Live 26.10.1 acceptance подтвердил usable active Default key непосредственно после create.
-
-Source:
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/core/endpoints/team_projects.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/receivers/project_workflows.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/receivers/core.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/core/endpoints/project_keys.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/api/serializers/models/project_key.py
-https://github.com/getsentry/sentry/blob/26.10.1/tests/sentry/core/endpoints/test_team_projects.py
-https://github.com/getsentry/sentry/blob/26.10.1/tests/sentry/core/endpoints/test_project_keys.py
-
-Route list client keys:
-GET /api/0/projects/{organization_slug}/{project_slug}/keys/
-Scope: project:read, project:write или project:admin.
-Контракт пагинируется, фильтрует status=active/inactive и возвращает label/name,
-isActive и dsn.public. Оператор использует только GET и не вызывает POST/PUT/DELETE keys.
-
-Source:
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/project_keys.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/serializers/models/project_key.py
-
-Неоднозначность client key:
-- один active key выбирается автоматически;
-- несколько active keys требуют точного уникального label из dsn.clientKey;
-- пустые или повторяющиеся labels дают DSNKeyAmbiguous;
-- internal/public key не предлагается как selector;
-- пользователь должен дать ключам уникальные читаемые labels в Sentry.
-
-Project GET/PUT/DELETE:
-GET|PUT|DELETE /api/0/projects/{organization_slug}/{project_slug}/
-DELETE требует project:admin и переводит project в PENDING_DELETION, затем планирует
-асинхронное удаление и отвечает 204.
-
-Source:
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/project_details.py
-
-5. Marker strategy
-
-Create contract 24.7.1 и 26.10.1 не имеет native label/annotation/metadata/description.
-Следовательно, для project единственный source-confirmed атомарный вариант — reserved
-fragment в display name при отдельном человекочитаемом slug:
-
-  slug: checkout
-  name: Checkout [managed;o=payments;m=company-sentry-op]
-
-Форма marker означает origin=managed, o=operator-owner, m=managed-by. Parser обязан
-проверять точный suffix целиком; произвольная подстрока owner не считается marker. До
-POST protected binding хранит create intent, owner, manager UID, slug,
-expected display name и operation hash. Lost response восстанавливается только GET по
-slug + точное совпадение expected marker + pre-existing create intent. Имя без binding
-не даёт ownership. Live acceptance на обеих self-hosted версиях сделал один POST,
-намеренно отбросил успешный response и восстановил точный identity только GET по slug с
-полным marker match; второй POST не выполнялся.
-
-Project name в 24.7.1 и 26.10.1 ограничен 50 Unicode characters. Exact grammar probe:
-
-  <displayName> [managed;o=<owner>;m=<manager>]
-
-owner/manager являются lowercase human aliases с grammar
-`[a-z](?:[a-z0-9.-]*[a-z0-9])?`; semantic source остаётся trusted access/connection
-configuration, поэтому совпадение grammar само по себе не превращает opaque ID в alias.
-Fixed overhead с одним пробелом равен 16 characters, поэтому допустимый displayName budget:
-
-  50 - 16 - len(owner) - len(manager)
-
-Budget обязан быть >=1. Пример занимает 49 и оставляет один character запаса. Delimiter
-injection, uppercase aliases, nested marker и overflow отклоняются до POST. Команда
-make verify-name-resolution проверяет formatter/parser и обязательную связку marker +
-protected binding + matching manager claim. Это снимает неопределённость grammar/bounds,
-а live self-hosted acceptance подтверждает transport recovery path. Полный controller-to-
-Sentry recovery также Verified на обеих версиях: TLS fault proxy передал POST в Sentry и
-закрыл connection после успешного upstream response, реальный envtest Kubernetes API сохранил
-Submitted journal в protected Secret, а новый store/client/engine восстановил exact marker
-через GET без второго POST и выполнил guarded delete проекта и binding.
-
-Legacy issue/metric alert name и modern workflow name допускают тот же reserved suffix.
-Для modern detector/workflow наличие лучшего metadata механизма пока Unknown; fallback
-нельзя считать выбранным до round-trip стендового теста.
-
-6. Settings
-
-24.7.1 PUT project source подтверждает typed transport fields:
-- dataScrubber -> sentry:scrub_data;
-- dataScrubberDefaults -> sentry:scrub_defaults;
-- scrubIPAddresses -> sentry:scrub_ip_address;
-- sensitiveFields и safeFields;
-- fingerprintingRules, но только как raw Sentry DSL string.
-
-Inbound filter routes:
-GET /api/0/projects/{org}/{project}/filters/ (publish status UNKNOWN)
-PUT /api/0/projects/{org}/{project}/filters/{filter_id}/
-
-Подтверждённые IDs: browser-extensions, localhost, web-crawlers,
-filtered-transaction и legacy-browsers. Первый alpha contract должен ограничиться
-browserExtensions, localhost и webCrawlers; health-check и legacy browser options требуют
-отдельной product acceptance.
-
-Source:
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/project_details.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/project_filters.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/project_filter_details.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/ingest/inbound_filters.py
-
-26.10.1 сохраняет публичные GET/PUT filter endpoints и те же adapter-neutral filter IDs
-browser-extensions, localhost и web-crawlers. Public Project Details PUT сохраняет поля
-dataScrubber, dataScrubberDefaults, scrubIPAddresses, sensitiveFields и safeFields; его
-version-pinned endpoint tests подтверждают false и list round-trip. Для обоих contracts
-добавлены отдельные обезличенные fixtures. Live acceptance на свежих 24.7.1 и 26.10.1
-дополнительно выполнил PUT/GET всех трёх filter IDs и пяти typed PII fields с точным
-round-trip. Затем Default DSN принял synthetic event с sensitive extras, event detail GET
-вернул оба sensitive значения как [Filtered], сохранил несекретное контрольное значение
-и не содержал исходных sentinels. Поэтому self-hosted PII строка Verified включает
-фактическую обработку нового события. Обе версии также отбросили отдельный event с
-user.ip_address=127.0.0.1 при localhost=true. Для browser-extensions и web-crawlers
-matching control events были читаемы при active=false, а после настройки active=true до
-первой ingestion в отдельном одноразовом project точные event IDs оставались 404 в
-контрольном окне. Full controller acceptance на real envtest API затем создал managed project,
-внёс через public API drift во все три filters и пять PII fields и одним reconcile восстановил
-desired state: TLS proxy зафиксировал три filter PUT и один narrow project PUT. Повторный
-reconcile не сделал settings mutations, Conditions SettingsReady/Ready остались True,
-guarded deletion завершился. Historical reprocessing и rolling SaaS behavior этим не доказаны.
-
-fingerprintingRules в обеих версиях остаётся одной raw newline-delimited DSL string.
-Одинаковая простая grammar подтверждается source tests, однако 26.10.1 parser уже имеет
-другую нормализацию/диагностику, а groupingConfig в modern endpoint запрещён для manual
-set. Это подтверждает transport, но не adapter-neutral typed schema. Alpha grouping
-остаётся непубликуемым, а capability — Unknown до определения typed AST и одинакового
-real round-trip.
-
-Source:
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/api/endpoints/project_filters.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/api/endpoints/project_filter_details.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/core/endpoints/project_details.py
-https://github.com/getsentry/sentry/blob/26.10.1/tests/sentry/core/endpoints/test_project_details.py
-https://github.com/getsentry/sentry/blob/26.10.1/tests/sentry/grouping/test_fingerprinting.py
-
-Решение для T01:
-- recommended-v1 и strict-pii-v1 не публиковать;
-- settings.profile удалить из alpha schema/golden examples;
-- typed fingerprintRules и settings.advanced оставить Unsupported/не публиковать,
-  пока adapter-neutral mapping не пройдёт одинаковый real round-trip во всех средах.
-
-Причина: immutable одинаковый состав profile и typed fingerprint semantics без живых
-24.7.1/26.10.1/SaaS проверить невозможно. Raw DSL transport не удовлетворяет требованию
-adapter-neutral typed API. План требует удаление неподтверждённого profile.
-
-7. Alerts и точный alpha surface
-
-24.7.1 legacy issue routes:
-GET|POST /api/0/projects/{org}/{project}/rules/
-GET|PUT|DELETE /api/0/projects/{org}/{project}/rules/{rule_id}/
-PUT /api/0/projects/{org}/{project}/rules/{rule_id}/enable/
-Scopes: alerts:read/alerts:write либо соответствующие project scopes.
-
-Source:
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/project_rules.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/project_rule_details.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/project_rule_enable.py
-
-Source подтверждает first_seen_event, regression_event, event frequency, environment,
-tag filters, Slack/PagerDuty actions, CRUD и enable. Публичного disable endpoint без
-удаления в version-pinned source не найдено. PUT disabled rule автоматически re-enables;
-DELETE переводит его в PENDING_DELETION. Поэтому `enabled:false` остаётся Unsupported;
-явный connection profile `legacy-24.7.1` допускает только включённые first-seen/regression
-rules и никогда не переводит disable в DELETE.
-
-Live 24.7.1 acceptance подтвердил create/read/update с сохранением exact ID и marker,
-после DELETE detail стал inactive (`disabled` в legacy serializer), а active list исключил
-правило. Это повышает CRUD до Verified, но не устраняет отсутствие non-destructive disable:
-DELETE является scheduled deletion, а не допустимым toggle.
-
-24.7.1 legacy metric routes:
-GET|POST /api/0/organizations/{org}/alert-rules/
-GET|PUT|DELETE /api/0/organizations/{org}/alert-rules/{alert_rule_id}/
-
-Source:
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/incidents/endpoints/organization_alert_rule_index.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/incidents/endpoints/organization_alert_rule_details.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/incidents/serializers/alert_rule.py
-
-Подтверждены error count transport (dataset=events, aggregate=count()), thresholds,
-window choices 1/5/10/15/30/60/120/240/1440 minutes, environment, query and actions.
-Model имеет DISABLED и internal logic, но публичного disable/enable API в 24.7.1 не
-найдено. Следовательно metric adapter принимает только включённые event-count rules, а
-`enabled:false` fail-closed до HTTP mutation.
-
-Live 24.7.1 acceptance подтвердил events count() metric alert с пустыми actions:
-create/read/update сохраняют exact ID и marker, threshold round-trip проходит, DELETE
-делает detail недоступным. Поэтому CRUD повышен до Verified, но disable+enable остаётся
-Unsupported. Controller использует это как ограниченный compatibility profile, а не как
-ложное доказательство полного toggle lifecycle.
-
-Sentry 26.10.1 source публикует modern workflow API:
-- GET|POST|PUT|DELETE /api/0/organizations/{org}/workflows/;
-- GET|PUT|DELETE /api/0/organizations/{org}/workflows/{workflow_id}/;
-- WorkflowValidator и response serializer содержат enabled boolean;
-- bulk PUT требует хотя бы один selector id/query/project/projectSlug и обязательный
-  enabled boolean, затем обновляет каждый выбранный workflow в transaction;
-- scopes: GET допускает alerts:read, mutations требуют alerts:write либо org scope.
-
-Version-pinned tests подтверждают disable/enable по точным IDs и отсутствие изменений у
-невыбранного workflow. Обезличенные request/response fixtures лежат в
-testdata/http-fixtures/sentry-26.10.1/. Live 26.10.1 acceptance создал отдельный workflow
-без actions, прочитал и обновил его с тем же ID, выполнил bulk disable/enable по
-exact ID и дождался 404 после individual delete. Поэтому workflow enabled flag получает
-Verified.
-
-Source:
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/organization_workflow_index.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/organization_workflow_details.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/validators/base/workflow.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/serializers/workflow_serializer.py
-https://github.com/getsentry/sentry/blob/26.10.1/tests/sentry/workflow_engine/endpoints/test_organization_workflow_index.py
-
-Live acceptance затем создал `metric_issue` detector с events/count() data source,
-static high/OK thresholds и связью с exact workflow ID. Detector detail GET вернул тот же
-ID/type/name, bulk disable/enable по ID сохранил identity, DELETE сделал detail 404, после
-чего workflow также был удалён. Поэтому modern detector/workflow lifecycle для этого
-adapter-neutral metric-count payload повышен до Verified на 26.10.1. Action payloads,
-integration validation, notification delivery и остальные detector families остаются
-Unknown; это evidence само по себе не публикует пять presets в alpha schema.
-
-Source:
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/organization_detector_index.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/organization_detector_details.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/validators/base/detector.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/incidents/metric_issue_detector.py
-
-Current SaaS docs на 2026-10-29 публикуют тот же workflow API и bulk enable/disable.
-Это ContractTested, но не доказывает rolling SaaS feature/plan gates или full
-detector/workflow lifecycle без real calls.
-
-Source/docs:
-https://docs.sentry.io/api/monitors/create-an-alert-for-an-organization/
-https://docs.sentry.io/api/monitors/update-an-alert-by-id/
-https://docs.sentry.io/api/monitors/mutate-an-organizations-alerts/
-
-Решение для T01:
-- не публиковать ни один common preset до real full lifecycle на каждой среде;
-- new-issue, regression, error-count, error-rate и latency остаются Unknown/Unsupported;
-- advanced alerts не публиковать: точный adapter-neutral AST не подтверждён.
-
-Точный machine-readable alpha field decision зафиксирован в
-testdata/contracts/t00-alpha-surface.json и объяснён в docs/alpha-surface.txt.
-Полный legacy registry/units catalog и явный modern pending status зафиксированы в
-docs/alert-catalog.txt и testdata/contracts/t00-alert-catalog.json.
-
-8. Integrations и name resolution
-
-GET /api/0/organizations/{org}/integrations/?providerKey=slack|pagerduty&includeConfig=1
-Scope: org:read, org:write, org:admin или org:integrations.
-
-OrganizationIntegration serializer возвращает readable integration.name; PagerDuty
-get_config_data возвращает service/service ID pairs. IDs используются только внутри
-protected binding и adapter payload.
-
-Slack legacy issue alert pending_save принимает workspace identity + channel name,
-пагинирует Slack conversations, удаляет # prefix и отказывает при duplicate display name.
-NotFound/Ambiguous должны быть преобразованы оператором в понятные reason; ID не является
-public workaround.
-
-Source:
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/integrations/organization_integrations/index.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/serializers/models/integration.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/tasks/integrations/slack/find_channel_id_for_rule.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/integrations/pagerduty/integration.py
-
-9. Telegram-source webhook
-
-24.7.1 project service hooks создаются по readable URL и event list. Модель генерирует
-secret и подписывает точный JSON body HMAC-SHA256; delivery header называется
-X-ServiceHook-Signature. Worker также передаёт X-ServiceHook-Timestamp и
-X-ServiceHook-GUID, timeout=5s, max_retries=5, default retry delay=5m.
-
-Routes:
-POST /api/0/projects/{org}/{project}/hooks/ — project:write, feature servicehooks required.
-
-Source:
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/project_servicehooks.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/models/servicehook.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/tasks/servicehooks.py
-
-Это доказывает доступный cryptographic mechanism для 24.7.1 contract, но не реальную
-доставку, feature enablement, retry timing и TLS behavior. Важный риск: version-pinned
-worker вызывает safe_urlopen(... verify_ssl=False). До security review и реального теста
-Telegram остаётся неготовым, несмотря на HMAC.
-
-26.10.1 сохраняет тот же v0 payload family project/group/event, per-hook secret,
-HMAC-SHA256 и X-ServiceHook-* headers. Source tests вычисляют подпись от того же exact
-serialized body. Обезличенный version-specific fixture проходит тот же HMAC vector.
-
-Однако modern contract не устраняет blocker:
-- GET/POST/PUT/DELETE project service-hook endpoints имеют ApiPublishStatus.PRIVATE;
-- projects:servicehooks имеет default=False и проверяется до list/create;
-- worker по-прежнему вызывает safe_urlopen(... verify_ssl=False);
-- retry policy теперь Retry(times=3, delay=5m), а не legacy max_retries=5.
-
-Следовательно 26.10.1 cryptographic mechanism = ContractTested, но возможность создать
-hook обычным supported API token, TLS security и доставка = Unknown/Unsupported до стенда
-и выбранной deployment policy. Нельзя переносить legacy retry assertions на modern.
-
-Source:
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/api/endpoints/project_servicehooks.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/sentry_apps/models/servicehook.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/sentry_apps/tasks/service_hooks.py
-https://github.com/getsentry/sentry/blob/26.10.1/tests/sentry/sentry_apps/tasks/test_servicehooks.py
-
-10. Token scope baseline
-
-Операция                         Минимальный source-confirmed scope
-project list/read                project:read (или write/admin)
-project create/update            project:write (или admin)
-project delete                   project:admin + sudo_required behavior проверить live
-client keys list                 project:read (или write/admin)
-inbound filter update            project:write (или admin)
-issue alert read                 alerts:read или project:read
-issue alert mutate/delete        alerts:write или project:write/admin
-organization integrations list   org:read/org:integrations (или write/admin)
-service hook create              project:write (или admin)
-modern workflow read/write       alerts:read / alerts:write согласно current docs
-
-Точный least-privilege token и self-hosted role behavior остаются Unknown до real calls.
-
-11. Обязательные следующие проверки
-
-1) 24.7.1: public non-destructive disable для issue/metric rule остаётся опровергнут source.
-2) 26.10.1: отдельный uptime subscription/quota/seat lifecycle и update существующего error
-   detector; generic create для error source-запрещён и не должен тестироваться как preset.
-3) SaaS: те же calls с зафиксированной датой и очищенными fixtures.
-4) Slack/PagerDuty: duplicate readable names, pagination, revoked integration и delivery.
-5) Service hook/Sentry App: signed raw-body positive/negative/replay tests и TLS verification.
+SENTRY CONFIGURATION OPERATOR — COMPATIBILITY MATRIX
+Source review: 2026-10-30
+Status: Contract baseline plus recorded disposable-stack evidence; not a production or SaaS
+certification.
+
+1. Evidence labels
+
+- `Verified`: exercised against the exact live disposable target.
+- `ContractTested`: supported by version-pinned source, sanitized fixtures, and executable
+  adapter tests, but not a live target.
+- `Unknown`: insufficient evidence; the controller must fail closed.
+- `Unsupported`: intentionally rejected by the selected adapter.
+
+2. Supported targets
+
+| Target | Compatibility profile | Intended use |
+| --- | --- | --- |
+| Self-hosted 24.7.1 | `legacy-24.7.1` | Legacy issue and metric alert APIs. |
+| Self-hosted 26.10.1 | `modern-26.10.1` | Detector/workflow API. |
+| SaaS | none certified | Deferred pending live scope and behavior acceptance. |
+
+3. Capability matrix
+
+| Capability | 24.7.1 | 26.10.1 | Notes |
+| --- | --- | --- | --- |
+| Project create with `default_rules=false` | Verified | Verified | Required for managed creation. |
+| Automatic active client key | Verified | Verified | Required for immediate DSN publication. |
+| Existing project read | Verified | Verified | Subject to access policy. |
+| Typed inbound filters | Verified | Verified | Browser extensions, localhost, web crawlers. |
+| Typed PII settings | Verified | Verified | Scrub flags plus safe/sensitive fields. |
+| Legacy issue rules | Verified | Unsupported | 26.10.1 collection route returns 404. |
+| Legacy metric rules | Verified | Unsupported | 26.10.1 collection route returns 404. |
+| Modern metric detector/workflow | Unsupported | Verified | events/count() detector family only. |
+| PagerDuty account/service catalog | ContractTested | ContractTested | Local fixture proves resolution, not delivery. |
+| Slack channel catalog | Unknown | Unknown | Runtime adapter fails closed. |
+| Telegram service-hook HMAC contract | ContractTested | ContractTested | Public endpoint availability remains deployment-specific. |
+| External notification delivery | Unknown | Unknown | Deferred. |
+
+4. Project and DSN rules
+
+Project creation omits `platform` unless the CR supplies it and sends the atomic
+default-rule suppression flag. Managed creation is unavailable unless both safe-create
+capabilities are present in connection status from real evidence.
+
+The operator recovers interrupted creates through readable slug plus its exact ownership
+marker. It never sends a second blind POST. It selects an active project client key and
+publishes only the public DSN to the application Secret. Secret/token/private key material
+does not enter status or logs.
+
+5. Settings
+
+Both supported versions expose compatible public filter endpoints and project settings for
+the alpha PII fields. Reconciliation writes only managed fields, reads them back, and becomes
+quiet after drift is repaired. Grouping profiles and arbitrary raw settings remain outside
+the public contract.
+
+6. Alerts
+
+The legacy adapter owns Sentry issue and metric rules using protected markers and journals.
+The modern adapter owns an attached metric detector/workflow pair. Delete/disable semantics
+are adapter-specific and validated before mutation. Omitted alerts remain unmanaged; an
+explicit empty map cleans up only operator-owned alerts.
+
+7. Integrations
+
+Organization integrations require organization integration scopes in addition to read/write
+scopes for the affected project or alert. PagerDuty public integration data contains an
+account identity and a service table; the operator does not decode or expose routing keys.
+No equivalent stable Slack channel enumeration contract is certified across both targets.
+
+8. Minimum token scope intent
+
+The local acceptance token requests organization read/write/admin/integration, member/team
+read/write/admin, project read/write/admin, and alert read/write scopes because the complete
+test fixture needs all of them. This is not a least-privilege SaaS recommendation. SaaS scope
+minimization remains deferred and must be tested with a real account.
+
+9. Required follow-up
+
+Keep source fixtures pinned and sanitized, rerun disposable-stack configuration acceptance
+when a supported Sentry version changes, and add SaaS only after least-privilege and behavior
+acceptance. Never promote a capability solely from the server version string.

@@ -1,32 +1,21 @@
 ADR 0002 — V1ALPHA1 EVOLUTION AND CONVERSION
-Дата: 2026-10-29
-Статус: Accepted
+Date: 2026-10-29
+Status: Accepted
 
-Решение
+Decision
 
-Первый API group: sentryconfiguration.io. Версия v1alpha1 является единственной served и
-storage version. Обе CRD используют apiextensions.k8s.io/v1 и conversion.strategy=None;
-conversion webhook в alpha не устанавливается.
+The repository serves and stores only `sentryconfiguration.io/v1alpha1` until a second API
+version has a real consumer and a proven migration contract. Additive optional fields may be
+introduced when their zero value preserves existing behavior. Existing field meaning,
+defaulting, ownership, or security boundaries must not change silently.
 
-Совместимые изменения v1alpha1 допускаются только как явно optional additive fields с
-безопасной семантикой. Поля, исключённые ADR 0001, не появляются автоматически после
-upgrade. Их публикация требует нового evidence, generated CRD diff, golden/negative
-fixtures и повторной Kubernetes matrix.
+A second served version requires:
 
-spec.connection и spec.project SentryProject immutable после создания. Изменение
-identity выполняется новым CR, а не скрытым rebind. Status не содержит внешних IDs.
-Unknown fields отклоняются server-side strict field validation; контроллер не должен
-полагаться на молчаливое pruning как на пользовательский контракт.
+- explicit hub/spoke selection;
+- bidirectional conversion tests for every published field;
+- storage-version migration and rollback evidence;
+- unknown-field and defaulting compatibility tests;
+- an ADR that explains information loss and downgrade behavior.
 
-До появления второй API version conversion=None остаётся достаточной и уже проверена на
-Kubernetes 1.35/1.36. Перед первым breaking schema change создаётся новая served version,
-выбирается hub и реализуется round-trip conversion с lossless tests до смены storage
-version. Включать conversion webhook заранее запрещено: это добавило бы TLS/availability
-failure mode без потребителя.
-
-Ограничение
-
-Имя group предполагает уникальность sentryconfiguration.io. Перед публичным релизом
-владелец проекта подтверждает контроль/резервирование домена. Если это невозможно,
-rename выполняется до стабильной версии; после внешнего использования потребуется новая
-API group и явная миграция, потому что group не конвертируется webhook-ом.
+Webhook conversion endpoints are intentionally absent while only one version is served.
+This avoids a non-functional conversion promise and keeps installation dependencies small.

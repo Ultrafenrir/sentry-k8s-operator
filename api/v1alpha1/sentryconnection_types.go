@@ -85,56 +85,24 @@ type ExistingProjectAccess struct {
 	ConsumeDSN []string `json:"consumeDSN,omitempty"`
 }
 
-// SlackDestinationGrant scopes allowed Slack channels by optional workspace name.
-type SlackDestinationGrant struct {
-	// +kubebuilder:validation:MaxLength=100
-	// +optional
-	Workspace string `json:"workspace,omitempty"`
-
-	// +kubebuilder:validation:MinItems=1
+// NotificationTargetAccess grants use of platform-catalog integration aliases. Channels
+// and services are deliberately absent: an authorized project may select any visible
+// channel or service inside the granted workspace or account.
+type NotificationTargetAccess struct {
 	// +kubebuilder:validation:MaxItems=100
-	// +kubebuilder:validation:items:MinLength=1
-	// +kubebuilder:validation:items:MaxLength=100
 	// +listType=set
-	Channels []string `json:"channels"`
-}
-
-// PagerDutyDestinationGrant scopes allowed PagerDuty services by optional account name.
-type PagerDutyDestinationGrant struct {
-	// +kubebuilder:validation:MaxLength=100
 	// +optional
-	Account string `json:"account,omitempty"`
+	SlackWorkspaces []string `json:"slackWorkspaces,omitempty"`
 
-	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=100
-	// +kubebuilder:validation:items:MinLength=1
-	// +kubebuilder:validation:items:MaxLength=100
 	// +listType=set
-	Services []string `json:"services"`
-}
+	// +optional
+	PagerDutyAccounts []string `json:"pagerDutyAccounts,omitempty"`
 
-// TelegramDestinationGrant scopes allowed logical Telegram targets.
-type TelegramDestinationGrant struct {
-	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=100
-	// +kubebuilder:validation:items:MinLength=1
-	// +kubebuilder:validation:items:MaxLength=100
 	// +listType=set
-	Targets []string `json:"targets"`
-}
-
-// DestinationAccess contains all platform-approved destination names.
-type DestinationAccess struct {
-	// +kubebuilder:validation:MaxItems=20
 	// +optional
-	Slack []SlackDestinationGrant `json:"slack,omitempty"`
-
-	// +kubebuilder:validation:MaxItems=20
-	// +optional
-	PagerDuty []PagerDutyDestinationGrant `json:"pagerDuty,omitempty"`
-
-	// +optional
-	Telegram *TelegramDestinationGrant `json:"telegram,omitempty"`
+	TelegramTargets []string `json:"telegramTargets,omitempty"`
 }
 
 // AccessRule binds one trusted owner to namespace, project and destination policy.
@@ -159,22 +127,77 @@ type AccessRule struct {
 	// +optional
 	ExistingProjects *ExistingProjectAccess `json:"existingProjects,omitempty"`
 
+	// NotificationTargets grants integration aliases, never channel or service allowlists.
 	// +optional
-	Destinations *DestinationAccess `json:"destinations,omitempty"`
+	NotificationTargets *NotificationTargetAccess `json:"notificationTargets,omitempty"`
 }
 
-// SlackIntegration selects the default workspace by readable name.
+// IntegrationCatalogEntry maps one stable local alias to one already-installed Sentry
+// integration name. Declaring an entry never installs an integration.
+type IntegrationCatalogEntry struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z](?:[a-z0-9-]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=100
+	SentryName string `json:"sentryName"`
+}
+
+// SlackIntegration declares readable aliases for already-installed workspaces.
 type SlackIntegration struct {
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=100
-	DefaultWorkspace string `json:"defaultWorkspace"`
+	// +kubebuilder:validation:MaxItems=100
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	Workspaces []IntegrationCatalogEntry `json:"workspaces,omitempty"`
 }
 
-// PagerDutyIntegration selects the default account by readable name.
+// PagerDutyIntegration declares readable aliases for already-installed accounts.
 type PagerDutyIntegration struct {
+	// +kubebuilder:validation:MaxItems=100
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	Accounts []IntegrationCatalogEntry `json:"accounts,omitempty"`
+}
+
+// ConnectionRole is the platform-controlled regional mutation role.
+// +kubebuilder:validation:Enum=Active;Standby
+type ConnectionRole string
+
+const (
+	ConnectionRoleActive  ConnectionRole = "Active"
+	ConnectionRoleStandby ConnectionRole = "Standby"
+)
+
+// ConnectionOwnership configures connection-wide regional fencing.
+type ConnectionOwnership struct {
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=100
-	DefaultAccount string `json:"defaultAccount"`
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z](?:[a-z0-9-]*[a-z0-9])?$`
+	Region string `json:"region"`
+
+	Role ConnectionRole `json:"role"`
+
+	// +kubebuilder:validation:Minimum=1
+	Revision int64 `json:"revision"`
+}
+
+// UnmanagedProjectPolicy controls existing projects with no recognized ownership marker.
+// +kubebuilder:validation:Enum=Reject;Standby;Adopt
+type UnmanagedProjectPolicy string
+
+const (
+	UnmanagedProjectsReject  UnmanagedProjectPolicy = "Reject"
+	UnmanagedProjectsStandby UnmanagedProjectPolicy = "Standby"
+	UnmanagedProjectsAdopt   UnmanagedProjectPolicy = "Adopt"
+)
+
+type ProjectManagement struct {
+	// +kubebuilder:default=Reject
+	UnmanagedProjects UnmanagedProjectPolicy `json:"unmanagedProjects,omitempty"`
 }
 
 // TelegramIntegration configures the platform-owned Telegram delivery route.
@@ -238,10 +261,6 @@ type SentryConnectionSpec struct {
 	// +optional
 	Transport *ConnectionTransport `json:"transport,omitempty"`
 
-	// +kubebuilder:default=false
-	// +optional
-	Default bool `json:"default,omitempty"`
-
 	// +kubebuilder:validation:MaxItems=100
 	// +listType=map
 	// +listMapKey=owner
@@ -254,6 +273,14 @@ type SentryConnectionSpec struct {
 	// Compatibility is required before version-sensitive APIs such as alerts are mutated.
 	// +optional
 	Compatibility *ConnectionCompatibility `json:"compatibility,omitempty"`
+
+	// Ownership declares the regional mutation role when regional fencing is enabled.
+	// +optional
+	Ownership *ConnectionOwnership `json:"ownership,omitempty"`
+
+	// +kubebuilder:default={unmanagedProjects: Reject}
+	// +optional
+	ProjectManagement ProjectManagement `json:"projectManagement,omitempty"`
 }
 
 // SentryConnectionStatus defines the observed state of SentryConnection.
@@ -277,6 +304,17 @@ type SentryConnectionStatus struct {
 
 	// +optional
 	RegistrationCommit *RegistrationCommit `json:"registrationCommit,omitempty"`
+
+	// +kubebuilder:validation:MaxLength=63
+	// +optional
+	Region string `json:"region,omitempty"`
+
+	// +kubebuilder:validation:Enum=Active;Standby;Fenced;Conflict
+	// +optional
+	EffectiveRole string `json:"effectiveRole,omitempty"`
+
+	// +optional
+	ObservedRevision int64 `json:"observedRevision,omitempty"`
 
 	// +listType=map
 	// +listMapKey=type

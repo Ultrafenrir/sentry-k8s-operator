@@ -64,10 +64,12 @@ type Catalog interface {
 }
 
 type Input struct {
-	Namespace  string
-	Project    sentryv1alpha1.SentryProjectSpec
-	Connection sentryv1alpha1.SentryConnectionSpec
-	Current    map[string]binding.DestinationBinding
+	Namespace        string
+	Project          sentryv1alpha1.SentryProjectSpec
+	Connection       sentryv1alpha1.SentryConnectionSpec
+	Current          map[string]binding.DestinationBinding
+	Owners           map[string]binding.ChildOwner
+	AllowedOwnerUIDs map[string]bool
 }
 
 type Status struct {
@@ -115,8 +117,17 @@ func (e *Engine) Reconcile(ctx context.Context, input Input) Result {
 		return result
 	}
 
-	names := make([]string, 0, len(input.Project.Destinations))
-	for name := range input.Project.Destinations {
+	desiredTargets, flattenErr := FlattenTargets(input.Project.NotificationTargets)
+	if flattenErr != nil {
+		result.PolicyErr = flattenErr
+		for name, current := range input.Current {
+			result.Bindings[name] = current
+			result.Statuses[name] = Status{Kind: current.Kind, State: current.State, Reason: "AmbiguousNotificationTarget", Err: flattenErr}
+		}
+		return result
+	}
+	names := make([]string, 0, len(desiredTargets))
+	for name := range desiredTargets {
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -124,7 +135,7 @@ func (e *Engine) Reconcile(ctx context.Context, input Input) Result {
 	denied := 0
 	var firstPolicyErr error
 	for _, name := range names {
-		desired := input.Project.Destinations[name]
+		desired := desiredTargets[name]
 		current, found := input.Current[name]
 		if _, err := policy.EvaluateDestination(input.Namespace, input.Project, input.Connection, desired); err != nil {
 			denied++
@@ -150,7 +161,15 @@ func (e *Engine) Reconcile(ctx context.Context, input Input) Result {
 			}
 			continue
 		}
-		next, status, err := e.resolveOne(ctx, input.Connection, desired, current, found)
+		owner := input.Owners[name]
+		if (input.Owners != nil && !owner.Valid()) || (found && input.Owners != nil && current.Owner != owner) {
+			result.Statuses[name] = Status{Kind: destinationKind(desired), State: StateUnresolved, Reason: "NotificationTargetOwnershipConflict", Err: ErrInvalidDestination}
+			if found {
+				result.Bindings[name] = current
+			}
+			continue
+		}
+		next, status, err := e.resolveOne(ctx, input.Connection, desired, current, found, owner)
 		if err != nil {
 			status.Err = err
 			status.State = StateUnresolved
@@ -170,7 +189,12 @@ func (e *Engine) Reconcile(ctx context.Context, input Input) Result {
 		result.PolicyErr = firstPolicyErr
 	}
 	for name, current := range input.Current {
-		if _, desired := input.Project.Destinations[name]; desired {
+		if _, desired := desiredTargets[name]; desired {
+			continue
+		}
+		if input.AllowedOwnerUIDs != nil && !input.AllowedOwnerUIDs[current.Owner.UID] {
+			result.Bindings[name] = current
+			result.Statuses[name] = Status{Kind: current.Kind, State: current.State, Reason: "NotificationTargetOwnershipConflict", Err: ErrInvalidDestination}
 			continue
 		}
 		// Preserve the pinned identity until every alert which references the
@@ -199,7 +223,7 @@ func destinationKind(desired sentryv1alpha1.DestinationSpec) string {
 	}
 }
 
-func (e *Engine) resolveOne(ctx context.Context, connection sentryv1alpha1.SentryConnectionSpec, desired sentryv1alpha1.DestinationSpec, current binding.DestinationBinding, found bool) (binding.DestinationBinding, Status, error) {
+func (e *Engine) resolveOne(ctx context.Context, connection sentryv1alpha1.SentryConnectionSpec, desired sentryv1alpha1.DestinationSpec, current binding.DestinationBinding, found bool, owner binding.ChildOwner) (binding.DestinationBinding, Status, error) {
 	kind, integrationName, resourceName, err := selector(connection, desired)
 	status := Status{Kind: kind}
 	if err != nil {
@@ -228,7 +252,7 @@ func (e *Engine) resolveOne(ctx context.Context, connection sentryv1alpha1.Sentr
 				return current, Status{Kind: kind, State: current.State, Reason: current.Reason}, nil
 			}
 		}
-		next := binding.DestinationBinding{Kind: kind, SelectorHash: hash, ResourceName: resourceName, State: StateRegistrationRequired, Reason: "TelegramRegistrationRequired"}
+		next := binding.DestinationBinding{Owner: owner, Kind: kind, SelectorHash: hash, ResourceName: resourceName, State: StateRegistrationRequired, Reason: "TelegramRegistrationRequired"}
 		return next, Status{Kind: kind, State: next.State, Reason: next.Reason}, nil
 	}
 
@@ -267,7 +291,8 @@ func (e *Engine) resolveOne(ctx context.Context, connection sentryv1alpha1.Sentr
 		return binding.DestinationBinding{}, status, err
 	}
 	next := binding.DestinationBinding{
-		Kind: kind, SelectorHash: hash,
+		Owner: owner,
+		Kind:  kind, SelectorHash: hash,
 		IntegrationIdentity: integration.Identity, IntegrationName: integration.Name,
 		ResourceIdentity: resource.Identity, ResourceName: resource.Name,
 		State: StateActive,
@@ -279,18 +304,12 @@ func selector(connection sentryv1alpha1.SentryConnectionSpec, desired sentryv1al
 	switch {
 	case desired.Slack != nil && desired.PagerDuty == nil && desired.Telegram == nil:
 		workspace := desired.Slack.Workspace
-		if workspace == "" && connection.Integrations != nil && connection.Integrations.Slack != nil {
-			workspace = connection.Integrations.Slack.DefaultWorkspace
-		}
 		if workspace == "" || desired.Slack.Channel == "" {
 			return "slack", "", "", ErrInvalidDestination
 		}
 		return "slack", workspace, resolver.SlackChannelName(desired.Slack.Channel), nil
 	case desired.Slack == nil && desired.PagerDuty != nil && desired.Telegram == nil:
 		account := desired.PagerDuty.Account
-		if account == "" && connection.Integrations != nil && connection.Integrations.PagerDuty != nil {
-			account = connection.Integrations.PagerDuty.DefaultAccount
-		}
 		if account == "" || desired.PagerDuty.Service == "" {
 			return "pagerduty", "", "", ErrInvalidDestination
 		}

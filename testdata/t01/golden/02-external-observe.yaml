@@ -4,6 +4,6 @@ metadata:
   name: shared-platform-view
   namespace: shared-readonly
 spec:
-  connection: company-sentry
+  sentry: company-sentry
   project:
     use: shared-platform

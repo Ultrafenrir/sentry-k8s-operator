@@ -58,6 +58,7 @@ var localKeyPattern = regexp.MustCompile(`^[a-z](?:[a-z0-9-]*[a-z0-9])?$`)
 // Desired is deliberately adapter-neutral. It is internal until the same lifecycle is
 // accepted against every advertised Sentry target.
 type Desired struct {
+	Owner         binding.ChildOwner
 	Trigger       Trigger
 	WindowMinutes int
 	Threshold     int64
@@ -107,6 +108,7 @@ type Input struct {
 	Capabilities       []Capability
 	Marker             binding.Marker
 	Authorize          Authorization
+	AllowedOwnerUIDs   map[string]bool
 }
 
 type Status struct {
@@ -165,6 +167,10 @@ func (e *Engine) Reconcile(ctx context.Context, input Input) (result Result) {
 	// every referencing managed alert has been removed.
 	for _, key := range removedKeys(input.Current, input.Desired) {
 		current := input.Current[key]
+		if input.AllowedOwnerUIDs != nil && !input.AllowedOwnerUIDs[current.Owner.UID] {
+			result.Statuses[key] = Status{State: StateError, Reason: "AlertOwnershipConflict", Err: ErrOwnershipLost}
+			continue
+		}
 		if err := e.deleteOne(ctx, input, key, current); err != nil {
 			result.Statuses[key] = Status{State: StateError, Reason: reasonFor(err), Err: err}
 			continue
@@ -181,7 +187,7 @@ func (e *Engine) Reconcile(ctx context.Context, input Input) (result Result) {
 	validKeys := make([]string, 0, len(desiredKeys))
 	for _, key := range desiredKeys {
 		desired := normalize(input.Desired[key])
-		if err := validateDesired(key, desired, input.Destinations); err != nil {
+		if err := validateDesired(key, desired, input.Destinations, input.AllowedOwnerUIDs != nil); err != nil {
 			result.Statuses[key] = Status{State: StateError, Reason: "InvalidAlert", Err: err}
 			continue
 		}
@@ -248,7 +254,7 @@ func (e *Engine) ensureOne(ctx context.Context, input Input, capability Capabili
 }
 
 func (e *Engine) updateOne(ctx context.Context, input Input, capability Capability, key string, current binding.AlertBinding, desired Desired, hash string) (binding.AlertBinding, error) {
-	if current.Adapter != capability.Name || current.ExternalIdentity == "" || !current.Marker.Matches(input.Marker) {
+	if current.Owner != desired.Owner || current.Adapter != capability.Name || current.ExternalIdentity == "" || !current.Marker.Matches(input.Marker) {
 		return binding.AlertBinding{}, ErrOwnershipLost
 	}
 	observed, found, err := e.Adapter.Observe(ctx, current.Adapter, input.Organization, input.ProjectSlug, current.ExternalIdentity)
@@ -390,8 +396,8 @@ func selectCapability(input Input, keys []string) (Capability, error) {
 	return Capability{}, ErrAdapterUnavailable
 }
 
-func validateDesired(key string, desired Desired, destinations map[string]binding.DestinationBinding) error {
-	if len(key) > 63 || !localKeyPattern.MatchString(key) || len(desired.Notify) == 0 || len(desired.Notify) > 20 {
+func validateDesired(key string, desired Desired, destinations map[string]binding.DestinationBinding, requireOwner bool) error {
+	if len(key) > 63 || !localKeyPattern.MatchString(key) || (requireOwner && !desired.Owner.Valid()) || len(desired.Notify) == 0 || len(desired.Notify) > 20 {
 		return ErrInvalidInput
 	}
 	switch desired.Trigger {
@@ -459,6 +465,7 @@ func verifyObserved(observed Observed, adapter string, marker binding.Marker, ha
 
 func newBinding(observed Observed, desired Desired) binding.AlertBinding {
 	return binding.AlertBinding{
+		Owner:   desired.Owner,
 		Adapter: observed.Adapter, ExternalIdentity: observed.Identity, Trigger: string(desired.Trigger),
 		DesiredHash: observed.DesiredHash, Enabled: observed.Enabled,
 		Destinations: append([]string(nil), desired.Notify...), Marker: observed.Marker,

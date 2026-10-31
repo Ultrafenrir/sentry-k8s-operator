@@ -148,6 +148,25 @@ func validateSentryConnection(obj *sentryconfigurationv1alpha1.SentryConnection)
 			}
 		}
 	}
+	if obj.Spec.Ownership != nil {
+		ownershipPath := specPath.Child("ownership")
+		if len(validation.IsDNS1123Label(obj.Spec.Ownership.Region)) != 0 {
+			allErrs = append(allErrs, field.Invalid(ownershipPath.Child("region"), obj.Spec.Ownership.Region, "must be a lowercase DNS label"))
+		}
+		if obj.Spec.Ownership.Role != sentryconfigurationv1alpha1.ConnectionRoleActive && obj.Spec.Ownership.Role != sentryconfigurationv1alpha1.ConnectionRoleStandby {
+			allErrs = append(allErrs, field.NotSupported(ownershipPath.Child("role"), obj.Spec.Ownership.Role, []string{"Active", "Standby"}))
+		}
+		if obj.Spec.Ownership.Revision < 1 {
+			allErrs = append(allErrs, field.Invalid(ownershipPath.Child("revision"), obj.Spec.Ownership.Revision, "must be positive"))
+		}
+		if obj.Spec.ProjectManagement.UnmanagedProjects == sentryconfigurationv1alpha1.UnmanagedProjectsAdopt && obj.Spec.Ownership.Role != sentryconfigurationv1alpha1.ConnectionRoleActive {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("projectManagement", "unmanagedProjects"), "Adopt requires ownership.role Active"))
+		}
+	}
+	if obj.Spec.ProjectManagement.UnmanagedProjects != "" && obj.Spec.ProjectManagement.UnmanagedProjects != sentryconfigurationv1alpha1.UnmanagedProjectsReject && obj.Spec.ProjectManagement.UnmanagedProjects != sentryconfigurationv1alpha1.UnmanagedProjectsStandby && obj.Spec.ProjectManagement.UnmanagedProjects != sentryconfigurationv1alpha1.UnmanagedProjectsAdopt {
+		allErrs = append(allErrs, field.NotSupported(specPath.Child("projectManagement", "unmanagedProjects"), obj.Spec.ProjectManagement.UnmanagedProjects, []string{"Reject", "Standby", "Adopt"}))
+	}
+	allErrs = append(allErrs, validateIntegrationCatalog(obj.Spec.Integrations, specPath.Child("integrations"))...)
 
 	if obj.Spec.Integrations != nil && obj.Spec.Integrations.Telegram != nil {
 		telegramPath := specPath.Child("integrations", "telegram")
@@ -165,6 +184,37 @@ func validateSentryConnection(obj *sentryconfigurationv1alpha1.SentryConnection)
 		obj.Name,
 		allErrs,
 	)
+}
+
+func validateIntegrationCatalog(integrations *sentryconfigurationv1alpha1.ConnectionIntegrations, path *field.Path) field.ErrorList {
+	if integrations == nil {
+		return nil
+	}
+	allErrs := field.ErrorList{}
+	validate := func(entries []sentryconfigurationv1alpha1.IntegrationCatalogEntry, entriesPath *field.Path) {
+		seenNames := map[string]bool{}
+		seenRemote := map[string]bool{}
+		for index, entry := range entries {
+			entryPath := entriesPath.Index(index)
+			if len(validation.IsDNS1123Label(entry.Name)) != 0 {
+				allErrs = append(allErrs, field.Invalid(entryPath.Child("name"), entry.Name, "must be a lowercase DNS label"))
+			}
+			if seenNames[entry.Name] {
+				allErrs = append(allErrs, field.Duplicate(entryPath.Child("name"), entry.Name))
+			}
+			if seenRemote[entry.SentryName] {
+				allErrs = append(allErrs, field.Duplicate(entryPath.Child("sentryName"), entry.SentryName))
+			}
+			seenNames[entry.Name], seenRemote[entry.SentryName] = true, true
+		}
+	}
+	if integrations.Slack != nil {
+		validate(integrations.Slack.Workspaces, path.Child("slack", "workspaces"))
+	}
+	if integrations.PagerDuty != nil {
+		validate(integrations.PagerDuty.Accounts, path.Child("pagerDuty", "accounts"))
+	}
+	return allErrs
 }
 
 func validateSecretKeyReference(ref sentryconfigurationv1alpha1.SecretKeyReference, path *field.Path) field.ErrorList {

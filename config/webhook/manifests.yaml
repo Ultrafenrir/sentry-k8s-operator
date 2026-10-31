@@ -56,6 +56,27 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-sentryconfiguration-io-v1alpha1-sentryalertpolicy
+  failurePolicy: Fail
+  name: vsentryalertpolicy-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - sentryconfiguration.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - sentryalertpolicies
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate-sentryconfiguration-io-v1alpha1-sentryconnection
   failurePolicy: Fail
   name: vsentryconnection-v1alpha1.kb.io

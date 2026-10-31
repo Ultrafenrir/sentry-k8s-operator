@@ -153,14 +153,14 @@ var _ = Describe("Live Sentry project recovery", Label("live-sentry"), func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		versionSlug := strings.ReplaceAll(version, ".", "-")
-		slug := "sko-controller-settings-" + versionSlug
+		slug := "live-settings-" + versionSlug
 		proxy := newLostCreateResponseProxy(upstream, slug)
 		proxy.dropped.Store(true)
 		defer proxy.Close()
 		defer deleteLiveProject(upstream, token, organization, slug)
 
 		connectionName := "live-settings-" + versionSlug
-		resourceName := "live-settings-" + versionSlug
+		resourceName := slug
 		key := types.NamespacedName{Name: resourceName, Namespace: "default"}
 		connection := &sentryv1alpha1.SentryConnection{
 			ObjectMeta: metav1.ObjectMeta{Name: connectionName},
@@ -191,9 +191,9 @@ var _ = Describe("Live Sentry project recovery", Label("live-sentry"), func() {
 		resource := &sentryv1alpha1.SentryProject{
 			ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
 			Spec: sentryv1alpha1.SentryProjectSpec{
-				Connection: connectionName,
+				Sentry: connectionName,
 				Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{
-					Team: team, Slug: slug, DisplayName: "Settings",
+					Team: team,
 				}},
 				Settings: &sentryv1alpha1.ProjectSettings{
 					Filters: &sentryv1alpha1.FilterSettings{
@@ -421,7 +421,7 @@ func liveManagedProjectInput(baseURL, organization, team, slug, version string) 
 			},
 			Spec: sentryv1alpha1.SentryProjectSpec{
 				Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{
-					Team: team, Slug: slug, DisplayName: "Recovery",
+					Team: team,
 				}},
 				Lifecycle: sentryv1alpha1.LifecycleSpec{OnDelete: sentryv1alpha1.OnDeleteDeleteProject},
 			},

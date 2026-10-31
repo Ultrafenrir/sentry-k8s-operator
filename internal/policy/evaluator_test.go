@@ -28,10 +28,8 @@ func TestEvaluateManagedCreateAndDestinationGrants(t *testing.T) {
 	connection := testConnection()
 	project := sentryv1alpha1.SentryProjectSpec{
 		Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
-		Destinations: map[string]sentryv1alpha1.DestinationSpec{
-			"chat": {Slack: &sentryv1alpha1.SlackDestination{Channel: "#payments-alerts"}},
-			"page": {PagerDuty: &sentryv1alpha1.PagerDutyDestination{Service: "Payments Primary"}},
-			"bot":  {Telegram: &sentryv1alpha1.TelegramDestination{Target: "payments-oncall"}},
+		NotificationTargets: &sentryv1alpha1.NotificationTargets{
+			Slack: map[string][]string{"company": {"payments-alerts"}}, PagerDuty: map[string][]string{"primary": {"Payments Primary"}}, Telegram: []string{"payments-oncall"},
 		},
 	}
 	decision, err := Evaluate("checkout-prod", project, connection)
@@ -43,15 +41,37 @@ func TestEvaluateManagedCreateAndDestinationGrants(t *testing.T) {
 	}
 }
 
+func TestEvaluateNotificationTargetCatalogDoesNotMaintainChannelAllowlists(t *testing.T) {
+	t.Parallel()
+	connection := testConnection()
+	connection.Integrations = &sentryv1alpha1.ConnectionIntegrations{
+		Slack:     &sentryv1alpha1.SlackIntegration{Workspaces: []sentryv1alpha1.IntegrationCatalogEntry{{Name: "company", SentryName: "Company Slack"}}},
+		PagerDuty: &sentryv1alpha1.PagerDutyIntegration{Accounts: []sentryv1alpha1.IntegrationCatalogEntry{{Name: "primary", SentryName: "Company PagerDuty"}}},
+	}
+	connection.Access[0].NotificationTargets = &sentryv1alpha1.NotificationTargetAccess{
+		SlackWorkspaces:   []string{"company"},
+		PagerDutyAccounts: []string{"primary"},
+	}
+	project := sentryv1alpha1.SentryProjectSpec{
+		Project:             sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
+		NotificationTargets: &sentryv1alpha1.NotificationTargets{Slack: map[string][]string{"company": {"any-visible-channel"}}, PagerDuty: map[string][]string{"primary": {"Any Visible Service"}}},
+	}
+	if _, err := Evaluate("checkout-prod", project, connection); err != nil {
+		t.Fatalf("catalog target authorization: %v", err)
+	}
+	project.NotificationTargets.Slack = map[string][]string{"undeclared": {"any"}}
+	if _, err := Evaluate("checkout-prod", project, connection); !IsKind(err, ErrorDestinationAccessDenied) {
+		t.Fatalf("undeclared workspace error=%v", err)
+	}
+}
+
 func TestEvaluateDeniesBeforeDestinationResolution(t *testing.T) {
 	t.Parallel()
 
 	connection := testConnection()
 	project := sentryv1alpha1.SentryProjectSpec{
-		Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
-		Destinations: map[string]sentryv1alpha1.DestinationSpec{
-			"chat": {Slack: &sentryv1alpha1.SlackDestination{Workspace: "Other Slack", Channel: "payments-alerts"}},
-		},
+		Project:             sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
+		NotificationTargets: &sentryv1alpha1.NotificationTargets{Slack: map[string][]string{"other": {"payments-alerts"}}},
 	}
 	if _, err := Evaluate("checkout-prod", project, connection); !IsKind(err, ErrorDestinationAccessDenied) {
 		t.Fatalf("error = %v, want destination denied", err)
@@ -63,35 +83,28 @@ func TestEvaluateProjectKeepsBaseAccessIndependentFromDestinationGrant(t *testin
 
 	connection := testConnection()
 	project := sentryv1alpha1.SentryProjectSpec{
-		Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
-		Destinations: map[string]sentryv1alpha1.DestinationSpec{
-			"denied": {Slack: &sentryv1alpha1.SlackDestination{Workspace: "Other Slack", Channel: "payments-alerts"}},
-		},
+		Project:             sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
+		NotificationTargets: &sentryv1alpha1.NotificationTargets{Slack: map[string][]string{"other": {"payments-alerts"}}},
 	}
 	decision, err := EvaluateProject("checkout-prod", project, connection)
 	if err != nil || decision.AccessMode != "Manage" || decision.Owner != "payments" {
 		t.Fatalf("base decision=%#v err=%v", decision, err)
 	}
-	if _, err := EvaluateDestination("checkout-prod", project, connection, project.Destinations["denied"]); !IsKind(err, ErrorDestinationAccessDenied) {
+	if _, err := EvaluateDestination("checkout-prod", project, connection, sentryv1alpha1.DestinationSpec{Slack: &sentryv1alpha1.SlackDestination{Workspace: "other", Channel: "payments-alerts"}}); !IsKind(err, ErrorDestinationAccessDenied) {
 		t.Fatalf("destination error=%v", err)
 	}
 }
 
-func TestEvaluateDefensivelyRejectsMultipleDestinationTypes(t *testing.T) {
+func TestEvaluateRejectsAmbiguousReadableTargetNames(t *testing.T) {
 	t.Parallel()
 
 	connection := testConnection()
 	project := sentryv1alpha1.SentryProjectSpec{
-		Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
-		Destinations: map[string]sentryv1alpha1.DestinationSpec{
-			"invalid": {
-				Slack:    &sentryv1alpha1.SlackDestination{Channel: "payments-alerts"},
-				Telegram: &sentryv1alpha1.TelegramDestination{Target: "payments-oncall"},
-			},
-		},
+		Project:             sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
+		NotificationTargets: &sentryv1alpha1.NotificationTargets{Slack: map[string][]string{"company": {"incidents"}, "other": {"incidents"}}},
 	}
 	if _, err := Evaluate("checkout-prod", project, connection); !IsKind(err, ErrorDestinationAccessDenied) {
-		t.Fatalf("multiple destination types error = %v", err)
+		t.Fatalf("ambiguous target error = %v", err)
 	}
 }
 
@@ -162,15 +175,11 @@ func testConnection() sentryv1alpha1.SentryConnectionSpec {
 				Observe:    []string{"checkout-api", "shared-platform"},
 				ConsumeDSN: []string{"checkout-api"},
 			},
-			Destinations: &sentryv1alpha1.DestinationAccess{
-				Slack:     []sentryv1alpha1.SlackDestinationGrant{{Workspace: "Company Slack", Channels: []string{"payments-alerts"}}},
-				PagerDuty: []sentryv1alpha1.PagerDutyDestinationGrant{{Account: "Company PagerDuty", Services: []string{"Payments Primary"}}},
-				Telegram:  &sentryv1alpha1.TelegramDestinationGrant{Targets: []string{"payments-oncall"}},
-			},
+			NotificationTargets: &sentryv1alpha1.NotificationTargetAccess{SlackWorkspaces: []string{"company"}, PagerDutyAccounts: []string{"primary"}, TelegramTargets: []string{"payments-oncall"}},
 		}},
 		Integrations: &sentryv1alpha1.ConnectionIntegrations{
-			Slack:     &sentryv1alpha1.SlackIntegration{DefaultWorkspace: "Company Slack"},
-			PagerDuty: &sentryv1alpha1.PagerDutyIntegration{DefaultAccount: "Company PagerDuty"},
+			Slack:     &sentryv1alpha1.SlackIntegration{Workspaces: []sentryv1alpha1.IntegrationCatalogEntry{{Name: "company", SentryName: "Company Slack"}}},
+			PagerDuty: &sentryv1alpha1.PagerDutyIntegration{Accounts: []sentryv1alpha1.IntegrationCatalogEntry{{Name: "primary", SentryName: "Company PagerDuty"}}},
 		},
 	}
 }

@@ -56,71 +56,6 @@ spec:
                   properties:
                     allowCreate:
                       type: boolean
-                    destinations:
-                      description: DestinationAccess contains all platform-approved
-                        destination names.
-                      properties:
-                        pagerDuty:
-                          items:
-                            description: PagerDutyDestinationGrant scopes allowed
-                              PagerDuty services by optional account name.
-                            properties:
-                              account:
-                                maxLength: 100
-                                type: string
-                              services:
-                                items:
-                                  maxLength: 100
-                                  minLength: 1
-                                  type: string
-                                maxItems: 100
-                                minItems: 1
-                                type: array
-                                x-kubernetes-list-type: set
-                            required:
-                            - services
-                            type: object
-                          maxItems: 20
-                          type: array
-                        slack:
-                          items:
-                            description: SlackDestinationGrant scopes allowed Slack
-                              channels by optional workspace name.
-                            properties:
-                              channels:
-                                items:
-                                  maxLength: 100
-                                  minLength: 1
-                                  type: string
-                                maxItems: 100
-                                minItems: 1
-                                type: array
-                                x-kubernetes-list-type: set
-                              workspace:
-                                maxLength: 100
-                                type: string
-                            required:
-                            - channels
-                            type: object
-                          maxItems: 20
-                          type: array
-                        telegram:
-                          description: TelegramDestinationGrant scopes allowed logical
-                            Telegram targets.
-                          properties:
-                            targets:
-                              items:
-                                maxLength: 100
-                                minLength: 1
-                                type: string
-                              maxItems: 100
-                              minItems: 1
-                              type: array
-                              x-kubernetes-list-type: set
-                          required:
-                          - targets
-                          type: object
-                      type: object
                     existingProjects:
                       description: ExistingProjectAccess grants read-only visibility
                         and optional DSN consumption by slug.
@@ -157,6 +92,29 @@ spec:
                           x-kubernetes-list-type: set
                       required:
                       - matchNames
+                      type: object
+                    notificationTargets:
+                      description: NotificationTargets grants integration aliases,
+                        never channel or service allowlists.
+                      properties:
+                        pagerDutyAccounts:
+                          items:
+                            type: string
+                          maxItems: 100
+                          type: array
+                          x-kubernetes-list-type: set
+                        slackWorkspaces:
+                          items:
+                            type: string
+                          maxItems: 100
+                          type: array
+                          x-kubernetes-list-type: set
+                        telegramTargets:
+                          items:
+                            type: string
+                          maxItems: 100
+                          type: array
+                          x-kubernetes-list-type: set
                       type: object
                     owner:
                       maxLength: 63
@@ -234,34 +192,67 @@ spec:
                 required:
                 - tokenSecretRef
                 type: object
-              default:
-                default: false
-                type: boolean
               integrations:
                 description: ConnectionIntegrations contains optional platform integration
                   defaults.
                 properties:
                   pagerDuty:
-                    description: PagerDutyIntegration selects the default account
-                      by readable name.
+                    description: PagerDutyIntegration declares readable aliases for
+                      already-installed accounts.
                     properties:
-                      defaultAccount:
-                        maxLength: 100
-                        minLength: 1
-                        type: string
-                    required:
-                    - defaultAccount
+                      accounts:
+                        items:
+                          description: |-
+                            IntegrationCatalogEntry maps one stable local alias to one already-installed Sentry
+                            integration name. Declaring an entry never installs an integration.
+                          properties:
+                            name:
+                              maxLength: 63
+                              minLength: 1
+                              pattern: ^[a-z](?:[a-z0-9-]*[a-z0-9])?$
+                              type: string
+                            sentryName:
+                              maxLength: 100
+                              minLength: 1
+                              type: string
+                          required:
+                          - name
+                          - sentryName
+                          type: object
+                        maxItems: 100
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
                     type: object
                   slack:
-                    description: SlackIntegration selects the default workspace by
-                      readable name.
+                    description: SlackIntegration declares readable aliases for already-installed
+                      workspaces.
                     properties:
-                      defaultWorkspace:
-                        maxLength: 100
-                        minLength: 1
-                        type: string
-                    required:
-                    - defaultWorkspace
+                      workspaces:
+                        items:
+                          description: |-
+                            IntegrationCatalogEntry maps one stable local alias to one already-installed Sentry
+                            integration name. Declaring an entry never installs an integration.
+                          properties:
+                            name:
+                              maxLength: 63
+                              minLength: 1
+                              pattern: ^[a-z](?:[a-z0-9-]*[a-z0-9])?$
+                              type: string
+                            sentryName:
+                              maxLength: 100
+                              minLength: 1
+                              type: string
+                          required:
+                          - name
+                          - sentryName
+                          type: object
+                        maxItems: 100
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
                     type: object
                   telegram:
                     description: TelegramIntegration configures the platform-owned
@@ -316,6 +307,45 @@ spec:
                 maxLength: 64
                 minLength: 1
                 type: string
+              ownership:
+                description: Ownership declares the regional mutation role when regional
+                  fencing is enabled.
+                properties:
+                  region:
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z](?:[a-z0-9-]*[a-z0-9])?$
+                    type: string
+                  revision:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  role:
+                    description: ConnectionRole is the platform-controlled regional
+                      mutation role.
+                    enum:
+                    - Active
+                    - Standby
+                    type: string
+                required:
+                - region
+                - revision
+                - role
+                type: object
+              projectManagement:
+                default:
+                  unmanagedProjects: Reject
+                properties:
+                  unmanagedProjects:
+                    default: Reject
+                    description: UnmanagedProjectPolicy controls existing projects
+                      with no recognized ownership marker.
+                    enum:
+                    - Reject
+                    - Standby
+                    - Adopt
+                    type: string
+                type: object
               transport:
                 description: |-
                   ConnectionTransport contains explicit development-only transport exceptions. Both
@@ -426,11 +456,24 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              effectiveRole:
+                enum:
+                - Active
+                - Standby
+                - Fenced
+                - Conflict
+                type: string
               observedGeneration:
+                format: int64
+                type: integer
+              observedRevision:
                 format: int64
                 type: integer
               organization:
                 maxLength: 64
+                type: string
+              region:
+                maxLength: 63
                 type: string
               registrationCommit:
                 description: RegistrationCommit is a non-secret, short-lived policy

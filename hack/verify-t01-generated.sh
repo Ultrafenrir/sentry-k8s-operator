@@ -29,7 +29,10 @@ jq -e '
     .resources == ["sentryprojects"] and
     (.verbs | sort) == ["get", "list", "patch", "watch"]) and
   any(.rules[];
-    (.resources | sort) == ["sentryconnections/status", "sentryprojects/status"] and
+    .resources == ["sentryalertpolicies"] and
+    (.verbs | sort) == ["get", "list", "patch", "update", "watch"]) and
+  any(.rules[];
+    (.resources | sort) == ["sentryalertpolicies/status", "sentryconnections/status", "sentryprojects/status"] and
     (.verbs | sort) == ["get", "patch", "update"]) and
   all(.rules[];
     all(.resources[]; endswith("/finalizers") | not)) and

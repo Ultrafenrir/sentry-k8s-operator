@@ -123,6 +123,11 @@ Useful overrides are `SENTRY_PORT`, `SENTRY_WAIT_TIMEOUT`, and
 to `feature-complete`. `SENTRY_PROFILE=errors-only` is an explicit lower-resource smoke
 profile and must not be used as evidence for the complete alert/workflow surface.
 
+If Docker registry pulls are temporarily unavailable but every image in the rendered
+Compose model is already present locally, `SENTRY_SKIP_PULL=true` bypasses only the upstream
+image-update step. The wrapper verifies the complete rendered image set before invoking the
+installer and fails closed when any image is missing. The default remains `false`.
+
 The current installer requires Bash 4.4 or newer. The wrapper automatically prefers
 Homebrew Bash at `/opt/homebrew/bin/bash` or `/usr/local/bin/bash`, then checks the Bash on
 `PATH`. CI can select another absolute executable with `SENTRY_BASH_BIN`; macOS's system
@@ -158,13 +163,17 @@ attempt was stopped and all version-scoped volumes were removed instead of waiti
 
 The subsequent clean 26.10.1 `errors-only` run became fully healthy. It created the managed
 local acceptance user and token, authenticated against the API, and passed real
-project/default-rule/key/settings CRUD plus legacy issue/metric alert and attached modern
-metric detector/workflow create/read/update/toggle/delete acceptance. The live controller
+project/default-rule/key/settings CRUD plus attached modern metric detector/workflow
+create/read/update/toggle/delete acceptance. The live controller
 also passed lost-response recovery and settings-drift repair. The token, runtime, and every
 managed volume were removed afterwards. `errors-only` is sufficient evidence for these
 configuration APIs, but it must not be represented as feature-complete ingestion or delivery
 acceptance. Detector families beyond the verified metric detector, external actions,
 integrations, delivery, and SaaS remain unverified.
+
+Legacy issue and metric alert routes are evidenced only by the 24.7.1 run above. A live
+26.10.1 stack returns `404` for the legacy `/rules/` and `/alert-rules/` collection routes;
+pinning `legacy-24.7.1` compatibility against that server must remain visibly not ready.
 
 For a full ingestion run, stop other Docker workloads or allocate enough headroom that Relay
 remains below its memory health threshold. For 26.10.1 feature-complete, the 14 GB preflight

@@ -50,7 +50,7 @@ func TestProjectControllerRecoversPendingRegistrationWithoutSentryClient(t *test
 	reference := binding.ProjectReference{Namespace: "payments", Name: "checkout", UID: "project-uid", Generation: 3}
 	challenge := binding.TelegramChallenge{
 		CodeHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		Project:  reference, Destination: "telegram", SelectorHash: "selector", Owner: "payments", Connection: "company",
+		Project:  reference, Destination: "telegram/payments-alerts", SelectorHash: "selector", Owner: "payments", Connection: "company",
 		PolicyGeneration: 7, PolicyResourceVersion: "12", ExpiresAt: time.Now().Add(10 * time.Minute),
 	}
 	_, err := store.CreateBinding(context.Background(), binding.ProjectBinding{
@@ -58,8 +58,9 @@ func TestProjectControllerRecoversPendingRegistrationWithoutSentryClient(t *test
 		Organization: "company", Slug: "checkout", Owner: "payments", Origin: binding.OriginManaged, AccessMode: binding.AccessManage,
 		ExternalIdentity: "project-id", Marker: &binding.Marker{Origin: "managed", Owner: "payments", ManagedBy: "operator"},
 		ManagerUID: reference.UID, ClaimName: "claim",
-		Destinations: map[string]binding.DestinationBinding{"telegram": {
-			Kind: "telegram", SelectorHash: "selector", State: "RegistrationRequired",
+		Destinations: map[string]binding.DestinationBinding{"telegram/payments-alerts": {
+			Owner: binding.ChildOwner{Kind: binding.ChildOwnerProject, Name: reference.Name, UID: reference.UID, Generation: reference.Generation},
+			Kind:  "telegram", SelectorHash: "selector", State: "RegistrationRequired",
 			Telegram: &binding.TelegramBinding{
 				Challenge: &challenge, Target: &binding.TelegramTarget{ChatIdentity: "-100123"},
 				Phase: registration.PhasePendingPublish, OutboxKey: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
@@ -88,9 +89,9 @@ func TestProjectControllerRecoversPendingRegistrationWithoutSentryClient(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	telegram := record.Binding.Destinations["telegram"].Telegram
-	if record.Binding.Destinations["telegram"].State != "Active" || telegram == nil || telegram.Challenge != nil || telegram.Phase != "" || publisher.calls != 2 {
-		t.Fatalf("binding=%#v calls=%d", record.Binding.Destinations["telegram"], publisher.calls)
+	telegram := record.Binding.Destinations["telegram/payments-alerts"].Telegram
+	if record.Binding.Destinations["telegram/payments-alerts"].State != "Active" || telegram == nil || telegram.Challenge != nil || telegram.Phase != "" || publisher.calls != 2 {
+		t.Fatalf("binding=%#v calls=%d", record.Binding.Destinations["telegram/payments-alerts"], publisher.calls)
 	}
 	attempted, err = reconciler.resumePendingRegistration(context.Background(), resource)
 	if attempted || err != nil {

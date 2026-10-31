@@ -49,7 +49,7 @@ test "$(rg -c 'image: registry.example/operator:verify' "$tmp_dir/render-registr
   --set image.repository=registry.example/sentry-operator \
   --set image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >"$tmp_dir/production.yaml"
 
-test "$(rg -c '^kind: CustomResourceDefinition$' "$tmp_dir/default.yaml")" = 2
+test "$(rg -c '^kind: CustomResourceDefinition$' "$tmp_dir/default.yaml")" = 3
 test "$(rg -c 'helm.sh/resource-policy: keep' "$tmp_dir/default.yaml")" = 5
 ! rg -q 'controller:latest' "$tmp_dir/default.yaml"
 ! rg -q 'app.kubernetes.io/managed-by: kustomize' "$tmp_dir/default.yaml"

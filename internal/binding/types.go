@@ -19,7 +19,7 @@ package binding
 
 import "time"
 
-const CurrentVersion = "v1"
+const CurrentVersion = "v2"
 
 // Origin is the evidence-derived origin of an external object.
 type Origin string
@@ -72,6 +72,7 @@ type DSNBinding struct {
 // Numeric Telegram identities are stored by the registration subsystem, never here as
 // public status. SelectorHash prevents silent same-name rebinding.
 type DestinationBinding struct {
+	Owner               ChildOwner       `json:"owner"`
 	Kind                string           `json:"kind"`
 	SelectorHash        string           `json:"selectorHash"`
 	IntegrationIdentity string           `json:"integrationIdentity,omitempty"`
@@ -86,13 +87,32 @@ type DestinationBinding struct {
 // AlertBinding pins one operator-owned external alert child. The public API never exposes
 // ExternalIdentity or adapter-native state; both remain in the protected project binding.
 type AlertBinding struct {
-	Adapter          string   `json:"adapter"`
-	ExternalIdentity string   `json:"externalIdentity"`
-	Trigger          string   `json:"trigger"`
-	DesiredHash      string   `json:"desiredHash"`
-	Enabled          bool     `json:"enabled"`
-	Destinations     []string `json:"destinations"`
-	Marker           Marker   `json:"marker"`
+	Owner            ChildOwner `json:"owner"`
+	Adapter          string     `json:"adapter"`
+	ExternalIdentity string     `json:"externalIdentity"`
+	Trigger          string     `json:"trigger"`
+	DesiredHash      string     `json:"desiredHash"`
+	Enabled          bool       `json:"enabled"`
+	Destinations     []string   `json:"destinations"`
+	Marker           Marker     `json:"marker"`
+}
+
+const (
+	ChildOwnerProject = "Project"
+	ChildOwnerPolicy  = "Policy"
+)
+
+// ChildOwner is protected ownership of one alert or notification target. UID prevents a
+// recreated policy with the same name from inheriting external objects.
+type ChildOwner struct {
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	UID        string `json:"uid"`
+	Generation int64  `json:"generation"`
+}
+
+func (o ChildOwner) Valid() bool {
+	return (o.Kind == ChildOwnerProject || o.Kind == ChildOwnerPolicy) && o.Name != "" && o.UID != "" && o.Generation > 0
 }
 
 // TelegramBinding is protected registration/outbox state. Numeric identities and
@@ -147,6 +167,13 @@ type ProjectBinding struct {
 	DSN              *DSNBinding                   `json:"dsn,omitempty"`
 	Destinations     map[string]DestinationBinding `json:"destinations,omitempty"`
 	Alerts           map[string]AlertBinding       `json:"alerts,omitempty"`
+	AlertPolicy      *AppliedAlertPolicy           `json:"alertPolicy,omitempty"`
+}
+
+type AppliedAlertPolicy struct {
+	Name       string `json:"name"`
+	UID        string `json:"uid"`
+	Generation int64  `json:"generation"`
 }
 
 // HandoffAuthorization is bound to one exact target UID, generation and slug.

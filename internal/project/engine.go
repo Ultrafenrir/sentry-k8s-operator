@@ -91,7 +91,6 @@ type CreateRequest struct {
 	Organization string
 	Slug         string
 	Team         string
-	DisplayName  string
 	Platform     string
 	DefaultRules bool
 	Marker       binding.Marker
@@ -190,11 +189,7 @@ func (e *Engine) Delete(ctx context.Context, input Input) (DeletionResult, error
 	if err != nil {
 		return DeletionResult{}, &Error{Reason: ReasonOwnershipLost, cause: err}
 	}
-	create := input.Project.Spec.Project.Create
-	slug := create.Slug
-	if slug == "" {
-		slug = input.Project.Name
-	}
+	slug := input.Project.Name
 	marker := binding.Marker{Origin: "managed", Owner: decision.Owner, ManagedBy: e.ManagedBy}
 	if !matchesManagedContext(state.Binding, input, installation, slug, decision.Owner, marker) || state.Binding.ExternalIdentity == "" {
 		return DeletionResult{}, &Error{Reason: ReasonOwnershipLost}
@@ -297,10 +292,7 @@ func (e *Engine) completeDeletion(ctx context.Context, state binding.BindingReco
 func (e *Engine) reconcileManaged(ctx context.Context, input Input, installation string, decision policy.Decision) (Result, error) {
 	project := input.Project
 	create := project.Spec.Project.Create
-	slug := create.Slug
-	if slug == "" {
-		slug = project.Name
-	}
+	slug := project.Name
 	reference := projectReference(project)
 	marker := binding.Marker{Origin: "managed", Owner: decision.Owner, ManagedBy: e.ManagedBy}
 	claim := binding.ManagerClaim{
@@ -338,7 +330,7 @@ func (e *Engine) reconcileManaged(ctx context.Context, input Input, installation
 		if !sentryapi.IsKind(preflightErr, sentryapi.ErrorNotFound) {
 			return Result{}, preflightErr
 		}
-		if err := validateManagedName(create, slug, marker); err != nil {
+		if err := validateManagedName(slug, marker); err != nil {
 			return Result{}, &Error{Reason: ReasonInvalidState, cause: err}
 		}
 
@@ -388,7 +380,7 @@ func (e *Engine) reconcileManaged(ctx context.Context, input Input, installation
 	// Validate the complete Sentry name before moving the durable create intent
 	// to Submitted. FormatManagedName is deterministic and performs no I/O, so a
 	// local validation error must never look like an uncertain external mutation.
-	if err := validateManagedName(create, slug, marker); err != nil {
+	if err := validateManagedName(slug, marker); err != nil {
 		return Result{}, &Error{Reason: ReasonInvalidState, cause: err}
 	}
 
@@ -410,7 +402,6 @@ func (e *Engine) reconcileManaged(ctx context.Context, input Input, installation
 		Organization: input.Connection.Organization,
 		Slug:         slug,
 		Team:         create.Team,
-		DisplayName:  create.DisplayName,
 		Platform:     create.Platform,
 		DefaultRules: false,
 		Marker:       marker,
@@ -433,12 +424,8 @@ func (e *Engine) reconcileManaged(ctx context.Context, input Input, installation
 	return e.bindVerifiedRemote(ctx, bindingRecord, claimRecord, remote, marker)
 }
 
-func validateManagedName(create *sentryv1alpha1.ProjectCreate, slug string, marker binding.Marker) error {
-	displayName := create.DisplayName
-	if displayName == "" {
-		displayName = slug
-	}
-	_, err := FormatManagedName(displayName, marker)
+func validateManagedName(slug string, marker binding.Marker) error {
+	_, err := FormatManagedNameFromSlug(slug, marker)
 	return err
 }
 

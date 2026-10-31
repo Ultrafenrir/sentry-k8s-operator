@@ -60,7 +60,7 @@ func TestChallengeIsHashedAndReplaySafe(t *testing.T) {
 		t.Fatal("raw one-time code was persisted")
 	}
 	verified := 0
-	err = service.Redeem(context.Background(), reference.UID, "telegram", code, binding.TelegramTarget{ChatIdentity: "private-chat", TopicIdentity: "private-topic"}, func(_ context.Context, challenge binding.TelegramChallenge) error {
+	err = service.Redeem(context.Background(), reference.UID, "telegram/payments-alerts", code, binding.TelegramTarget{ChatIdentity: "private-chat", TopicIdentity: "private-topic"}, func(_ context.Context, challenge binding.TelegramChallenge) error {
 		verified++
 		if challenge.Project != reference || challenge.PolicyGeneration != 7 || challenge.PolicyResourceVersion != "policy-rv" {
 			t.Fatalf("challenge=%#v", challenge)
@@ -86,11 +86,11 @@ func TestChallengeIsHashedAndReplaySafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	destination := record.Binding.Destinations["telegram"]
+	destination := record.Binding.Destinations["telegram/payments-alerts"]
 	if destination.State != "Active" || destination.Telegram == nil || destination.Telegram.Challenge != nil || destination.Telegram.Target.ChatIdentity != "private-chat" || destination.Telegram.RouteKey == "" || destination.Telegram.RouteRevoked {
 		t.Fatalf("destination=%#v", destination)
 	}
-	if err := service.Redeem(context.Background(), reference.UID, "telegram", code, binding.TelegramTarget{ChatIdentity: "other"}, func(context.Context, binding.TelegramChallenge) error { return nil }); !errors.Is(err, ErrChallengeInvalid) {
+	if err := service.Redeem(context.Background(), reference.UID, "telegram/payments-alerts", code, binding.TelegramTarget{ChatIdentity: "other"}, func(context.Context, binding.TelegramChallenge) error { return nil }); !errors.Is(err, ErrChallengeInvalid) {
 		t.Fatalf("replay err=%v", err)
 	}
 }
@@ -106,7 +106,7 @@ func TestPublishFailureLeavesResumableOutbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = service.Redeem(context.Background(), reference.UID, "telegram", code, binding.TelegramTarget{ChatIdentity: "private-chat"}, func(context.Context, binding.TelegramChallenge) error { return nil })
+	err = service.Redeem(context.Background(), reference.UID, "telegram/payments-alerts", code, binding.TelegramTarget{ChatIdentity: "private-chat"}, func(context.Context, binding.TelegramChallenge) error { return nil })
 	if !errors.Is(err, ErrPublishPending) {
 		t.Fatalf("redeem err=%v", err)
 	}
@@ -114,16 +114,16 @@ func TestPublishFailureLeavesResumableOutbox(t *testing.T) {
 		t.Fatalf("pending registration was overwritten: %v", err)
 	}
 	record, _ := store.GetBinding(context.Background(), reference.UID)
-	if record.Binding.Destinations["telegram"].Telegram.Phase != PhasePendingPublish {
-		t.Fatalf("pending state=%#v", record.Binding.Destinations["telegram"])
+	if record.Binding.Destinations["telegram/payments-alerts"].Telegram.Phase != PhasePendingPublish {
+		t.Fatalf("pending state=%#v", record.Binding.Destinations["telegram/payments-alerts"])
 	}
 	publisher.fail = false
-	if err := service.Resume(context.Background(), reference.UID, "telegram"); err != nil {
+	if err := service.Resume(context.Background(), reference.UID, "telegram/payments-alerts"); err != nil {
 		t.Fatal(err)
 	}
 	record, _ = store.GetBinding(context.Background(), reference.UID)
-	if record.Binding.Destinations["telegram"].State != "Active" {
-		t.Fatalf("resumed state=%#v", record.Binding.Destinations["telegram"])
+	if record.Binding.Destinations["telegram/payments-alerts"].State != "Active" {
+		t.Fatalf("resumed state=%#v", record.Binding.Destinations["telegram/payments-alerts"])
 	}
 }
 
@@ -143,7 +143,7 @@ func TestIndexedCodeRedemptionHidesProjectAndResumesSamePendingTarget(t *testing
 		t.Fatal(err)
 	}
 	index, err := service.Index.Get(context.Background(), hash(code))
-	if err != nil || index.ProjectUID != reference.UID || index.Destination != "telegram" {
+	if err != nil || index.ProjectUID != reference.UID || index.Destination != "telegram/payments-alerts" {
 		t.Fatalf("index=%#v err=%v", index, err)
 	}
 	target := binding.TelegramTarget{ChatIdentity: "-100123", TopicIdentity: "42"}
@@ -172,12 +172,12 @@ func TestLiveVerificationFailureDoesNotCommitTarget(t *testing.T) {
 	reference := registrationBinding(t, store)
 	service := &Service{Store: store, Publisher: &fakePublisher{}, Audit: &registrationAuditSink{}, Now: func() time.Time { return time.Date(2026, 10, 29, 20, 0, 0, 0, time.UTC) }, Random: deterministicRandom}
 	code, _ := service.Issue(context.Background(), issueInput(reference))
-	if err := service.Redeem(context.Background(), reference.UID, "telegram", code, binding.TelegramTarget{ChatIdentity: "private-chat"}, func(context.Context, binding.TelegramChallenge) error { return errors.New("generation changed") }); !errors.Is(err, ErrLiveVerification) {
+	if err := service.Redeem(context.Background(), reference.UID, "telegram/payments-alerts", code, binding.TelegramTarget{ChatIdentity: "private-chat"}, func(context.Context, binding.TelegramChallenge) error { return errors.New("generation changed") }); !errors.Is(err, ErrLiveVerification) {
 		t.Fatalf("redeem err=%v", err)
 	}
 	record, _ := store.GetBinding(context.Background(), reference.UID)
-	if record.Binding.Destinations["telegram"].Telegram.Target != nil || record.Binding.Destinations["telegram"].State != "RegistrationRequired" {
-		t.Fatalf("target committed after failed verification: %#v", record.Binding.Destinations["telegram"])
+	if record.Binding.Destinations["telegram/payments-alerts"].Telegram.Target != nil || record.Binding.Destinations["telegram/payments-alerts"].State != "RegistrationRequired" {
+		t.Fatalf("target committed after failed verification: %#v", record.Binding.Destinations["telegram/payments-alerts"])
 	}
 }
 
@@ -201,7 +201,7 @@ func TestConcurrentRedemptionCommitsOneTarget(t *testing.T) {
 	for _, target := range []string{"chat-one", "chat-two"} {
 		go func(target string) {
 			<-start
-			errs <- service.Redeem(context.Background(), reference.UID, "telegram", code, binding.TelegramTarget{ChatIdentity: target}, func(context.Context, binding.TelegramChallenge) error { return nil })
+			errs <- service.Redeem(context.Background(), reference.UID, "telegram/payments-alerts", code, binding.TelegramTarget{ChatIdentity: target}, func(context.Context, binding.TelegramChallenge) error { return nil })
 		}(target)
 	}
 	close(start)
@@ -218,7 +218,7 @@ func TestConcurrentRedemptionCommitsOneTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := record.Binding.Destinations["telegram"].Telegram.Target.ChatIdentity
+	target := record.Binding.Destinations["telegram/payments-alerts"].Telegram.Target.ChatIdentity
 	if target != "chat-one" && target != "chat-two" {
 		t.Fatalf("committed target=%q", target)
 	}
@@ -240,27 +240,27 @@ func TestAuditFailureAfterRoutePublishKeepsResumablePendingState(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := binding.TelegramTarget{ChatIdentity: "private-chat"}
-	if err := service.Redeem(context.Background(), reference.UID, "telegram", code, target, func(context.Context, binding.TelegramChallenge) error { return nil }); !errors.Is(err, ErrAuditUnavailable) {
+	if err := service.Redeem(context.Background(), reference.UID, "telegram/payments-alerts", code, target, func(context.Context, binding.TelegramChallenge) error { return nil }); !errors.Is(err, ErrAuditUnavailable) {
 		t.Fatalf("redeem error=%v", err)
 	}
 	record, err := store.GetBinding(context.Background(), reference.UID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	telegram := record.Binding.Destinations["telegram"].Telegram
-	if telegram.Phase != PhasePendingFenceRelease || record.Binding.Destinations["telegram"].State != "RegistrationRequired" || publisher.uniqueCount() != 1 {
-		t.Fatalf("pending binding=%#v unique routes=%d", record.Binding.Destinations["telegram"], publisher.uniqueCount())
+	telegram := record.Binding.Destinations["telegram/payments-alerts"].Telegram
+	if telegram.Phase != PhasePendingFenceRelease || record.Binding.Destinations["telegram/payments-alerts"].State != "RegistrationRequired" || publisher.uniqueCount() != 1 {
+		t.Fatalf("pending binding=%#v unique routes=%d", record.Binding.Destinations["telegram/payments-alerts"], publisher.uniqueCount())
 	}
 	auditSink.failAt = 0
-	if err := service.Resume(context.Background(), reference.UID, "telegram"); err != nil {
+	if err := service.Resume(context.Background(), reference.UID, "telegram/payments-alerts"); err != nil {
 		t.Fatal(err)
 	}
 	record, err = store.GetBinding(context.Background(), reference.UID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.Binding.Destinations["telegram"].State != "Active" || publisher.uniqueCount() != 1 {
-		t.Fatalf("recovered binding=%#v unique routes=%d", record.Binding.Destinations["telegram"], publisher.uniqueCount())
+	if record.Binding.Destinations["telegram/payments-alerts"].State != "Active" || publisher.uniqueCount() != 1 {
+		t.Fatalf("recovered binding=%#v unique routes=%d", record.Binding.Destinations["telegram/payments-alerts"], publisher.uniqueCount())
 	}
 }
 
@@ -279,7 +279,10 @@ func registrationBinding(t *testing.T, store *binding.Store) binding.ProjectRefe
 	marker := binding.Marker{Origin: "managed", Owner: "payments", ManagedBy: "company-op"}
 	_, err := store.CreateBinding(context.Background(), binding.ProjectBinding{
 		Version: binding.CurrentVersion, Project: reference, Connection: "company", Installation: "https://sentry.example", Organization: "company", Slug: "checkout", Owner: "payments", Origin: binding.OriginManaged, AccessMode: binding.AccessManage, ExternalIdentity: "project-id", Marker: &marker, ManagerUID: reference.UID, ClaimName: "claim",
-		Destinations: map[string]binding.DestinationBinding{"telegram": {Kind: "telegram", SelectorHash: "selector-hash", ResourceName: "payments-alerts", State: "RegistrationRequired"}},
+		Destinations: map[string]binding.DestinationBinding{"telegram/payments-alerts": {
+			Owner: binding.ChildOwner{Kind: binding.ChildOwnerProject, Name: reference.Name, UID: reference.UID, Generation: reference.Generation},
+			Kind:  "telegram", SelectorHash: "selector-hash", ResourceName: "payments-alerts", State: "RegistrationRequired",
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -288,7 +291,7 @@ func registrationBinding(t *testing.T, store *binding.Store) binding.ProjectRefe
 }
 
 func issueInput(reference binding.ProjectReference) IssueInput {
-	return IssueInput{Project: reference, Destination: "telegram", Owner: "payments", Connection: "company", PolicyGeneration: 7, PolicyResourceVersion: "policy-rv", TTL: 10 * time.Minute}
+	return IssueInput{Project: reference, Destination: "telegram/payments-alerts", Owner: "payments", Connection: "company", PolicyGeneration: 7, PolicyResourceVersion: "policy-rv", TTL: 10 * time.Minute}
 }
 
 func deterministicRandom(buffer []byte) (int, error) {

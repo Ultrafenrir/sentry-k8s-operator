@@ -12,9 +12,23 @@ spec:
     tokenSecretRef:
       name: company-sentry-api
       key: token
-  default: true
+  ownership:
+    region: eu-west-1
+    role: Active
+    revision: 1
+  projectManagement:
+    unmanagedProjects: Reject
   compatibility:
     alerts: legacy-24.7.1
+  integrations:
+    slack:
+      workspaces:
+        - name: company-slack
+          sentryName: Company Slack
+    pagerDuty:
+      accounts:
+        - name: company-pagerduty
+          sentryName: Company PagerDuty
   access:
     - owner: payments
       namespaces:
@@ -28,15 +42,10 @@ spec:
           - checkout-api
         consumeDSN:
           - checkout-api
-      destinations:
-        slack:
-          - workspace: Company Slack
-            channels:
-              - payments-alerts
-        pagerDuty:
-          - account: Company PagerDuty
-            services:
-              - Payments Primary
-        telegram:
-          targets:
-            - payments-alerts
+      notificationTargets:
+        slackWorkspaces:
+          - company-slack
+        pagerDutyAccounts:
+          - company-pagerduty
+        telegramTargets:
+          - payments-alerts

@@ -4,6 +4,7 @@ metadata:
   name: invalid-owner
   namespace: checkout-prod
 spec:
+  sentry: company-sentry
   owner: payments
   project:
     create:

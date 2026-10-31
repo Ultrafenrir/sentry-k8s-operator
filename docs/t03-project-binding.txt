@@ -1,172 +1,51 @@
-T03 — PROJECT, BINDING И OWNERSHIP
-Дата: 2026-10-30
-Статус: Complete для source-derived/mock scope, достаточен как контракт T04. Live public
-API create/read/key/delete и lost-response GET recovery Verified на self-hosted 24.7.1 и
-26.10.1. Полный controller-to-Sentry recovery с реальным Kubernetes Secret journal Verified
-на обеих версиях через TLS fault proxy, restart нового store/client/engine и guarded delete.
-Production admin command для handoff и marker inheritance в child adapters остаются
-открытыми интеграционными пунктами T06/T07/T09.
+T03 — PROJECT, BINDING, AND OWNERSHIP
+Updated: 2026-10-31
+Status: Complete for source/mock/Kubernetes scope with disposable live recovery evidence
 
-1. Protected state
+Protected state
 
-internal/binding хранит version=v1 records как Opaque Secrets в отдельном
-sentry-kubernetes-operator-state namespace:
+Project bindings and operation journals live in the protected state namespace, outside
+application namespaces. They store external identity, ownership markers, manager claim,
+desired hash, operation phase, and compare-and-swap metadata. Public CR status exposes none
+of those private values.
 
-- project binding именуется hash Kubernetes UID и привязывает точный namespace/name/UID;
-- manager claim именуется hash canonical installation + organization + project slug;
-- operation journal реализует T02 Load/CompareAndSwap и переживает новый Store instance;
-- external project/child identities существуют только в protected state;
-- Kubernetes resourceVersion используется для Update/Delete CAS;
-- неизвестная/повреждённая версия fail closed как invalid protected record.
+Managed creation
 
-config/state устанавливается до controller layer. Обычный make undeploy удаляет state
-RBAC, но намеренно сохраняет state namespace и binding Secrets для ownership recovery;
-их удаление требует отдельного явно destructive шага и backup.
+The state machine authorizes the namespace/team, records intent before the Sentry POST,
+sends at most one create request, recovers a lost response by slug plus exact marker, verifies
+the resulting project and active key, then commits the binding. A second blind POST is
+forbidden.
 
-CanonicalInstallation сводит HTTPS host case, :443 и cosmetic root path. Разные
-discovered aliases одной installation должны передать один discovered canonical URL;
-разные host names без такого evidence намеренно не считаются одинаковыми.
+The managed Sentry slug is always the Kubernetes `metadata.name`. The Sentry display name
+is derived internally from that name, shortened only when necessary to preserve the complete
+ownership marker within Sentry's limit. Neither slug nor display name is configurable in the
+public create block.
 
-2. Manager claim и handoff
+Existing projects
 
-AcquireClaim делает Kubernetes Create до внешней mutation. Повтор того же UID идемпотентен;
-другой UID получает OwnershipConflict. Реальный envtest запускает две конкурентные Create
-и доказывает один winner + один conflict.
+Observation without DSN use does not take mutation ownership. Authorized DSN consumption
+creates a local binding only for the required key identity. Same-name replacements and
+external renames fail closed.
 
-Handoff одним claim CAS:
+Lifecycle
 
-- проверяет source manager UID;
-- сразу заменяет manager на exact target namespace/name/UID/generation;
-- создаёт one-time authorization, дополнительно связанную с claim slug;
-- target связывает уже существующий Managed project без POST только при marker + source
-  protected binding + pinned external identity;
-- authorization очищается после target binding; source немедленно теряет mutation право.
+The finalizer handles protected cleanup before removing Kubernetes ownership. `Retain`
+leaves the Sentry project in place. `DeleteProject` requires current policy authorization,
+the exact manager claim, and live ownership evidence. Deletion is processed even when the
+resource is paused.
 
-Store предоставляет низкоуровневую CAS primitive. Authenticated admin command, SubjectAccessReview
-и полный recovery UX ещё не подключены; вызывать primitive из обычного reconcile нельзя.
+Capability honesty
 
-3. Managed create state machine
+Managed creation requires both:
 
-Порядок:
+- `project.create.atomic-default-rules`;
+- `project.create.automatic-active-key`.
 
-1) policy Evaluate, canonical installation, deterministic slug;
-2) GET preflight до claim для обычного existing slug;
-3) Kubernetes manager claim; competing writer останавливается до POST;
-4) protected binding с Planned intent, trusted owner, exact expected marker и desired hash;
-5) повторный GET после claim;
-6) повторное чтение claim непосредственно перед mutation;
-7) binding phase Submitted;
-8) identity-free closed-schema audit start; недоступный sink блокирует POST;
-9) один non-RetrySafe POST с default_rules=false и atomic reserved name marker;
-10) verify exact slug/marker, audit verified/recovered outcome, затем pin external identity и
-    очистить pending.
+The controller does not derive them from a version string. The local runbook applies them
+only after live configuration acceptance against the disposable target.
 
-Если POST response потерян, следующий reconcile делает только GET. Exact expected marker +
-Submitted intent + matching claim восстанавливают identity. Если объект не найден или
-evidence неполно, результат CreationOutcomeUnknown; POST вслепую не повторяется.
-Если audit sink недоступен после успешного POST, Submitted intent сохраняется, а следующий
-GET восстанавливает marker/identity и записывает Recovered без второго POST. Событие содержит
-только local namespace/name, generation и fixed enums — не external identity, desired hash,
-request/response или raw error.
+Verification
 
-Existing slug без handoff возвращает ProjectAlreadyExists до claim и никогда не adoption.
-После bind новый object с тем же slug, другой identity или потерянный marker дают
-OwnershipLost. Ручное удаление даёт ExternalDeleted и не вызывает auto-create.
-
-4. Marker transport
-
-Source-confirmed fallback реализован product-кодом:
-
-  <displayName> [managed;o=<owner>;m=<managed-by>]
-
-Parser принимает только полный exact suffix, lowercase alias grammar и максимум 50 Unicode
-characters. Lookalike, delimiter injection, nesting и overflow отклоняются до POST.
-HTTP adapter использует public routes:
-
-- GET /api/0/projects/{organization}/{slug}/
-- POST /api/0/teams/{organization}/{team}/projects/
-- DELETE /api/0/projects/{organization}/{slug}/
-
-Create body соответствует version-pinned 24.7.1/26.10.1 fixtures; platform omitted остаётся
-omitted, default_rules=false сериализуется обязательно. POST/DELETE не transport-retryable.
-
-5. ReadOnly classification
-
-project.use после observe policy:
-
-- никогда не создаёт manager claim и не выполняет mutation;
-- новый remote marker без protected Manage binding остаётся External;
-- matching marker + protected Manage binding классифицируется Managed, но reader binding
-  получает AccessMode=ReadOnly без manager UID/claim;
-- pinned identity не переключается после replacement;
-- External не получает owner; Managed reader может показывать безопасное owner evidence,
-  но owner ему не назначается как право.
-
-6. Finalizer и deletion
-
-Controller первым reconcile добавляет sentryconfiguration.io/project-protection и только
-следующим reconcile допускает engine mutation. Retain удаляет finalizer без Sentry calls и
-сохраняет orphan protected record. DeleteProject требует одновременно:
-
-- create mode и текущую policy Manage;
-- exact binding identity и marker;
-- current manager claim без pending handoff;
-- повторную authorization непосредственно перед DELETE;
-- GET после DELETE, подтверждающий NotFound.
-
-DELETE также записывает start до внешнего вызова и verified/recovered outcome до удаления
-protected records. Audit failure до DELETE даёт zero-call; failure после подтверждённого
-NotFound восстанавливается без второго DELETE.
-
-Replacement с прежним slug не удаляется. project.use не удаляет внешний project. После
-подтверждённого удаления claim и binding удаляются CAS, затем controller снимает finalizer.
-
-CRD не предоставляет вызываемый HTTP subresource `/finalizers`: правило
-`sentryprojects/finalizers:update` само по себе возвращает `yes` в SubjectAccessReview, но
-controller-runtime subresource update получает 404, а обычный update авторизуется как
-основной ресурс. Поэтому finalizer меняется точечным MergePatch от непосредственного
-DeepCopy, а manager ClusterRole имеет только `patch` на SentryProject; `create`, `delete` и
-`update` остаются запрещены. Persistent kind v1.35.5 подтвердил этот реальный service-account
-path: finalizer появился до дальнейшей recovery, обе replica остались Ready без restart.
-
-7. Capability honesty
-
-Runtime Managed create требует в SentryConnection.status.capabilities одновременно:
-
-- project.create.atomic-default-rules;
-- project.create.automatic-active-key.
-
-Без обеих controller выставляет ManagedCreateUnsupported до API call. Текущий
-SentryConnection controller не повышает их на основе одной версии/source fixtures, поэтому
-при недоступном Sentry реальный Managed create сознательно заблокирован. Injected envtest
-evidence проверяет остальной vertical slice, но не считается Verified.
-
-8. Проверки
-
-- make verify-t03: race state-machine/storage/HTTP-adapter tests, vet, fixture, RBAC и leak checks;
-- generated RBAC gate требует project `patch`, запрещает project `create/delete/update` и
-  отвергает неработающие `/finalizers` permissions; source gate требует MergeFrom(DeepCopy)
-  для обоих finalizer переходов;
-- make test-matrix: controller finalizer/capability/status, concurrent real API-server claim,
-  все T00–T02 tests на envtest Kubernetes 1.35.0 и 1.36.2;
-- source-only fake adapter: idempotency, conflict, lost response, no recoverable object,
-  replacement, marker loss, External/Managed readers, handoff, Retain/DeleteProject и audit
-  outages до/после create/delete;
-- local TLS HTTP adapter: exact route/body/marker decode, без живого Sentry.
-- live disposable 24.7.1/26.10.1: один project-create POST с отброшенным response,
-  последующий GET по slug с exact marker/identity recovery без второго POST и async delete;
-- live controller 24.7.1/26.10.1: TLS proxy теряет успешный create response, protected
-  Kubernetes Secret сохраняет Submitted operation, новый store/client/engine восстанавливает
-  identity без второго POST, очищает journal и выполняет guarded delete проекта и binding.
-
-9. Оставшиеся риски
-
-- create, async delete, automatic active key и GET recovery Verified через public API;
-  controller+journal end-to-end path с real Sentry Verified на обеих pinned версиях;
-- protected state отделён от namespace с Sentry/Telegram credential Secrets; manager cache
-  явно ограничен этими двумя namespace, а registration writer получает только state Role;
-- manager всё ещё имеет cluster-wide Secret CRUD для DSN output в project namespaces;
-  выделение отдельного output writer identity остаётся задачей T09;
-- child marker inheritance выполняется будущими destination/alert adapters из parent marker;
-- authenticated admin handoff command и backup/recovery runbook не готовы;
-- distinct DNS aliases требуют discovered canonical installation evidence.
+`make verify-t03` covers journaling, lost-response recovery, claims, handoff, read-only
+classification, deletion, redaction, and failure injection. Disposable live acceptance has
+also recovered an intentionally discarded project-create response without a second POST.

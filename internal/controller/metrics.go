@@ -173,7 +173,7 @@ func safeController(value string) string {
 
 func safeCondition(value string) string {
 	switch value {
-	case "CredentialsReady", "DSNReady", "SettingsReady", "DestinationsReady", "AlertsReady", "ProjectReady", "Ready":
+	case "CredentialsReady", "DSNReady", "SettingsReady", "NotificationTargetsReady", "AlertsReady", "ProjectReady", "Ready":
 		return value
 	default:
 		return metricsUnknown
@@ -188,7 +188,7 @@ func syncMechanismForCondition(condition string) string {
 		return syncDSN
 	case "SettingsReady":
 		return syncSettings
-	case "DestinationsReady":
+	case "NotificationTargetsReady":
 		return syncDestinations
 	case "AlertsReady":
 		return syncAlerts

@@ -173,13 +173,14 @@ func (h *ChallengeHandler) issue(ctx context.Context, input challengeRequest) (s
 	if err := h.Client.Get(ctx, types.NamespacedName{Name: record.Binding.Connection}, connection); err != nil || connection.DeletionTimestamp != nil {
 		return "", ErrRegistrationRequired
 	}
-	if project.Spec.Connection != record.Binding.Connection && !(project.Spec.Connection == "" && connection.Spec.Default) {
+	if project.Spec.Sentry != record.Binding.Connection {
 		return "", ErrRegistrationRequired
 	}
-	desired, found := project.Spec.Destinations[input.Destination]
+	desiredTargets, flattenErr := project.Spec.NotificationTargets.Flatten()
+	desired, found := desiredTargets[input.Destination]
 	protected, protectedFound := record.Binding.Destinations[input.Destination]
 	decision, err := policy.EvaluateDestination(project.Namespace, project.Spec, connection.Spec, desired)
-	if !found || err != nil || decision.AccessMode != binding.AccessManage || decision.Owner != record.Binding.Owner {
+	if flattenErr != nil || !found || err != nil || decision.AccessMode != binding.AccessManage || decision.Owner != record.Binding.Owner {
 		return "", ErrRegistrationRequired
 	}
 	kind, selectorHash, err := destination.SelectorFingerprint(connection.Spec, desired)
@@ -207,7 +208,7 @@ func decodeChallengeRequest(request *http.Request) (challengeRequest, error) {
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return challengeRequest{}, errors.New("request must contain one JSON object")
 	}
-	if len(input.Namespace) > 63 || len(input.Project) > 253 || len(input.Destination) > 63 || len(utilvalidation.IsDNS1123Label(input.Namespace)) != 0 || len(utilvalidation.IsDNS1123Subdomain(input.Project)) != 0 || len(utilvalidation.IsDNS1123Label(input.Destination)) != 0 {
+	if len(input.Namespace) > 63 || len(input.Project) > 253 || len(utilvalidation.IsDNS1123Label(input.Namespace)) != 0 || len(utilvalidation.IsDNS1123Subdomain(input.Project)) != 0 || !binding.ValidNotificationTargetKey(input.Destination) {
 		return challengeRequest{}, errors.New("invalid object reference")
 	}
 	return input, nil

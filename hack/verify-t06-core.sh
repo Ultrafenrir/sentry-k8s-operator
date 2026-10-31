@@ -77,7 +77,7 @@ rg -q 'GetClientCertificate: loadWriterCertificate' cmd/telegram-receiver/main.g
 rg -q 'GetCertificate = certificateLoader' cmd/registration-writer/main.go
 rg -q 'telegram-register' cmd/kubectl-sentry/main.go
 rg -q 'CheckRedirect' internal/kubectlplugin/challenge.go
-rg -q 'destination update is blocked while registrationCommit is active' internal/webhook/v1alpha1/sentryproject_webhook.go
+rg -q 'notification target update is blocked while registrationCommit is active' internal/webhook/v1alpha1/sentryproject_webhook.go
 rg -q 'deletion is blocked while registrationCommit is active' internal/webhook/v1alpha1/sentryconnection_webhook.go
 yaml_documents config/registration/rbac.yaml | jq -s '
   any(.[]; .kind == "ClusterRole" and

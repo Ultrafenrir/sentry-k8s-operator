@@ -41,14 +41,14 @@ func TestHTTPAdapterMatchesSourceDerivedCreateContract(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
-		if body["name"] != "Checkout [managed;o=payments;m=company-sentry-op]" || body["slug"] != "checkout" || body["default_rules"] != false {
+		if body["name"] != "checkout [managed;o=payments;m=company-sentry-op]" || body["slug"] != "checkout" || body["default_rules"] != false {
 			t.Errorf("create body = %#v", body)
 		}
 		if _, found := body["platform"]; found {
 			t.Errorf("omitted platform was serialized: %#v", body)
 		}
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"id":"internal-project-id","name":"Checkout [managed;o=payments;m=company-sentry-op]","slug":"checkout","platform":null,"status":"active"}`))
+		_, _ = w.Write([]byte(`{"id":"internal-project-id","name":"checkout [managed;o=payments;m=company-sentry-op]","slug":"checkout","platform":null,"status":"active"}`))
 	}))
 	defer server.Close()
 	adapter := &HTTPAdapter{Client: testHTTPClient(t, server)}
@@ -57,7 +57,6 @@ func TestHTTPAdapterMatchesSourceDerivedCreateContract(t *testing.T) {
 		Organization: "company",
 		Slug:         "checkout",
 		Team:         "payments",
-		DisplayName:  "Checkout",
 		DefaultRules: false,
 		Marker:       marker,
 	})

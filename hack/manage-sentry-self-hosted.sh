@@ -6,6 +6,7 @@ action=${1:?action must be metadata, prepare, verify, up, bootstrap, smoke, stat
 version=${SENTRY_VERSION:-24.7.1}
 profile=${SENTRY_PROFILE:-feature-complete}
 wait_timeout=${SENTRY_WAIT_TIMEOUT:-1800}
+skip_pull=${SENTRY_SKIP_PULL:-false}
 cache_input=${SENTRY_SELF_HOSTED_CACHE:-$root_dir/.cache/sentry-self-hosted}
 upstream=https://github.com/getsentry/self-hosted.git
 temporary_checkout=
@@ -41,6 +42,10 @@ esac
 case "$profile" in
   feature-complete|errors-only) ;;
   *) echo 'SENTRY_PROFILE must be feature-complete or errors-only' >&2; exit 1 ;;
+esac
+case "$skip_pull" in
+  true|false) ;;
+  *) echo 'SENTRY_SKIP_PULL must be true or false' >&2; exit 1 ;;
 esac
 case "$wait_timeout" in
   ''|*[!0-9]*) echo 'SENTRY_WAIT_TIMEOUT must be a positive number of seconds' >&2; exit 1 ;;
@@ -200,6 +205,24 @@ prepare_checkout() {
   # "desktop-linux"), and buildx refuses to use a builder from another context.
   # Let Compose select the builder for the current context instead.
   replace_token "$temporary_checkout" 'export BUILDX_BUILDER=default' 'unset BUILDX_BUILDER'
+  if [ "$skip_pull" = true ]; then
+    update_images="$temporary_checkout/install/update-docker-images.sh"
+    relay_credentials="$temporary_checkout/install/ensure-relay-credentials.sh"
+    if [ ! -f "$update_images" ]; then
+      echo "upstream image update script is missing: $update_images" >&2
+      exit 1
+    fi
+    if [ ! -f "$relay_credentials" ]; then
+      echo "upstream Relay credential script is missing: $relay_credentials" >&2
+      exit 1
+    fi
+    printf '%s\n' \
+      'echo "${_group}Skipping image pulls after local cache verification ..."' \
+      'echo "${_endgroup}"' >"$update_images"
+    replace_token "$temporary_checkout" \
+      '$CONTAINER_ENGINE pull "${RELAY_IMAGE}" || true' \
+      'true # Relay image presence is verified by the managed wrapper.'
+  fi
   set_env_value "$temporary_checkout/.env" COMPOSE_PROJECT_NAME "$project"
   set_env_value "$temporary_checkout/.env" COMPOSE_PROFILES "$profile"
   set_env_value "$temporary_checkout/.env" SENTRY_BIND "127.0.0.1:$port"
@@ -289,6 +312,22 @@ preflight_resources() {
     echo "Docker resources are insufficient for Sentry $version/$profile: have ${memory_mb}MB/${cpus}CPU, require ${required_memory_mb}MB/${required_cpus}CPU" >&2
     exit 1
   fi
+}
+
+verify_cached_images() {
+  [ "$skip_pull" = true ] || return 0
+  missing=
+  images=$(compose config --images | sort -u)
+  for image in $images; do
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+      missing="$missing $image"
+    fi
+  done
+  if [ -n "$missing" ]; then
+    echo "SENTRY_SKIP_PULL=true requires every rendered Compose image in the local cache; missing:$missing" >&2
+    exit 1
+  fi
+  echo 'All rendered Compose images are present locally; upstream image pulls will be skipped'
 }
 
 verify_checkout() {
@@ -453,6 +492,7 @@ case "$action" in
     prepare_checkout
     verify_checkout
     preflight_resources
+    verify_cached_images
     install_args='--skip-commit-check --skip-user-creation --no-report-self-hosted-issues'
     if [ "$version" = 26.10.1 ]; then
       install_args="$install_args --apply-automatic-config-updates"

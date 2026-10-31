@@ -1,82 +1,62 @@
-SENTRY CONFIGURATION OPERATOR — T00 ALPHA FIELD DECISION
-Дата: 2026-10-29
-Статус: source/contract decision; обязателен для T01 schema. Source-only plan adjustment
-принят в docs/adr/0001-source-only-alpha-surface.txt.
-Machine-readable copy: testdata/contracts/t00-alpha-surface.json
+SENTRY CONFIGURATION OPERATOR — ALPHA FIELD BOUNDARY
+Date: 2026-10-29
+Status: Accepted source/contract decision for the v1alpha1 schema
 
-1. Правило публикации
+1. Publication rule
 
-Поле публикуется в v1alpha1 только если для него доказано adapter-neutral значение и
-безопасный lifecycle во всех заявленных средах. Source-derived fixture даёт максимум
-ContractTested. Отсутствие живого Sentry не заменяется предположением.
+A field may enter the public CRD only when it has stable meaning independent of Sentry's
+private database identifiers and can be validated or translated by a bounded adapter.
+Source inspection for one version is not enough to claim cross-version or SaaS support.
 
 2. Settings
 
-Опубликованные typed fields:
-
-settings.filters.browserExtensions  boolean  -> filter id browser-extensions / active
-settings.filters.localhost          boolean  -> filter id localhost / active
-settings.filters.webCrawlers        boolean  -> filter id web-crawlers / active
-
-settings.pii.scrubData              boolean  -> dataScrubber
-settings.pii.scrubDefaults          boolean  -> dataScrubberDefaults
-settings.pii.scrubIPAddresses       boolean  -> scrubIPAddresses
-settings.pii.sensitiveFields        []string -> sensitiveFields
-settings.pii.safeFields             []string -> safeFields
-
-Отсутствующее typed field не управляется. false и [] являются явными desired values.
-reset пока не публикуется: одинаковый reset-to-default transport не подтверждён.
-
-Не публикуются:
-- settings.profile и имена recommended-v1/strict-pii-v1;
-- settings.grouping и grouping.fingerprintRules;
-- settings.advanced.
-
-Причина: 24.7.1 принимает fingerprintingRules только raw Sentry DSL string. План запрещает
-raw native DSL в common/advanced API, а одинаковый typed round-trip не проверен на
-24.7.1, 26.10.1 и SaaS. Immutable состав profile также не подтверждён во всех средах.
+Published settings are limited to typed inbound filters and PII controls whose public API
+shape is confirmed on the supported self-hosted versions. Grouping profiles and arbitrary
+settings dictionaries are not published because their portable semantics are not proven.
 
 3. Common alerts
 
-Опубликованный список presets: пустой.
+The common alert surface contains:
 
-Candidate     24.7.1 blocker                              Итог target set
-new-issue     issue rule нельзя non-destructively disable Unsupported
-regression    issue rule нельзя non-destructively disable Unsupported
-error-count   metric rule public disable/enable не найден Unsupported
-error-rate    одинаковая семантика не подтверждена        Unknown/not published
-latency       одинаковая семантика не подтверждена        Unknown/not published
+- `first-seen` and `regression` for the legacy compatibility profile;
+- `event-count`, `windowMinutes`, `threshold`, local destination references, and bounded
+  enabled state where the selected adapter supports it.
 
-26.10.1 имеет public workflow enabled flag, но это не устраняет 24.7.1 blocker и не
-доказывает detector/action/delivery mapping. SaaS rolling API не проверен real call.
+The compatibility profile is explicit. The controller never chooses a legacy or modern
+adapter from a version string alone.
 
-Пока presets пусты, alerts не публикуется в v1alpha1 и common alert fields (preset,
-enabled, environment, tags, thresholds, window, recovery, notify) также не являются
-частью public schema. Их имена остаются кандидатами плана, а не выпущенным контрактом.
+4. Advanced features
 
-4. Advanced alerts
+Advanced Sentry condition trees, action payloads, detector families, workflow graphs, and
+raw vendor JSON remain outside v1alpha1. They require a later typed contract or a separate
+extension mechanism with its own ownership and compatibility guarantees.
 
-Опубликованный список advanced fields: пустой; alerts.<name>.advanced отсутствует.
+5. Evidence
 
-Нельзя публиковать пример signal/aggregate/condition/match как контракт: нет доказанного
-adapter-neutral отображения и полного disable/enable lifecycle для target set. Raw query,
-Sentry DSL/native payload, adapter family, endpoints, IDs, credentials и destinations в
-обход notify в любом случае запрещены будущим дизайном.
+Generated CRDs and webhooks enforce the published shape. Envtest and kind prove Kubernetes
+admission. Fixtures and adapter tests prove source contracts. Live Sentry configuration
+acceptance is recorded separately and must not be conflated with event ingestion or
+notification delivery.
 
-5. Следствие для T01
+6. Regional ownership and notification target evolution
 
-T01 не может честно выполнить исходные golden scenarios «full Managed ... common alerts»
-и «Managed ... advanced alert». ADR 0001 изменяет source-only acceptance: scaffold/schema
-разрешены без alerts/profile/grouping/advanced, а пять positive fixtures покрывают только
-опубликованную alpha surface. Alert-dependent acceptance переносится в T07 и не считается
-выполненной до live Sentry evidence.
+The evolving alpha connection contract exposes a stable region name, Active or Standby
+role, and positive monotonically increasing revision. The public term is revision, never
+epoch. Existing unmarked projects default to Reject; Adopt is valid only on an Active
+connection.
 
-6. Version-pinned evidence
+Slack workspaces and PagerDuty accounts are declared as stable local catalog aliases for
+integrations already installed in Sentry. Declaration never installs an integration. Access
+grants cover aliases, not channel or service allowlists. Projects and reusable policies use
+provider-first maps under `notificationTargets`; alerts reference readable terminal names
+such as `slack/backend-alerts` and `pagerDuty/Backend Primary`. Terminal names must be
+unique within a provider. There is no legacy destinations spelling or compatibility shim.
 
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/project_details.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/project_filter_details.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/project_rule_details.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/api/endpoints/project_rule_enable.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/incidents/endpoints/organization_alert_rule_details.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/organization_workflow_index.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/validators/base/workflow.py
+7. Reusable alert policy
+
+`SentryAlertPolicy` is cluster-scoped and self-service. Ordinary cluster RBAC determines
+who may create, update, or delete policies; the API does not publish an owner field or a
+custom authorization webhook. Any project may opt in with `spec.alertPolicy`. Policy and
+project alert/target keys must not conflict, and each alert may reference only targets from
+its own ownership scope. Protected child state records the exact project or policy UID so a
+same-name recreation cannot inherit external Sentry objects.

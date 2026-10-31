@@ -20,7 +20,6 @@ package policy
 import (
 	"errors"
 	"fmt"
-	"strings"
 
 	sentryv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
 )
@@ -66,7 +65,11 @@ func Evaluate(namespace string, project sentryv1alpha1.SentryProjectSpec, connec
 		if !rule.AllowCreate || !contains(rule.Teams, project.Project.Create.Team) {
 			return Decision{}, &Error{Kind: ErrorAccessDenied}
 		}
-		if err := authorizeDestinations(project.Destinations, rule.Destinations, connection.Integrations); err != nil {
+		targets, flattenErr := project.NotificationTargets.Flatten()
+		if flattenErr != nil {
+			return Decision{}, &Error{Kind: ErrorDestinationAccessDenied}
+		}
+		if err := authorizeDestinations(targets, rule, connection.Integrations); err != nil {
 			return Decision{}, err
 		}
 		decision.AccessMode = "Manage"
@@ -89,15 +92,26 @@ func Evaluate(namespace string, project sentryv1alpha1.SentryProjectSpec, connec
 // excluding destination grants. Independent destination denial must not stop project,
 // settings, DSN, or another allowed destination from reconciling.
 func EvaluateProject(namespace string, project sentryv1alpha1.SentryProjectSpec, connection sentryv1alpha1.SentryConnectionSpec) (Decision, error) {
-	project.Destinations = nil
+	project.NotificationTargets = nil
 	return Evaluate(namespace, project, connection)
 }
 
 // EvaluateDestination evaluates project access plus exactly one destination selector.
 // Callers use this both before lookup and immediately before protected-state CAS.
 func EvaluateDestination(namespace string, project sentryv1alpha1.SentryProjectSpec, connection sentryv1alpha1.SentryConnectionSpec, destination sentryv1alpha1.DestinationSpec) (Decision, error) {
-	project.Destinations = map[string]sentryv1alpha1.DestinationSpec{"destination": destination}
-	return Evaluate(namespace, project, connection)
+	project.NotificationTargets = nil
+	decision, err := Evaluate(namespace, project, connection)
+	if err != nil {
+		return Decision{}, err
+	}
+	rule, err := ruleForNamespace(namespace, connection.Access)
+	if err != nil {
+		return Decision{}, err
+	}
+	if err := authorizeDestinations(map[string]sentryv1alpha1.DestinationSpec{"target": destination}, rule, connection.Integrations); err != nil {
+		return Decision{}, err
+	}
+	return decision, nil
 }
 
 func ruleForNamespace(namespace string, rules []sentryv1alpha1.AccessRule) (sentryv1alpha1.AccessRule, error) {
@@ -118,11 +132,11 @@ func ruleForNamespace(namespace string, rules []sentryv1alpha1.AccessRule) (sent
 	return match, nil
 }
 
-func authorizeDestinations(destinations map[string]sentryv1alpha1.DestinationSpec, grants *sentryv1alpha1.DestinationAccess, integrations *sentryv1alpha1.ConnectionIntegrations) error {
+func authorizeDestinations(destinations map[string]sentryv1alpha1.DestinationSpec, rule sentryv1alpha1.AccessRule, integrations *sentryv1alpha1.ConnectionIntegrations) error {
 	if len(destinations) == 0 {
 		return nil
 	}
-	if grants == nil {
+	if rule.NotificationTargets == nil {
 		return &Error{Kind: ErrorDestinationAccessDenied}
 	}
 	for _, destination := range destinations {
@@ -142,37 +156,19 @@ func authorizeDestinations(destinations map[string]sentryv1alpha1.DestinationSpe
 		switch {
 		case destination.Slack != nil:
 			workspace := destination.Slack.Workspace
-			if workspace == "" && integrations != nil && integrations.Slack != nil {
-				workspace = integrations.Slack.DefaultWorkspace
-			}
-			channel := strings.TrimPrefix(destination.Slack.Channel, "#")
-			allowed := false
-			for _, grant := range grants.Slack {
-				if grant.Workspace == workspace && containsNormalized(grant.Channels, channel, func(value string) string { return strings.TrimPrefix(value, "#") }) {
-					allowed = true
-					break
-				}
-			}
+			allowed := rule.NotificationTargets != nil && contains(rule.NotificationTargets.SlackWorkspaces, workspace) && catalogContains(integrations, "slack", workspace)
 			if !allowed {
 				return &Error{Kind: ErrorDestinationAccessDenied}
 			}
 		case destination.PagerDuty != nil:
 			account := destination.PagerDuty.Account
-			if account == "" && integrations != nil && integrations.PagerDuty != nil {
-				account = integrations.PagerDuty.DefaultAccount
-			}
-			allowed := false
-			for _, grant := range grants.PagerDuty {
-				if grant.Account == account && contains(grant.Services, destination.PagerDuty.Service) {
-					allowed = true
-					break
-				}
-			}
+			allowed := rule.NotificationTargets != nil && contains(rule.NotificationTargets.PagerDutyAccounts, account) && catalogContains(integrations, "pagerduty", account)
 			if !allowed {
 				return &Error{Kind: ErrorDestinationAccessDenied}
 			}
 		case destination.Telegram != nil:
-			if grants.Telegram == nil || !contains(grants.Telegram.Targets, destination.Telegram.Target) {
+			allowed := rule.NotificationTargets != nil && contains(rule.NotificationTargets.TelegramTargets, destination.Telegram.Target)
+			if !allowed {
 				return &Error{Kind: ErrorDestinationAccessDenied}
 			}
 		default:
@@ -180,6 +176,25 @@ func authorizeDestinations(destinations map[string]sentryv1alpha1.DestinationSpe
 		}
 	}
 	return nil
+}
+
+func catalogContains(integrations *sentryv1alpha1.ConnectionIntegrations, provider, name string) bool {
+	if integrations == nil {
+		return false
+	}
+	var entries []sentryv1alpha1.IntegrationCatalogEntry
+	if provider == "slack" && integrations.Slack != nil {
+		entries = integrations.Slack.Workspaces
+	}
+	if provider == "pagerduty" && integrations.PagerDuty != nil {
+		entries = integrations.PagerDuty.Accounts
+	}
+	for _, entry := range entries {
+		if entry.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func contains(values []string, wanted string) bool {

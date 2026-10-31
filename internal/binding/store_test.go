@@ -184,8 +184,9 @@ func TestBindingValidationRejectsCorruptProtectedAlertState(t *testing.T) {
 	valid.PinnedAdapters = map[string]string{"alerts": "legacy-issue-24.7.1"}
 	valid.Alerts = map[string]AlertBinding{
 		"new-issue": {
+			Owner:   ChildOwner{Kind: ChildOwnerProject, Name: "checkout", UID: "alert-uid", Generation: 1},
 			Adapter: "legacy-issue-24.7.1", ExternalIdentity: "alert-123", Trigger: "first-seen",
-			DesiredHash: strings.Repeat("a", 64), Enabled: true, Destinations: []string{"chat"}, Marker: marker,
+			DesiredHash: strings.Repeat("a", 64), Enabled: true, Destinations: []string{"telegram/chat"}, Marker: marker,
 		},
 	}
 	if _, err := newTestStore(t).CreateBinding(context.Background(), valid); err != nil {
@@ -231,6 +232,40 @@ func TestBindingValidationRejectsCorruptProtectedAlertState(t *testing.T) {
 				t.Fatalf("corrupt alert state error = %v", err)
 			}
 		})
+	}
+}
+
+func TestHasPolicyChildrenUsesExactOwnerUID(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	marker := Marker{Origin: "managed", Owner: "payments", ManagedBy: "company-sentry-operator"}
+	value := testBinding("project-uid", marker)
+	value.Destinations = map[string]DestinationBinding{
+		"slack/incidents": {
+			Owner: ChildOwner{Kind: ChildOwnerPolicy, Name: "common-alerts", UID: "policy-uid", Generation: 3},
+			Kind:  "slack", SelectorHash: "selector", ResourceName: "incidents", State: "Active",
+		},
+	}
+	record, err := store.CreateBinding(context.Background(), value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasChildren, err := store.HasPolicyChildren(context.Background(), "policy-uid")
+	if err != nil || !hasChildren {
+		t.Fatalf("policy children = %t, %v", hasChildren, err)
+	}
+	hasChildren, err = store.HasPolicyChildren(context.Background(), "recreated-policy-uid")
+	if err != nil || hasChildren {
+		t.Fatalf("same-name policy incarnation inherited children: %t, %v", hasChildren, err)
+	}
+	value.Destinations = nil
+	if _, err := store.UpdateBinding(context.Background(), record, value); err != nil {
+		t.Fatal(err)
+	}
+	hasChildren, err = store.HasPolicyChildren(context.Background(), "policy-uid")
+	if err != nil || hasChildren {
+		t.Fatalf("released policy children = %t, %v", hasChildren, err)
 	}
 }
 

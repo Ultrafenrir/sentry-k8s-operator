@@ -1,116 +1,48 @@
-SENTRY CONFIGURATION OPERATOR — T00 ALERT CATALOG
-Дата source review: 2026-10-29
-Статус: legacy 24.7.1 и modern 26.10.1 source catalogs complete; metric_issue generic
-lifecycle Verified на self-hosted 26.10.1, остальные modern families классифицированы
-source-only; ничего из каталога не опубликовано в alpha API.
-Machine-readable copy: testdata/contracts/t00-alert-catalog.json
+SENTRY CONFIGURATION OPERATOR — ALERT CATALOG
+Source review: 2026-10-29
+Status: Legacy 24.7.1 and modern 26.10.1 source catalogs are implemented for the bounded
+alpha surface. External action delivery is not proven by this catalog.
 
-1. Правило использования
+1. Usage rule
 
-Ни один native class ID, query string, integration ID или Sentry payload не является
-публичным полем SentryProject. Каталог нужен adapters для оценки переносимости. Поле может
-появиться в common/advanced только после одинаковой adapter-neutral семантики и полного
-create/read/update/disable/enable/delete lifecycle на всех target environments.
+The CRD exposes adapter-neutral alert intent. A Sentry-version adapter maps that intent to a
+legacy issue rule, legacy metric rule, or modern metric detector/workflow. Unknown trigger
+families fail closed. Raw Sentry rule or workflow JSON is not accepted.
 
 2. Legacy issue alerts — Sentry 24.7.1
 
-Core registry содержит 12 conditions:
-- every event;
-- first seen/new issue;
-- regression;
-- reappeared;
-- new/existing high-priority issue;
-- tag match;
-- event count, unique-user count и frequency-percent;
-- event attribute;
-- level.
+Supported common triggers:
 
-Core registry содержит 9 filters:
-- age comparison, issue occurrences, assigned-to;
-- latest adopted/latest release;
-- issue category;
-- event attribute, tag и level filter variants.
+- `first-seen`: issue first seen;
+- `regression`: issue changes from resolved to unresolved.
 
-Полные native IDs перечислены в machine-readable catalog. Подтверждённые target delivery
-actions: SlackNotifyServiceAction и PagerDutyNotifyServiceAction. Slack transport имеет
-workspace/channel/channel_id/tags/notes, PagerDuty — account/service/severity. Публичный
-operator API использует только readable workspace/channel и account/service; native IDs
-разрешаются и сохраняются исключительно в protected binding.
-
-Общие string/tag match operators: co, ew, eq, is, in, nc, new, ne, ns, nsw, nin, sw.
-Frequency interval является duration token, а не числом: 1m, 5m, 15m, 1h, 1d, 1w, 30d.
-Percent comparison interval не допускает 1m: 5m, 15m, 1h, 1d, 1w, 30d.
-
-Lifecycle blocker: public non-destructive disable endpoint для legacy issue rule не найден.
-Поэтому даже first-seen и regression не могут стать common presets target set.
+These use the legacy project rule collection. A readable local destination is resolved and
+pinned before an action is written. Disabled state is not represented by deleting an issue
+rule; the alpha contract rejects unsupported disable semantics.
 
 3. Legacy metric alerts — Sentry 24.7.1
 
-Error-count source mapping:
-- queryType=0 (ERROR);
-- dataset=events;
-- aggregate=count().
+Supported common trigger:
 
-Units and bounds:
-- timeWindow: minutes, 1..1440;
-- thresholdPeriod: consecutive windows, 1..20;
-- comparisonDelta: minutes, 1..128160 (89 days);
-- crash-rate timeWindow: exactly 30/60/120/240/720/1440 minutes;
-- thresholdType: above=0, below=1, aboveAndBelow=2;
-- trigger labels: critical and optional warning; alertThreshold/resolveThreshold are values
-  in the selected aggregate's unit.
+- `event-count` with `windowMinutes` and `threshold`.
 
-Request also accepts environment, query, projects/excludedProjects/includeAllProjects,
-eventTypes and trigger actions. Raw query and native aggregate strings are adapter details,
-not public advanced fields. Public disable/enable lifecycle remains absent in 24.7.1.
+The adapter uses the legacy alert-rule and trigger/action collections. Identity and mutation
+state are kept in protected bindings so interrupted creates and cleanup can be retried
+without duplicating rules.
 
 4. Modern detector/workflow — Sentry 26.10.1
 
-Source universe содержит 38 Condition enum values: шесть базовых comparisons, anomaly,
-24 issue/workflow conditions, шесть frequency/session conditions и Seer activity trigger.
-Discovery endpoint скрывает шесть LEGACY_CONDITIONS. issue_open_duration существует в
-enum и импортируется, но не имеет source registration decorator; поэтому его нельзя
-считать runtime-available.
+Supported common trigger:
 
-Action enum содержит 16 types. Available-actions endpoint исключает deprecated plugin и
-отдельно provisioned seer_workflow; ticket actions требуют feature gate, integration
-actions — установленную integration, Sentry App/webhook — подходящую installation, а
-часть actions может быть plan-disabled. Target delivery types slack и pagerduty есть в
-source registry, но их runtime availability/delivery остаётся Unknown.
+- `event-count`, represented by an events/count() metric detector attached to a workflow.
 
-Data-source registrations: snuba_query_subscription, uptime_subscription, cron_monitor.
-Detector-settings registrations: error, metric_issue, monitor_check_in_failure,
-uptime_domain_failure, sourcemap_configuration, preprod_size_analysis, issue_stream.
-Released types с handler: error, metric_issue и uptime_domain_failure. Unreleased types с
-handler sourcemap_configuration и preprod_size_analysis появляются только через feature
-visibility. monitor_check_in_failure и issue_stream зарегистрированы без handler и
-отсекаются endpoint. Реальный detector-types endpoint дополнительно применяет org-specific
-feature visibility.
+The adapter supports create, read, update, enable/disable, and guarded delete. The detector
+and workflow are treated as one owned logical alert in Kubernetes status. Detector families
+other than the verified metric detector remain unsupported.
 
-Discovery endpoints detector types, data conditions и available actions имеют status
-EXPERIMENTAL. Live self-hosted acceptance подтвердил generic create/read/update/toggle/delete
-только для metric_issue с events/count() data source. `error` при этом не является вторым
-generic create adapter: его validator прямо запрещает create и разрешает менять только
-существующий project detector, включая grouping/resolve project options. `uptime_domain_failure`
-имеет отдельный URL/subscription validator, quota/seat accounting, фиксированные conditions и
-собственный cleanup. Поэтому machine-readable status =
-source-catalogued-metric-issue-lifecycle-verified; error и uptime нельзя автоматически
-подставлять вместо metric_issue, и никакой inferred common/advanced mapping не публикуется.
+5. Evidence boundary
 
-5. Source identities
-
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/constants.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/rules/match.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/rules/conditions/event_frequency.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/incidents/serializers/alert_rule.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/incidents/models/alert_rule.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/integrations/slack/actions/notification.py
-https://github.com/getsentry/sentry/blob/24.7.1/src/sentry/integrations/pagerduty/actions/notification.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/models/data_condition.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/models/action.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/registry.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/organization_detector_types.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/organization_data_condition_index.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/organization_available_action_index.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/workflow_engine/endpoints/validators/error_detector.py
-https://github.com/getsentry/sentry/blob/26.10.1/src/sentry/uptime/endpoints/validators.py
+Sanitized request/response fixtures and adapter tests establish request shape and response
+parsing. Live configuration acceptance establishes object lifecycle. Neither establishes
+Slack, PagerDuty, Telegram, or Alertmanager delivery. Sentry 26.10.1 returns 404 for the
+legacy collection routes; legacy live acceptance belongs on 24.7.1.

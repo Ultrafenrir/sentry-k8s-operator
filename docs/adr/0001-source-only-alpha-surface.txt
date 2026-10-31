@@ -1,51 +1,37 @@
-ADR 0001 — SOURCE-ONLY ALPHA SURFACE ДО LIVE SENTRY
-Дата: 2026-10-29
-Статус: Accepted for T01
+ADR 0001 — SOURCE-ONLY ALPHA SURFACE
+Date: 2026-10-29
+Status: Accepted for T01
 
-Контекст
+Context
 
-Первый этап выполняется без доступного Sentry. T00 source/fixture evidence подтверждает
-project identity, DSN output shape и ограниченный набор typed filters/PII settings, но не
-подтверждает переносимый alert lifecycle, recommended profile, grouping DSL или
-adapter-neutral advanced AST во всех целевых Sentry 24.7.1, 26.10.1 и SaaS.
+The initial plan described fields that could not be proven consistently across Sentry
+24.7.1, Sentry 26.10.1, and SaaS without live credentials. Publishing those fields in a
+v1alpha1 CRD would create a compatibility promise before an adapter contract existed.
 
-Исходный backlog требует в T01 ровно пять positive golden scenarios, включая common и
-advanced alerts. Выпуск этих полей только ради выполнения количества превратил бы Unknown
-в мнимую поддержку и нарушил бы основное правило compatibility matrix.
+Decision
 
-Решение
+T01 publishes only source-confirmed, adapter-neutral fields:
 
-T01 создаёт SentryConnection и SentryProject v1alpha1, но публикует только:
+- SentryConnection identity, credential references, transport policy, organization, access
+  policy, compatibility selection, and readable integration defaults;
+- SentryProject create-or-use identity, owner, pause, lifecycle, DSN output, typed filters,
+  typed PII settings, readable destinations, and the bounded common alert catalog;
+- status conditions and component summaries that exclude private external identities.
 
-- connection/project create-or-use identity и lifecycle;
-- DSN output selection;
-- typed filters browserExtensions/localhost/webCrawlers;
-- typed PII scrubData/scrubDefaults/scrubIPAddresses/sensitiveFields/safeFields;
-- paused, status, access policy и adapter-neutral destination selectors.
+Raw Sentry filter, grouping, PII, alert, or workflow JSON is not part of the public alpha
+API. Unsupported vendor-specific fields must be added only after an ADR and evidence across
+the supported targets.
 
-В T01 schema отсутствуют alerts, settings.profile, settings.grouping и все advanced поля.
-Неизвестное поле отклоняется structural schema. Destination objects ещё не обещают
-рабочую доставку: runtime capability остаётся Unknown до T06/T07.
+Required golden cases
 
-Source-only T01 использует пять изменённых positive golden scenarios:
+1. Minimal managed creation with a readable team.
+2. Existing-project observation without DSN consumption.
+3. Existing-project observation with authorized DSN consumption.
+4. Managed project with the complete published filter and PII contract.
+5. Managed project with adapter-neutral Slack, PagerDuty, and Telegram selectors.
 
-1. минимальный Managed create только с team;
-2. External observe без ConsumeDSN и без Secret;
-3. External observe с ConsumeDSN и ожидаемым Secret;
-4. Managed с полным опубликованным filters/PII settings contract;
-5. Managed с adapter-neutral Slack/PagerDuty/Telegram destination selectors.
+Consequences
 
-Alert-dependent negative fixtures (dangling notify и удаление destination, используемого
-alert) переносятся в T07 вместе с первым опубликованным alert contract. Остальные T01
-negative fixtures сохраняются. T07 обязан сначала получить live lifecycle evidence и
-отдельно изменить CRD contract/ADR; автоматического появления полей после upgrade нет.
-
-Последствия
-
-- T01 scaffold не блокируется отсутствующим внешним стендом.
-- Alpha API меньше исходного плана, но каждое опубликованное поле имеет честный статус.
-- M0 не считается завершённым: его alert-сценарии остаются открыты.
-- Добавление alerts/grouping/profile/advanced является явной API evolution, требует
-  generated CRD diff, обновлённых golden fixtures и повторной Kubernetes matrix.
-- API group выбран как sentryconfiguration.io; перед публичным релизом владелец проекта
-  должен подтвердить контроль/уникальность домена или провести conversion-aware rename.
+The public surface stays smaller than the full Sentry API. Capability discovery and explicit
+compatibility profiles fail closed instead of guessing from a version string. Later API
+growth requires the evolution rules in ADR 0002.

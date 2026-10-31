@@ -17,9 +17,14 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"errors"
+	"strings"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
+
+var ErrAmbiguousNotificationTarget = errors.New("notification target name is ambiguous within its provider")
 
 const (
 	// DefaultDSNSecretSuffix is appended to metadata.name when a custom Secret is not requested.
@@ -33,16 +38,6 @@ type ProjectCreate struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=64
 	Team string `json:"team"`
-
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=64
-	// +optional
-	Slug string `json:"slug,omitempty"`
-
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=50
-	// +optional
-	DisplayName string `json:"displayName,omitempty"`
 
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=64
@@ -160,6 +155,77 @@ type DestinationSpec struct {
 	Telegram *TelegramDestination `json:"telegram,omitempty"`
 }
 
+// NotificationTargets selects readable resources inside platform-declared integrations.
+// Channel and service names must be unique within their provider because alerts reference
+// them as slack/<channel> and pagerDuty/<service>.
+type NotificationTargets struct {
+	// Slack maps one workspace catalog name to visible channel names.
+	// +kubebuilder:validation:MaxProperties=20
+	// +optional
+	Slack map[string][]string `json:"slack,omitempty"`
+
+	// PagerDuty maps one account catalog name to visible service names.
+	// +kubebuilder:validation:MaxProperties=20
+	// +optional
+	PagerDuty map[string][]string `json:"pagerDuty,omitempty"`
+
+	// Telegram contains registered readable targets.
+	// +kubebuilder:validation:MaxItems=100
+	// +listType=set
+	// +optional
+	Telegram []string `json:"telegram,omitempty"`
+}
+
+// Flatten returns canonical readable references without inventing local identifiers.
+func (t *NotificationTargets) Flatten() (map[string]DestinationSpec, error) {
+	result := map[string]DestinationSpec{}
+	if t == nil {
+		return result, nil
+	}
+	seenSlack := map[string]bool{}
+	for workspace, channels := range t.Slack {
+		for _, channel := range channels {
+			channel = strings.TrimPrefix(strings.TrimSpace(channel), "#")
+			if channel == "" || seenSlack[channel] {
+				return nil, ErrAmbiguousNotificationTarget
+			}
+			seenSlack[channel] = true
+			result["slack/"+channel] = DestinationSpec{Slack: &SlackDestination{Workspace: workspace, Channel: channel}}
+		}
+	}
+	seenPagerDuty := map[string]bool{}
+	for account, services := range t.PagerDuty {
+		for _, service := range services {
+			service = strings.TrimSpace(service)
+			if service == "" || seenPagerDuty[service] {
+				return nil, ErrAmbiguousNotificationTarget
+			}
+			seenPagerDuty[service] = true
+			result["pagerDuty/"+service] = DestinationSpec{PagerDuty: &PagerDutyDestination{Account: account, Service: service}}
+		}
+	}
+	seenTelegram := map[string]bool{}
+	for _, target := range t.Telegram {
+		target = strings.TrimSpace(target)
+		if target == "" || seenTelegram[target] {
+			return nil, ErrAmbiguousNotificationTarget
+		}
+		seenTelegram[target] = true
+		result["telegram/"+target] = DestinationSpec{Telegram: &TelegramDestination{Target: target}}
+	}
+	return result, nil
+}
+
+// ProjectRole is a request to acquire management or remain a non-owning candidate. Active
+// never authorizes stealing an existing claim.
+// +kubebuilder:validation:Enum=Active;Standby
+type ProjectRole string
+
+const (
+	ProjectRoleActive  ProjectRole = "Active"
+	ProjectRoleStandby ProjectRole = "Standby"
+)
+
 // AlertTrigger is the portable alert condition exposed by the operator.
 // +kubebuilder:validation:Enum=first-seen;regression;event-count
 type AlertTrigger string
@@ -191,7 +257,8 @@ type AlertSpec struct {
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=20
 	// +kubebuilder:validation:items:MinLength=1
-	// +kubebuilder:validation:items:MaxLength=63
+	// +kubebuilder:validation:items:MaxLength=211
+	// +kubebuilder:validation:items:Pattern=`^(slack|pagerDuty|telegram)/[^/[:space:]][^/]*$`
 	// +listType=set
 	Notify []string `json:"notify"`
 }
@@ -213,18 +280,27 @@ type LifecycleSpec struct {
 	OnDelete OnDeletePolicy `json:"onDelete,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="!has(self.project.use) || (!has(self.settings) && !has(self.destinations) && !has(self.alerts))",message="project.use forbids settings, destinations and alerts"
+// +kubebuilder:validation:XValidation:rule="!has(self.project.use) || (!has(self.settings) && !has(self.notificationTargets) && !has(self.alerts))",message="project.use forbids settings, notification targets and alerts"
+// +kubebuilder:validation:XValidation:rule="!has(self.project.use) || !has(self.alertPolicy)",message="project.use forbids alertPolicy"
 // +kubebuilder:validation:XValidation:rule="!has(self.project.use) || self.lifecycle.onDelete != 'DeleteProject'",message="project.use forbids lifecycle.onDelete DeleteProject"
-// +kubebuilder:validation:XValidation:rule="!has(self.destinations) || self.destinations.all(k, k.matches('^[a-z](?:[a-z0-9-]*[a-z0-9])?$'))",message="destination names must be lowercase DNS labels"
+// +kubebuilder:validation:XValidation:rule="self.role != 'Standby' || (!has(self.settings) && self.lifecycle.onDelete != 'DeleteProject')",message="Standby forbids settings and DeleteProject lifecycle"
 // +kubebuilder:validation:XValidation:rule="!has(self.alerts) || self.alerts.all(k, k.matches('^[a-z](?:[a-z0-9-]*[a-z0-9])?$'))",message="alert names must be lowercase DNS labels"
 // SentryProjectSpec defines the desired state of SentryProject.
 type SentryProjectSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
+	Sentry string `json:"sentry"`
+
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
 	// +optional
-	Connection string `json:"connection,omitempty"`
+	AlertPolicy string `json:"alertPolicy,omitempty"`
 
 	Project ProjectSelector `json:"project"`
+
+	// +kubebuilder:default=Active
+	// +optional
+	Role ProjectRole `json:"role,omitempty"`
 
 	// +optional
 	DSN *DSNSpec `json:"dsn,omitempty"`
@@ -232,9 +308,8 @@ type SentryProjectSpec struct {
 	// +optional
 	Settings *ProjectSettings `json:"settings,omitempty"`
 
-	// +kubebuilder:validation:MaxProperties=20
 	// +optional
-	Destinations map[string]DestinationSpec `json:"destinations,omitempty"`
+	NotificationTargets *NotificationTargets `json:"notificationTargets,omitempty"`
 
 	// An absent alerts field leaves existing alert children unmanaged. An explicit empty map
 	// deletes all protected operator-owned alerts.
@@ -264,6 +339,14 @@ type SentryProjectStatus struct {
 	// +optional
 	AccessMode string `json:"accessMode,omitempty"`
 
+	// +kubebuilder:validation:Enum=Active;Standby
+	// +optional
+	RequestedRole string `json:"requestedRole,omitempty"`
+
+	// +kubebuilder:validation:Enum=Active;Standby;Fenced;Conflict
+	// +optional
+	EffectiveRole string `json:"effectiveRole,omitempty"`
+
 	// +kubebuilder:validation:MaxLength=2048
 	// +optional
 	ProjectURL string `json:"projectURL,omitempty"`
@@ -278,11 +361,11 @@ type SentryProjectStatus struct {
 	// +optional
 	DSNClientKey string `json:"dsnClientKey,omitempty"`
 
-	// Destinations exposes only local names and safe lifecycle state. External
+	// NotificationTargets exposes only local names and safe lifecycle state. External
 	// integration, channel, service and Telegram identities remain protected.
 	// +mapType=granular
 	// +optional
-	Destinations map[string]DestinationStatus `json:"destinations,omitempty"`
+	NotificationTargets map[string]DestinationStatus `json:"notificationTargets,omitempty"`
 
 	// Alerts exposes only local names and safe lifecycle state. Adapter and external IDs stay
 	// in the protected project binding.
@@ -296,7 +379,7 @@ type SentryProjectStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
-// DestinationStatus is the safe status for one spec.destinations local key.
+// DestinationStatus is the safe status for one canonical notification target key.
 type DestinationStatus struct {
 	// +kubebuilder:validation:Enum=slack;pagerduty;telegram
 	Type string `json:"type"`

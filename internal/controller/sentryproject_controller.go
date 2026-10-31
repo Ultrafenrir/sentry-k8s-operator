@@ -35,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	sentryconfigurationv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
+	alertpolicyruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/alertpolicy"
 	alertsruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/alerts"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/audit"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
@@ -159,6 +160,10 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if !found {
 		return r.reportFailure(ctx, resource, "ConnectionNotReady", "The selected SentryConnection has not loaded its credentials yet.")
 	}
+	effectiveResource, appliedPolicy, application, err := r.applyAlertPolicy(ctx, resource, connection)
+	if err != nil {
+		return r.reportAlertPolicyFailure(ctx, resource, reasonForAlertPolicyError(err))
+	}
 	result, err := r.engine(apiClient).Reconcile(ctx, projectruntime.Input{
 		Project:        resource,
 		ConnectionName: connection.Name,
@@ -171,8 +176,8 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	dsnErr := err
 	settingsResult := r.reconcileSettings(ctx, resource, connection, apiClient, result)
 	settingsErr := settingsResult.Err()
-	destinationResult := r.reconcileDestinations(ctx, resource, connection, apiClient, result)
-	alertResult := r.reconcileAlerts(ctx, resource, connection, apiClient, result, destinationCleanupKeys(destinationResult))
+	destinationResult := r.reconcileDestinations(ctx, effectiveResource, connection, apiClient, result, application)
+	alertResult := r.reconcileAlerts(ctx, effectiveResource, connection, apiClient, result, destinationCleanupKeys(destinationResult), application)
 	if err := r.finalizeDestinationCleanup(ctx, resource, connection, &destinationResult, alertResult.ReleasableDestinations); err != nil {
 		destinationResult.PolicyErr = errors.Join(destinationResult.PolicyErr, err)
 	}
@@ -185,8 +190,15 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	resource.Status.ProjectURL = result.ProjectURL
 	resource.Status.DSNSecret = dsnResult.Secret
 	resource.Status.DSNClientKey = dsnResult.ClientKey
-	resource.Status.Destinations = safeDestinationStatuses(destinationResult.Statuses, resource.Status.Destinations)
+	resource.Status.NotificationTargets = safeDestinationStatuses(destinationResult.Statuses, resource.Status.NotificationTargets)
 	resource.Status.Alerts = safeAlertStatuses(alertResult.Statuses)
+	policyStatus, policyReason, policyMessage := metav1.ConditionTrue, "NotConfigured", "No reusable alert policy is configured."
+	if application.PolicyDeleting {
+		policyStatus, policyReason, policyMessage = metav1.ConditionFalse, "AlertPolicyDeleting", "The referenced alert policy is deleting; policy-owned children are being removed safely."
+	} else if appliedPolicy != nil {
+		policyReason, policyMessage = "AlertPolicyApplied", "The referenced alert policy was merged without ownership conflicts."
+	}
+	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{Type: "AlertPolicyReady", Status: policyStatus, ObservedGeneration: resource.Generation, Reason: policyReason, Message: policyMessage})
 	dsnApplicable := result.AccessMode == binding.AccessManage || resource.Spec.DSN != nil
 	dsnStatus, dsnReason, dsnMessage := dsnCondition(dsnApplicable, dsnResult.Phase, dsnResult.ExternalNameChanged, dsnErr)
 	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
@@ -205,16 +217,16 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		Reason:             settingsReason,
 		Message:            settingsMessage,
 	})
-	destinationApplicable := len(resource.Spec.Destinations) > 0 || len(destinationResult.Statuses) > 0
+	destinationApplicable := effectiveResource.Spec.NotificationTargets != nil || len(destinationResult.Statuses) > 0
 	destinationStatus, destinationReason, destinationMessage := destinationCondition(destinationApplicable, destinationResult, destinationErr)
 	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-		Type:               "DestinationsReady",
+		Type:               "NotificationTargetsReady",
 		Status:             destinationStatus,
 		ObservedGeneration: resource.Generation,
 		Reason:             destinationReason,
 		Message:            destinationMessage,
 	})
-	alertsApplicable := resource.Spec.Alerts != nil
+	alertsApplicable := effectiveResource.Spec.Alerts != nil
 	alertsStatus, alertsReason, alertsMessage := alertCondition(alertsApplicable, alertResult, alertErr)
 	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
 		Type:               "AlertsReady",
@@ -230,7 +242,7 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		Reason:             "ProjectVerified",
 		Message:            "Project identity, access mode and ownership evidence are verified.",
 	})
-	ready := (!dsnApplicable || dsnStatus == metav1.ConditionTrue) && (!settingsApplicable || settingsStatus == metav1.ConditionTrue) && (!destinationApplicable || destinationStatus == metav1.ConditionTrue) && (!alertsApplicable || alertsStatus == metav1.ConditionTrue)
+	ready := policyStatus == metav1.ConditionTrue && (!dsnApplicable || dsnStatus == metav1.ConditionTrue) && (!settingsApplicable || settingsStatus == metav1.ConditionTrue) && (!destinationApplicable || destinationStatus == metav1.ConditionTrue) && (!alertsApplicable || alertsStatus == metav1.ConditionTrue)
 	readyStatus := metav1.ConditionTrue
 	readyReason := "ProjectVerified"
 	readyMessage := "Project identity, access mode and all applicable components are verified."
@@ -332,7 +344,7 @@ func destinationCondition(applicable bool, result destination.Result, err error)
 			return metav1.ConditionFalse, "DestinationCleanupPending", "Removed destination routing cleanup is pending."
 		}
 	}
-	return metav1.ConditionTrue, "DestinationsReady", "All configured destinations have verified pinned identities."
+	return metav1.ConditionTrue, "NotificationTargetsReady", "All configured notification targets have verified pinned identities."
 }
 
 func alertCondition(applicable bool, result alertsruntime.Result, err error) (metav1.ConditionStatus, string, string) {
@@ -495,7 +507,7 @@ func (r *SentryProjectReconciler) reconcileSettings(ctx context.Context, resourc
 	})
 }
 
-func (r *SentryProjectReconciler) reconcileDestinations(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, apiClient *sentryapi.Client, projectResult projectruntime.Result) destination.Result {
+func (r *SentryProjectReconciler) reconcileDestinations(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, apiClient *sentryapi.Client, projectResult projectruntime.Result, application alertpolicyruntime.Result) destination.Result {
 	if projectResult.AccessMode != binding.AccessManage {
 		return destination.Result{}
 	}
@@ -503,7 +515,7 @@ func (r *SentryProjectReconciler) reconcileDestinations(ctx context.Context, res
 	if err != nil {
 		return destination.Result{PolicyErr: err}
 	}
-	if len(resource.Spec.Destinations) == 0 && len(record.Binding.Destinations) == 0 {
+	if resource.Spec.NotificationTargets == nil && len(record.Binding.Destinations) == 0 {
 		return destination.Result{}
 	}
 	var catalog destination.Catalog
@@ -512,13 +524,16 @@ func (r *SentryProjectReconciler) reconcileDestinations(ctx context.Context, res
 	} else {
 		catalog = &destination.HTTPCatalog{Client: apiClient}
 	}
+	catalog = &destination.AliasCatalog{Catalog: catalog, Integrations: connection.Spec.Integrations}
 	result := (&destination.Engine{Catalog: catalog}).Reconcile(ctx, destination.Input{
-		Namespace:  resource.Namespace,
-		Project:    resource.Spec,
-		Connection: connection.Spec,
-		Current:    record.Binding.Destinations,
+		Namespace:        resource.Namespace,
+		Project:          resource.Spec,
+		Connection:       connection.Spec,
+		Current:          record.Binding.Destinations,
+		Owners:           application.TargetOwners,
+		AllowedOwnerUIDs: allowedChildOwners(resource, record.Binding, application),
 	})
-	if reflect.DeepEqual(record.Binding.Destinations, result.Bindings) {
+	if reflect.DeepEqual(record.Binding.Destinations, result.Bindings) && reflect.DeepEqual(record.Binding.AlertPolicy, appliedPolicyBinding(application)) {
 		return result
 	}
 	if err := r.destinationAuthorizer(resource, connection, record.Binding, result)(ctx); err != nil {
@@ -531,13 +546,14 @@ func (r *SentryProjectReconciler) reconcileDestinations(ctx context.Context, res
 	}
 	next := record.Binding
 	next.Destinations = result.Bindings
+	next.AlertPolicy = appliedPolicyBinding(application)
 	if _, err := r.Bindings.UpdateBinding(ctx, record, next); err != nil {
 		result.PolicyErr = err
 	}
 	return result
 }
 
-func (r *SentryProjectReconciler) reconcileAlerts(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, apiClient *sentryapi.Client, projectResult projectruntime.Result, destinationCleanup []string) alertsruntime.Result {
+func (r *SentryProjectReconciler) reconcileAlerts(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, apiClient *sentryapi.Client, projectResult projectruntime.Result, destinationCleanup []string, application alertpolicyruntime.Result) alertsruntime.Result {
 	if projectResult.AccessMode != binding.AccessManage {
 		if resource.Spec.Alerts == nil {
 			return alertsruntime.Result{}
@@ -562,7 +578,7 @@ func (r *SentryProjectReconciler) reconcileAlerts(ctx context.Context, resource 
 			if alert.Enabled != nil {
 				enabled = *alert.Enabled
 			}
-			value := alertsruntime.Desired{Trigger: alertsruntime.Trigger(alert.Trigger), Enabled: enabled, Notify: append([]string(nil), alert.Notify...)}
+			value := alertsruntime.Desired{Owner: application.AlertOwners[name], Trigger: alertsruntime.Trigger(alert.Trigger), Enabled: enabled, Notify: append([]string(nil), alert.Notify...)}
 			if alert.WindowMinutes != nil {
 				value.WindowMinutes = int(*alert.WindowMinutes)
 			}
@@ -602,9 +618,10 @@ func (r *SentryProjectReconciler) reconcileAlerts(ctx context.Context, resource 
 			}
 			return record.Binding.PinnedAdapters["alerts"]
 		}(),
-		Capabilities: capabilities,
-		Marker:       marker,
-		Authorize:    r.alertAuthorizer(resource, connection, record.Binding),
+		Capabilities:     capabilities,
+		Marker:           marker,
+		Authorize:        r.alertAuthorizer(resource, connection, record.Binding),
+		AllowedOwnerUIDs: allowedChildOwners(resource, record.Binding, application),
 	})
 	if resource.Spec.Alerts == nil {
 		return result
@@ -616,11 +633,30 @@ func (r *SentryProjectReconciler) reconcileAlerts(ctx context.Context, resource 
 	if result.PinnedAdapter != "" {
 		next.PinnedAdapters["alerts"] = result.PinnedAdapter
 	}
-	if reflect.DeepEqual(record.Binding.Alerts, next.Alerts) && reflect.DeepEqual(record.Binding.Tombstones, next.Tombstones) && reflect.DeepEqual(record.Binding.PinnedAdapters, next.PinnedAdapters) {
+	next.AlertPolicy = appliedPolicyBinding(application)
+	if reflect.DeepEqual(record.Binding.Alerts, next.Alerts) && reflect.DeepEqual(record.Binding.Tombstones, next.Tombstones) && reflect.DeepEqual(record.Binding.PinnedAdapters, next.PinnedAdapters) && reflect.DeepEqual(record.Binding.AlertPolicy, next.AlertPolicy) {
 		return result
 	}
 	if _, err := r.Bindings.UpdateBinding(ctx, record, next); err != nil {
 		result.Statuses[""] = alertsruntime.Status{State: alertsruntime.StateError, Reason: "AlertStatePersistFailed", Err: err}
+	}
+	return result
+}
+
+func appliedPolicyBinding(application alertpolicyruntime.Result) *binding.AppliedAlertPolicy {
+	if application.PolicyUID == "" {
+		return nil
+	}
+	return &binding.AppliedAlertPolicy{Name: application.PolicyName, UID: application.PolicyUID, Generation: application.Generation}
+}
+
+func allowedChildOwners(resource *sentryconfigurationv1alpha1.SentryProject, current binding.ProjectBinding, application alertpolicyruntime.Result) map[string]bool {
+	result := map[string]bool{string(resource.UID): true}
+	if application.PolicyUID != "" {
+		result[application.PolicyUID] = true
+	}
+	if current.AlertPolicy != nil {
+		result[current.AlertPolicy.UID] = true
 	}
 	return result
 }
@@ -661,6 +697,14 @@ func (r *SentryProjectReconciler) alertAuthorizer(original *sentryconfigurationv
 			return err
 		}
 		if !reflect.DeepEqual(latestConnection.Spec.Compatibility, connection.Spec.Compatibility) {
+			return dsn.ErrAuthorization
+		}
+		latestProject := &sentryconfigurationv1alpha1.SentryProject{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(original), latestProject); err != nil {
+			return err
+		}
+		effectiveLatest, _, _, err := r.applyAlertPolicy(ctx, latestProject, latestConnection)
+		if err != nil || !reflect.DeepEqual(effectiveLatest.Spec.Alerts, original.Spec.Alerts) || !reflect.DeepEqual(effectiveLatest.Spec.NotificationTargets, original.Spec.NotificationTargets) {
 			return dsn.ErrAuthorization
 		}
 		state, err := r.Bindings.GetBinding(ctx, string(original.UID))
@@ -899,7 +943,16 @@ func (r *SentryProjectReconciler) destinationAuthorizer(original *sentryconfigur
 		if err := r.Get(ctx, client.ObjectKey{Name: connection.Name}, latestConnection); err != nil {
 			return err
 		}
-		for name, desired := range latest.Spec.Destinations {
+		effectiveLatest, _, _, err := r.applyAlertPolicy(ctx, latest, latestConnection)
+		if err != nil {
+			return dsn.ErrAuthorization
+		}
+		latest = effectiveLatest
+		desiredTargets, flattenErr := latest.Spec.NotificationTargets.Flatten()
+		if flattenErr != nil {
+			return dsn.ErrAuthorization
+		}
+		for name, desired := range desiredTargets {
 			_, policyErr := policy.EvaluateDestination(latest.Namespace, latest.Spec, latestConnection.Spec, desired)
 			status, statusFound := result.Statuses[name]
 			next, nextFound := result.Bindings[name]
@@ -919,6 +972,62 @@ func (r *SentryProjectReconciler) destinationAuthorizer(original *sentryconfigur
 		}
 		return nil
 	}
+}
+
+func (r *SentryProjectReconciler) applyAlertPolicy(ctx context.Context, project *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection) (*sentryconfigurationv1alpha1.SentryProject, *sentryconfigurationv1alpha1.SentryAlertPolicy, alertpolicyruntime.Result, error) {
+	effective := project.DeepCopy()
+	if project.Spec.AlertPolicy == "" {
+		merged, err := alertpolicyruntime.Merge(effective, nil)
+		return effective, nil, merged, err
+	}
+	policyResource := &sentryconfigurationv1alpha1.SentryAlertPolicy{}
+	if err := r.Get(ctx, client.ObjectKey{Name: project.Spec.AlertPolicy}, policyResource); err != nil {
+		return nil, nil, alertpolicyruntime.Result{}, err
+	}
+	if !policyResource.DeletionTimestamp.IsZero() {
+		merged, err := alertpolicyruntime.Merge(effective, nil)
+		if effective.Spec.Alerts == nil {
+			emptyAlerts := map[string]sentryconfigurationv1alpha1.AlertSpec{}
+			effective.Spec.Alerts = &emptyAlerts
+			merged.Alerts = &emptyAlerts
+		}
+		merged.PolicyDeleting = true
+		merged.PolicyName = policyResource.Name
+		return effective, nil, merged, err
+	}
+	merged, err := alertpolicyruntime.Merge(effective, policyResource)
+	if err != nil {
+		return nil, nil, alertpolicyruntime.Result{}, err
+	}
+	effective.Spec.NotificationTargets = merged.Targets
+	effective.Spec.Alerts = merged.Alerts
+	return effective, policyResource, merged, nil
+}
+
+func reasonForAlertPolicyError(err error) string {
+	switch {
+	case apierrors.IsNotFound(err):
+		return "AlertPolicyNotFound"
+	case errors.Is(err, alertpolicyruntime.ErrSentryMismatch):
+		return "AlertPolicySentryMismatch"
+	case errors.Is(err, alertpolicyruntime.ErrPolicyLocalConflict):
+		return "PolicyLocalConflict"
+	case errors.Is(err, alertpolicyruntime.ErrTargetNotFound):
+		return "AlertPolicyTargetNotFound"
+	default:
+		return "AlertPolicyInvalid"
+	}
+}
+
+func (r *SentryProjectReconciler) reportAlertPolicyFailure(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, reason string) (ctrl.Result, error) {
+	base := resource.DeepCopy()
+	resource.Status.ObservedGeneration = resource.Generation
+	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{Type: "AlertPolicyReady", Status: metav1.ConditionFalse, ObservedGeneration: resource.Generation, Reason: reason, Message: "The referenced alert policy could not be merged safely; no alert or notification target mutation was attempted."})
+	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionFalse, ObservedGeneration: resource.Generation, Reason: reason, Message: "The referenced alert policy is not ready."})
+	if err := r.Status().Patch(ctx, resource, client.MergeFrom(base)); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
 }
 
 func safeDestinationStatuses(statuses map[string]destination.Status, existing map[string]sentryconfigurationv1alpha1.DestinationStatus) map[string]sentryconfigurationv1alpha1.DestinationStatus {
@@ -1089,9 +1198,9 @@ func (r *SentryProjectReconciler) reportAccessRevoked(ctx context.Context, resou
 		})
 	}
 	if len(destinationResult.Statuses) > 0 {
-		resource.Status.Destinations = safeDestinationStatuses(destinationResult.Statuses, resource.Status.Destinations)
+		resource.Status.NotificationTargets = safeDestinationStatuses(destinationResult.Statuses, resource.Status.NotificationTargets)
 		meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-			Type: "DestinationsReady", Status: metav1.ConditionFalse, ObservedGeneration: resource.Generation,
+			Type: "NotificationTargetsReady", Status: metav1.ConditionFalse, ObservedGeneration: resource.Generation,
 			Reason: "DestinationAccessRevoked", Message: "New destination operations are denied; protected cleanup tombstones were recorded.",
 		})
 	}
@@ -1150,34 +1259,14 @@ func (r *SentryProjectReconciler) engine(apiClient *sentryapi.Client) *projectru
 }
 
 func (r *SentryProjectReconciler) resolveConnection(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject) (*sentryconfigurationv1alpha1.SentryConnection, error) {
-	if resource.Spec.Connection != "" {
-		connection := &sentryconfigurationv1alpha1.SentryConnection{}
-		if err := r.Get(ctx, client.ObjectKey{Name: resource.Spec.Connection}, connection); err != nil {
-			return nil, err
-		}
-		if _, err := policy.EvaluateProject(resource.Namespace, resource.Spec, connection.Spec); err != nil {
-			return nil, err
-		}
-		return connection, nil
-	}
-	list := &sentryconfigurationv1alpha1.SentryConnectionList{}
-	if err := r.List(ctx, list); err != nil {
+	connection := &sentryconfigurationv1alpha1.SentryConnection{}
+	if err := r.Get(ctx, client.ObjectKey{Name: resource.Spec.Sentry}, connection); err != nil {
 		return nil, err
 	}
-	candidates := make([]sentryconfigurationv1alpha1.SentryConnection, 0)
-	for _, connection := range list.Items {
-		if !connection.Spec.Default {
-			continue
-		}
-		if _, err := policy.EvaluateProject(resource.Namespace, resource.Spec, connection.Spec); err == nil {
-			candidates = append(candidates, connection)
-		}
-	}
-	selected, err := resolver.Only(candidates, "default-connection")
-	if err != nil {
+	if _, err := policy.EvaluateProject(resource.Namespace, resource.Spec, connection.Spec); err != nil {
 		return nil, err
 	}
-	return selected.DeepCopy(), nil
+	return connection, nil
 }
 
 func (r *SentryProjectReconciler) reportFailure(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, reason, message string) (ctrl.Result, error) {
@@ -1225,6 +1314,20 @@ func (r *SentryProjectReconciler) projectsForConnection(ctx context.Context, _ c
 	return requests
 }
 
+func (r *SentryProjectReconciler) projectsForAlertPolicy(ctx context.Context, object client.Object) []reconcile.Request {
+	projects := &sentryconfigurationv1alpha1.SentryProjectList{}
+	if err := r.List(ctx, projects); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0)
+	for i := range projects.Items {
+		if projects.Items[i].Spec.AlertPolicy == object.GetName() {
+			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&projects.Items[i])})
+		}
+	}
+	return requests
+}
+
 func (r *SentryProjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Registry == nil || r.Bindings == nil || r.ManagedBy == "" {
 		return fmt.Errorf("project runtime is required")
@@ -1232,6 +1335,7 @@ func (r *SentryProjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&sentryconfigurationv1alpha1.SentryProject{}).
 		Watches(&sentryconfigurationv1alpha1.SentryConnection{}, handler.EnqueueRequestsFromMapFunc(r.projectsForConnection)).
+		Watches(&sentryconfigurationv1alpha1.SentryAlertPolicy{}, handler.EnqueueRequestsFromMapFunc(r.projectsForAlertPolicy)).
 		Named("sentryproject").
 		Complete(r)
 }

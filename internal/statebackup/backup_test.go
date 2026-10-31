@@ -68,7 +68,7 @@ func TestExportFailsClosedOnSemanticallyInvalidStateRecord(t *testing.T) {
 		Alerts: map[string]binding.AlertBinding{
 			"rule": {
 				Adapter: "different-adapter", ExternalIdentity: "alert", Trigger: "first-seen",
-				DesiredHash: strings.Repeat("a", 64), Enabled: true, Destinations: []string{"chat"}, Marker: marker,
+				DesiredHash: strings.Repeat("a", 64), Enabled: true, Destinations: []string{"telegram/chat"}, Marker: marker,
 			},
 		},
 	}

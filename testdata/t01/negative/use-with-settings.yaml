@@ -4,6 +4,7 @@ metadata:
   name: invalid-use-settings
   namespace: checkout-prod
 spec:
+  sentry: company-sentry
   project:
     use: checkout-api
   settings:

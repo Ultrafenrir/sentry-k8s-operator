@@ -167,6 +167,36 @@ func (s *Store) GetBinding(ctx context.Context, projectUID string) (BindingRecor
 	return BindingRecord{Name: name, ResourceVersion: secret.ResourceVersion, Binding: binding}, nil
 }
 
+// HasPolicyChildren reports whether any protected project binding still contains an
+// alert or notification target owned by the exact policy incarnation. Invalid protected
+// state is an error so a policy finalizer fails closed instead of orphaning Sentry objects.
+func (s *Store) HasPolicyChildren(ctx context.Context, policyUID string) (bool, error) {
+	if policyUID == "" {
+		return false, ErrInvalidRecord
+	}
+	secrets := &corev1.SecretList{}
+	if err := s.Client.List(ctx, secrets, client.InNamespace(s.Namespace), client.MatchingLabels{recordTypeLabel: recordBinding}); err != nil {
+		return false, err
+	}
+	for i := range secrets.Items {
+		var project ProjectBinding
+		if err := decodeSecret(&secrets.Items[i], recordBinding, &project); err != nil || validateBinding(project) != nil {
+			return false, ErrInvalidRecord
+		}
+		for _, target := range project.Destinations {
+			if target.Owner.UID == policyUID {
+				return true, nil
+			}
+		}
+		for _, alert := range project.Alerts {
+			if alert.Owner.UID == policyUID {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 func (s *Store) UpdateBinding(ctx context.Context, previous BindingRecord, next ProjectBinding) (BindingRecord, error) {
 	if err := validateBinding(next); err != nil || previous.Name != BindingName(next.Project.UID) {
 		return BindingRecord{}, ErrInvalidRecord
@@ -363,6 +393,11 @@ func validateBinding(binding ProjectBinding) error {
 	if err := validateAlertBindings(binding); err != nil {
 		return err
 	}
+	for key, target := range binding.Destinations {
+		if !ValidNotificationTargetKey(key) || !target.Owner.Valid() {
+			return ErrInvalidRecord
+		}
+	}
 	return nil
 }
 
@@ -384,7 +419,7 @@ func validateAlertBindings(project ProjectBinding) error {
 		return ErrInvalidRecord
 	}
 	for key, alert := range project.Alerts {
-		if len(validation.IsDNS1123Label(key)) != 0 || alert.Adapter != pinned || alert.ExternalIdentity == "" || len(alert.ExternalIdentity) > 512 || strings.ContainsAny(alert.ExternalIdentity, "\r\n\x00") || alert.Trigger == "" || len(alert.Trigger) > 64 || !alert.Marker.Matches(*project.Marker) {
+		if len(validation.IsDNS1123Label(key)) != 0 || !alert.Owner.Valid() || alert.Adapter != pinned || alert.ExternalIdentity == "" || len(alert.ExternalIdentity) > 512 || strings.ContainsAny(alert.ExternalIdentity, "\r\n\x00") || alert.Trigger == "" || len(alert.Trigger) > 64 || !alert.Marker.Matches(*project.Marker) {
 			return ErrInvalidRecord
 		}
 		digest, err := hex.DecodeString(alert.DesiredHash)
@@ -393,13 +428,23 @@ func validateAlertBindings(project ProjectBinding) error {
 		}
 		seen := make(map[string]bool, len(alert.Destinations))
 		for _, destination := range alert.Destinations {
-			if len(validation.IsDNS1123Label(destination)) != 0 || seen[destination] {
+			if !ValidNotificationTargetKey(destination) || seen[destination] {
 				return ErrInvalidRecord
 			}
 			seen[destination] = true
 		}
 	}
 	return nil
+}
+
+// ValidNotificationTargetKey validates the canonical provider/readable-name key used by
+// protected bindings and registration requests.
+func ValidNotificationTargetKey(value string) bool {
+	provider, name, found := strings.Cut(value, "/")
+	if !found || name == "" || len(value) > 211 || strings.TrimSpace(name) != name || strings.ContainsAny(name, "/\r\n\x00") {
+		return false
+	}
+	return provider == "slack" || provider == "pagerDuty" || provider == "telegram"
 }
 
 func validateClaim(claim ManagerClaim) error {

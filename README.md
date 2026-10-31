@@ -4,15 +4,25 @@ An alpha Kubernetes operator for declaring a Sentry project next to an applicati
 public API uses readable project, team, Slack, PagerDuty, and Telegram names; external IDs,
 DSNs, tokens, Telegram chat IDs, and operation journals stay out of CR specs and status.
 
-The repository currently provides source-derived and mock-verified project ownership,
-public DSN publication, typed filters/PII settings, destination pinning, and the protected
-Telegram registration path. It is **not production-ready**: alert adapters, Slack runtime
-discovery, live Telegram delivery, upgrade recovery,
-and release packaging are still incomplete. See
+The repository currently provides project ownership, public DSN publication, typed
+filters/PII settings, destination pinning, legacy and modern alert adapters, protected
+Telegram registration/delivery components, recovery tooling, metrics, and alpha packaging.
+It is **not production-ready**: Slack runtime discovery, live external delivery, complete
+upgrade recovery, SaaS acceptance, and hosted release evidence are still incomplete. See
 [`docs/t06-destinations-progress.txt`](docs/t06-destinations-progress.txt),
 [`docs/t07-alerts-progress.txt`](docs/t07-alerts-progress.txt), and
 [`docs/kubernetes-compatibility.txt`](docs/kubernetes-compatibility.txt) for the precise
 evidence boundary.
+
+## Start here
+
+Agents and maintainers must read [`AGENTS.md`](AGENTS.md) first. The canonical clean local
+environment procedure is [`docs/development-runbook.md`](docs/development-runbook.md), and
+the current implementation/evidence/backlog summary is
+[`docs/project-status.md`](docs/project-status.md). These three files are intentionally
+shorter and more current than the historical task reports.
+
+All repository documentation and source comments must be written in English.
 
 ## Development
 
@@ -53,6 +63,10 @@ Run only one version at a time. The default `feature-complete` profile needs at 
 does not cover the complete alert/workflow acceptance surface. See
 [`docs/self-hosted-test-stack.md`](docs/self-hosted-test-stack.md) for lifecycle,
 isolation, CI, and current runtime-evidence details.
+
+For the reproducible lightweight Sentry 26.10.1 + kind + operator + CRD demo, follow
+[`docs/development-runbook.md`](docs/development-runbook.md) exactly. It includes cleanup,
+capability evidence, expected partial resources, API/UI inspection, metrics, and teardown.
 
 The registration RBAC probe uses the existing kind cluster and verifies that the writer
 has only status/protected-state access while the public Telegram receiver has no
@@ -316,7 +330,9 @@ routing, dedupe, DLQ, or mutation audit evidence.
 ## Design and compatibility
 
 - [`SENTRY_CONFIGURATION_OPERATOR_PLAN_V2.txt`](SENTRY_CONFIGURATION_OPERATOR_PLAN_V2.txt)
-  is the product/backlog source of truth.
+  defines product intent and sequencing.
+- [`docs/project-status.md`](docs/project-status.md) is the current implementation,
+  evidence, deferral, and backlog source of truth.
 - [`docs/alpha-surface.txt`](docs/alpha-surface.txt) records the published alpha boundary.
 - [`docs/name-resolution.txt`](docs/name-resolution.txt) defines readable-name resolution
   and pinning.

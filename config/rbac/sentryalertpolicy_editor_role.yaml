@@ -1,0 +1,14 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sentryalertpolicy-editor-role
+  labels:
+    app.kubernetes.io/name: sentry-kubernetes-operator
+    app.kubernetes.io/managed-by: kustomize
+rules:
+  - apiGroups: [sentryconfiguration.io]
+    resources: [sentryalertpolicies]
+    verbs: [create, delete, get, list, patch, update, watch]
+  - apiGroups: [sentryconfiguration.io]
+    resources: [sentryalertpolicies/status]
+    verbs: [get]

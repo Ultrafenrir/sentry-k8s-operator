@@ -319,6 +319,10 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "sentryconnection")
 		os.Exit(1)
 	}
+	if err := (&controller.SentryAlertPolicyReconciler{Client: mgr.GetClient(), Bindings: bindingStore}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "sentryalertpolicy")
+		os.Exit(1)
+	}
 	if err := (&controller.SentryProjectReconciler{
 		Client:               mgr.GetClient(),
 		Scheme:               mgr.GetScheme(),
@@ -345,6 +349,12 @@ func main() {
 		}
 	}
 	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err := webhookv1alpha1.SetupSentryAlertPolicyWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to create webhook", "webhook", "SentryAlertPolicy")
+			os.Exit(1)
+		}
+	}
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
 		if err := webhookv1alpha1.SetupSentryProjectWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "Failed to create webhook", "webhook", "SentryProject")

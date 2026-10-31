@@ -51,11 +51,7 @@ func (a *HTTPAdapter) GetBySlug(ctx context.Context, organization, slug string) 
 }
 
 func (a *HTTPAdapter) Create(ctx context.Context, request CreateRequest) (RemoteProject, error) {
-	displayName := request.DisplayName
-	if displayName == "" {
-		displayName = request.Slug
-	}
-	managedName, err := FormatManagedName(displayName, request.Marker)
+	managedName, err := FormatManagedNameFromSlug(request.Slug, request.Marker)
 	if err != nil {
 		return RemoteProject{}, err
 	}

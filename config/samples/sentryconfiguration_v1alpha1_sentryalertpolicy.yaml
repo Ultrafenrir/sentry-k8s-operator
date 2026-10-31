@@ -1,0 +1,24 @@
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryAlertPolicy
+metadata:
+  labels:
+    app.kubernetes.io/name: sentry-kubernetes-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: common-backend-alerts
+spec:
+  sentry: company-sentry
+  notificationTargets:
+    slack:
+      company-slack:
+        - backend-alerts
+    pagerDuty:
+      company-pagerduty:
+        - Backend Primary
+  alerts:
+    error-volume:
+      trigger: event-count
+      windowMinutes: 5
+      threshold: 200
+      notify:
+        - slack/backend-alerts
+        - pagerDuty/Backend Primary

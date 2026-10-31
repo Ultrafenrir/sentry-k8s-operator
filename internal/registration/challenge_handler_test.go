@@ -42,7 +42,7 @@ func TestChallengeHandlerAuthenticatesAuthorizesExactProjectAndReturnsCodeOnce(t
 	t.Parallel()
 
 	handler, tokens, access, store, now := challengeEndpointFixture(t)
-	request := httptest.NewRequest(http.MethodPost, "/v1/telegram/challenges", strings.NewReader(`{"namespace":"payments","project":"checkout","destination":"telegram"}`))
+	request := httptest.NewRequest(http.MethodPost, "/v1/telegram/challenges", strings.NewReader(`{"namespace":"payments","project":"checkout","destination":"telegram/payments-alerts"}`))
 	request.Header.Set("Authorization", "Bearer caller-token")
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -69,7 +69,7 @@ func TestChallengeHandlerAuthenticatesAuthorizesExactProjectAndReturnsCodeOnce(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	challenge := record.Binding.Destinations["telegram"].Telegram.Challenge
+	challenge := record.Binding.Destinations["telegram/payments-alerts"].Telegram.Challenge
 	if challenge == nil || challenge.CodeHash == code || challenge.PolicyResourceVersion != "1" || challenge.Project.Generation != 3 {
 		t.Fatalf("protected challenge=%#v", challenge)
 	}
@@ -86,7 +86,7 @@ func TestChallengeHandlerDeniesBeforeProtectedStateReadOrWrite(t *testing.T) {
 
 	handler, _, access, store, _ := challengeEndpointFixture(t)
 	access.allowed = false
-	request := httptest.NewRequest(http.MethodPost, "/v1/telegram/challenges", strings.NewReader(`{"namespace":"payments","project":"checkout","destination":"telegram"}`))
+	request := httptest.NewRequest(http.MethodPost, "/v1/telegram/challenges", strings.NewReader(`{"namespace":"payments","project":"checkout","destination":"telegram/payments-alerts"}`))
 	request.Header.Set("Authorization", "Bearer caller-token")
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -98,7 +98,7 @@ func TestChallengeHandlerDeniesBeforeProtectedStateReadOrWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.Binding.Destinations["telegram"].Telegram != nil {
+	if record.Binding.Destinations["telegram/payments-alerts"].Telegram != nil {
 		t.Fatal("denied request changed protected state")
 	}
 }
@@ -108,7 +108,7 @@ func TestChallengeHandlerRejectsUnreviewedTokensAndUnknownJSON(t *testing.T) {
 
 	handler, tokens, access, _, _ := challengeEndpointFixture(t)
 	tokens.authenticated = false
-	request := httptest.NewRequest(http.MethodPost, "/v1/telegram/challenges", strings.NewReader(`{"namespace":"payments","project":"checkout","destination":"telegram"}`))
+	request := httptest.NewRequest(http.MethodPost, "/v1/telegram/challenges", strings.NewReader(`{"namespace":"payments","project":"checkout","destination":"telegram/payments-alerts"}`))
 	request.Header.Set("Authorization", "Bearer rejected-token")
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -118,7 +118,7 @@ func TestChallengeHandlerRejectsUnreviewedTokensAndUnknownJSON(t *testing.T) {
 	}
 
 	tokens.authenticated = true
-	request = httptest.NewRequest(http.MethodPost, "/v1/telegram/challenges", strings.NewReader(`{"namespace":"payments","project":"checkout","destination":"telegram","code":"must-not-be-accepted"}`))
+	request = httptest.NewRequest(http.MethodPost, "/v1/telegram/challenges", strings.NewReader(`{"namespace":"payments","project":"checkout","destination":"telegram/payments-alerts","code":"must-not-be-accepted"}`))
 	request.Header.Set("Authorization", "Bearer caller-token")
 	request.Header.Set("Content-Type", "application/json")
 	response = httptest.NewRecorder()
@@ -144,18 +144,19 @@ func challengeEndpointFixture(t *testing.T) (*ChallengeHandler, *fakeTokenReview
 			Credentials: sentryv1alpha1.ConnectionCredentials{TokenSecretRef: sentryv1alpha1.SecretKeyReference{Name: "token", Key: "token"}},
 			Access: []sentryv1alpha1.AccessRule{{
 				Owner: "payments", Namespaces: sentryv1alpha1.NamespaceAccess{MatchNames: []string{"payments"}}, Teams: []string{"payments"}, AllowCreate: true,
-				Destinations: &sentryv1alpha1.DestinationAccess{Telegram: &sentryv1alpha1.TelegramDestinationGrant{Targets: []string{"payments-alerts"}}},
+				NotificationTargets: &sentryv1alpha1.NotificationTargetAccess{TelegramTargets: []string{"payments-alerts"}},
 			}},
 		},
 	}
 	project := &sentryv1alpha1.SentryProject{
 		ObjectMeta: metav1.ObjectMeta{Name: "checkout", Namespace: "payments", UID: types.UID("project-uid"), Generation: 3, ResourceVersion: "1"},
 		Spec: sentryv1alpha1.SentryProjectSpec{
-			Connection: "company", Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments", Slug: "checkout"}},
-			Destinations: map[string]sentryv1alpha1.DestinationSpec{"telegram": {Telegram: &sentryv1alpha1.TelegramDestination{Target: "payments-alerts"}}},
+			Sentry: "company", Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
+			NotificationTargets: &sentryv1alpha1.NotificationTargets{Telegram: []string{"payments-alerts"}},
 		},
 	}
-	_, selectorHash, err := destination.SelectorFingerprint(connection.Spec, project.Spec.Destinations["telegram"])
+	flattened, _ := project.Spec.NotificationTargets.Flatten()
+	_, selectorHash, err := destination.SelectorFingerprint(connection.Spec, flattened["telegram/payments-alerts"])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,8 +168,9 @@ func challengeEndpointFixture(t *testing.T) (*ChallengeHandler, *fakeTokenReview
 		Connection: connection.Name, Installation: connection.Spec.URL, Organization: connection.Spec.Organization, Slug: "checkout", Owner: "payments",
 		Origin: binding.OriginManaged, AccessMode: binding.AccessManage, ExternalIdentity: "project-id",
 		Marker: &binding.Marker{Origin: "managed", Owner: "payments", ManagedBy: "company-op"}, ManagerUID: string(project.UID), ClaimName: "claim",
-		Destinations: map[string]binding.DestinationBinding{"telegram": {
-			Kind: "telegram", SelectorHash: selectorHash, ResourceName: "payments-alerts", State: destination.StateRegistrationRequired,
+		Destinations: map[string]binding.DestinationBinding{"telegram/payments-alerts": {
+			Owner: binding.ChildOwner{Kind: binding.ChildOwnerProject, Name: project.Name, UID: string(project.UID), Generation: project.Generation},
+			Kind:  "telegram", SelectorHash: selectorHash, ResourceName: "payments-alerts", State: destination.StateRegistrationRequired,
 		}},
 	})
 	if err != nil {

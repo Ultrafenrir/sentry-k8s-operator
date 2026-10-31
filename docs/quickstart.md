@@ -49,7 +49,9 @@ kubectl create namespace checkout-prod
 ```
 
 Apply one resource. `team` is the readable Sentry team slug allowed by the platform policy;
-there is no external identifier to look up or copy.
+there is no external identifier to look up or copy. The managed Sentry project slug is
+always `metadata.name`. The operator derives the Sentry display name internally and adds
+the ownership marker required for safe recovery and guarded deletion.
 
 ```yaml
 apiVersion: sentryconfiguration.io/v1alpha1
@@ -58,6 +60,7 @@ metadata:
   name: checkout
   namespace: checkout-prod
 spec:
+  sentry: company-sentry
   project:
     create:
       team: payments
@@ -94,26 +97,26 @@ The complete Deployment form is in
 
 ## Add typed alerts
 
-Alerts refer only to local destination names. Legacy 24.7.1 supports enabled first-seen,
+Alerts refer to canonical readable notification target names. Legacy 24.7.1 supports enabled first-seen,
 regression and event-count rules; it deliberately rejects `enabled: false` because its
 DELETE operation is not a pause. The modern 26.10.1 profile currently supports event-count.
 
 ```yaml
 spec:
-  destinations:
-    team:
-      slack:
-        workspace: Company Slack
-        channel: payments-alerts
+  sentry: company-sentry
+  notificationTargets:
+    slack:
+      company-slack:
+        - payments-alerts
   alerts:
     new-errors:
       trigger: first-seen
-      notify: [team]
+      notify: [slack/payments-alerts]
     error-volume:
       trigger: event-count
       windowMinutes: 5
       threshold: 200
-      notify: [team]
+      notify: [slack/payments-alerts]
 ```
 
 Omitting `spec.alerts` leaves existing alerts unmanaged. Setting `spec.alerts: {}` removes

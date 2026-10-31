@@ -12,14 +12,11 @@ jobs:
   test:
     permissions:
       contents: read
-    name: Kubernetes ${{ matrix.kubernetes }}
+    name: Unit and admission tests
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        kubernetes:
-          - 1.35.0
-          - 1.36.2
+    env:
+      GOMODCACHE: ${{ runner.temp }}/sentry-operator-gomodcache
+      GOCACHE: ${{ runner.temp }}/sentry-operator-gocache
     steps:
       - name: Clone the code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -39,7 +36,7 @@ jobs:
 
       - name: Install pinned Kubernetes API server
         run: |
-          assets=$(.tools/bin/setup-envtest use "${{ matrix.kubernetes }}" -p path)
+          assets=$(.tools/bin/setup-envtest use "1.35.0" -p path)
           test -x "$assets/kube-apiserver"
           echo "KUBEBUILDER_ASSETS=$assets" >> "$GITHUB_ENV"
 
@@ -47,12 +44,12 @@ jobs:
         run: go mod verify
 
       - name: Run tests and sample admission validation
-        run: |
-          make test KUBEBUILDER_ASSETS="$KUBEBUILDER_ASSETS"
+        run: make test KUBEBUILDER_ASSETS="$KUBEBUILDER_ASSETS"
 
       - name: Verify deterministic failure contracts
-        if: matrix.kubernetes == '1.35.0'
-        env:
-          GOMODCACHE: ${{ runner.temp }}/sentry-operator-gomodcache
-          GOCACHE: ${{ runner.temp }}/sentry-operator-gocache
         run: make verify-t10-failure-injection
+
+      - name: Verify repository language and patches
+        run: |
+          make verify-english
+          git diff --check
