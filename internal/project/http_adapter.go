@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/ownership"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
 )
 
@@ -104,6 +105,24 @@ func (a *HTTPAdapter) Delete(ctx context.Context, organization, slug string) err
 		Path:      "/api/0/projects/" + url.PathEscape(organization) + "/" + url.PathEscape(slug) + "/",
 		RetrySafe: false,
 		Operation: "delete-project",
+	}, nil)
+	return err
+}
+
+// UpdateRegionalEvidence changes only the display name that carries compact ownership
+// evidence. The engine performs the required read-after-write verification.
+func (a *HTTPAdapter) UpdateRegionalEvidence(ctx context.Context, organization, slug string, evidence ownership.Evidence) error {
+	name, err := FormatRegionalManagedNameFromSlug(slug, evidence)
+	if err != nil {
+		return err
+	}
+	_, err = a.Client.DoJSON(ctx, sentryapi.Request{
+		Method: http.MethodPut,
+		Path:   "/api/0/projects/" + url.PathEscape(organization) + "/" + url.PathEscape(slug) + "/",
+		Body: struct {
+			Name string `json:"name"`
+		}{Name: name},
+		Operation: "update-project-regional-evidence",
 	}, nil)
 	return err
 }

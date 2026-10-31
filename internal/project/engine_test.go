@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,6 +34,7 @@ import (
 	sentryv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/audit"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/ownership"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
 )
 
@@ -98,6 +100,109 @@ func TestManagedCreateRejectsStandbyConnectionBeforeExternalMutation(t *testing.
 	}
 	if adapter.createCalls != 0 {
 		t.Fatalf("standby made %d create calls", adapter.createCalls)
+	}
+}
+
+func TestRegionalRevisionTakeoverUsesDelayReadbackAndPinsNewRevision(t *testing.T) {
+	t.Parallel()
+	engine, adapter, store := testEngine(t)
+	clock := &fakeOwnershipClock{}
+	engine.Clock = clock
+	input := managedInput("checkout", "uid-one", "payments")
+	input.Connection.Ownership = &sentryv1alpha1.ConnectionOwnership{
+		Region: "eu-west-1", Role: sentryv1alpha1.ConnectionRoleActive, Revision: 8,
+	}
+	if _, err := engine.Reconcile(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	input.Connection.Ownership.Revision = 9
+	if _, err := engine.Reconcile(context.Background(), input); err != nil {
+		t.Fatalf("takeover: %v", err)
+	}
+	if adapter.updateEvidenceCalls != 1 || clock.calls != 1 {
+		t.Fatalf("updates=%d sleeps=%d, want one each", adapter.updateEvidenceCalls, clock.calls)
+	}
+	record, err := store.GetBinding(context.Background(), "uid-one")
+	if err != nil || record.Binding.RegionalOwnership == nil || record.Binding.RegionalOwnership.Revision != 9 {
+		t.Fatalf("binding=%#v err=%v", record.Binding, err)
+	}
+	remote := adapter.projects["checkout"]
+	if remote.RegionalEvidence == nil || ownership.ValidateEvidence(ownership.Local{Marker: *record.Binding.RegionalOwnership, Active: true}, *remote.RegionalEvidence) != nil {
+		t.Fatalf("remote evidence=%#v", remote.RegionalEvidence)
+	}
+}
+
+func TestRegionalRevisionTakeoverRecoversCompletedRemoteWrite(t *testing.T) {
+	t.Parallel()
+	engine, adapter, store := testEngine(t)
+	input := managedInput("checkout", "uid-one", "payments")
+	input.Connection.Ownership = &sentryv1alpha1.ConnectionOwnership{
+		Region: "eu-west-1", Role: sentryv1alpha1.ConnectionRoleActive, Revision: 8,
+	}
+	if _, err := engine.Reconcile(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	input.Connection.Ownership.Revision = 9
+	desired := ownership.Marker{Region: "eu-west-1", Revision: 9, Owner: "payments", Installation: "company-sentry-op"}
+	evidence, err := ownership.EvidenceFor(desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := adapter.projects["checkout"]
+	remote.RegionalEvidence = &evidence
+	adapter.projects["checkout"] = remote
+	if _, err := engine.Reconcile(context.Background(), input); err != nil {
+		t.Fatalf("recover takeover: %v", err)
+	}
+	record, err := store.GetBinding(context.Background(), "uid-one")
+	if err != nil || record.Binding.RegionalOwnership == nil || record.Binding.RegionalOwnership.Revision != 9 || adapter.updateEvidenceCalls != 0 {
+		t.Fatalf("binding=%#v updates=%d err=%v", record.Binding, adapter.updateEvidenceCalls, err)
+	}
+}
+
+func TestRegionalRevisionTakeoverRejectsLowerRevision(t *testing.T) {
+	t.Parallel()
+	engine, adapter, _ := testEngine(t)
+	input := managedInput("checkout", "uid-one", "payments")
+	input.Connection.Ownership = &sentryv1alpha1.ConnectionOwnership{
+		Region: "eu-west-1", Role: sentryv1alpha1.ConnectionRoleActive, Revision: 8,
+	}
+	if _, err := engine.Reconcile(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	input.Connection.Ownership.Revision = 7
+	if _, err := engine.Reconcile(context.Background(), input); !IsReason(err, ReasonRevisionFenced) {
+		t.Fatalf("lower revision error=%v", err)
+	}
+	if adapter.updateEvidenceCalls != 0 {
+		t.Fatalf("lower revision made %d updates", adapter.updateEvidenceCalls)
+	}
+}
+
+func TestRegionalRevisionTakeoverRejectsForeignPinnedEvidence(t *testing.T) {
+	t.Parallel()
+	engine, adapter, _ := testEngine(t)
+	input := managedInput("checkout", "uid-one", "payments")
+	input.Connection.Ownership = &sentryv1alpha1.ConnectionOwnership{
+		Region: "eu-west-1", Role: sentryv1alpha1.ConnectionRoleActive, Revision: 8,
+	}
+	if _, err := engine.Reconcile(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	foreign := ownership.Marker{Region: "eu-west-1", Revision: 8, Owner: "other", Installation: "other-operator"}
+	evidence, err := ownership.EvidenceFor(foreign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := adapter.projects["checkout"]
+	remote.RegionalEvidence = &evidence
+	adapter.projects["checkout"] = remote
+	input.Connection.Ownership.Revision = 9
+	if _, err := engine.Reconcile(context.Background(), input); !IsReason(err, ReasonRevisionConflict) {
+		t.Fatalf("foreign evidence error=%v", err)
+	}
+	if adapter.updateEvidenceCalls != 0 {
+		t.Fatalf("foreign evidence made %d updates", adapter.updateEvidenceCalls)
 	}
 }
 
@@ -469,14 +574,29 @@ func TestDeleteProjectRejectsSameSlugReplacement(t *testing.T) {
 }
 
 type fakeAdapter struct {
-	mu                 sync.Mutex
-	projects           map[string]RemoteProject
-	createCalls        int
-	lastCreate         CreateRequest
-	loseCreateResponse bool
-	dropCreate         bool
-	deleteCalls        int
-	deleteLeavesObject bool
+	mu                  sync.Mutex
+	projects            map[string]RemoteProject
+	createCalls         int
+	lastCreate          CreateRequest
+	loseCreateResponse  bool
+	dropCreate          bool
+	deleteCalls         int
+	deleteLeavesObject  bool
+	updateEvidenceCalls int
+}
+
+func (a *fakeAdapter) UpdateRegionalEvidence(_ context.Context, _, slug string, evidence ownership.Evidence) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	project, found := a.projects[slug]
+	if !found {
+		return &sentryapi.APIError{Kind: sentryapi.ErrorNotFound, StatusCode: 404, Operation: "update-project-regional-evidence"}
+	}
+	a.updateEvidenceCalls++
+	project.Marker = nil
+	project.RegionalEvidence = &evidence
+	a.projects[slug] = project
+	return nil
 }
 
 func (a *fakeAdapter) GetBySlug(_ context.Context, _, slug string) (RemoteProject, error) {
@@ -552,6 +672,15 @@ func testEngine(t *testing.T) (*Engine, *fakeAdapter, *binding.Store) {
 type fakeAudit struct {
 	events []audit.Event
 	failAt int
+}
+
+type fakeOwnershipClock struct {
+	calls int
+}
+
+func (c *fakeOwnershipClock) Sleep(context.Context, time.Duration) error {
+	c.calls++
+	return nil
 }
 
 func (a *fakeAudit) Record(_ context.Context, event audit.Event) error {

@@ -101,6 +101,35 @@ func TestHTTPAdapterCreatesProjectWithRegionalRevisionEvidence(t *testing.T) {
 	}
 }
 
+func TestHTTPAdapterUpdatesOnlyRegionalRevisionEvidence(t *testing.T) {
+	t.Parallel()
+	marker := ownership.Marker{Region: "eu-west-1", Revision: 36, Owner: "payments", Installation: "company-sentry-op"}
+	evidence, err := ownership.EvidenceFor(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/api/0/projects/company/checkout/" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		name, _ := body["name"].(string)
+		parsed, found := ParseRegionalManagedName(name)
+		if !found || parsed != evidence || len(body) != 1 {
+			t.Errorf("regional update body = %#v", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	adapter := &HTTPAdapter{Client: testHTTPClient(t, server)}
+	if err := adapter.UpdateRegionalEvidence(context.Background(), "company", "checkout", evidence); err != nil {
+		t.Fatalf("UpdateRegionalEvidence: %v", err)
+	}
+}
+
 func TestHTTPAdapterGETParsesOnlyExactMarker(t *testing.T) {
 	t.Parallel()
 

@@ -51,6 +51,7 @@ const (
 const (
 	CapabilityAtomicDefaultRules = "project.create.atomic-default-rules"
 	CapabilityAutomaticActiveKey = "project.create.automatic-active-key"
+	defaultRevisionFencingDelay  = 5 * time.Second
 )
 
 // ManagedCreateSupported requires both source-critical lifecycle capabilities.
@@ -111,6 +112,12 @@ type Adapter interface {
 	Delete(ctx context.Context, organization, slug string) error
 }
 
+// RegionalOwnershipAdapter updates only the compact regional evidence embedded in the
+// project display name. Engines require it before taking over an existing lower revision.
+type RegionalOwnershipAdapter interface {
+	UpdateRegionalEvidence(ctx context.Context, organization, slug string, evidence ownership.Evidence) error
+}
+
 // Input contains one already-resolved connection and project.
 type Input struct {
 	Project        *sentryv1alpha1.SentryProject
@@ -137,6 +144,9 @@ type Engine struct {
 	Adapter   Adapter
 	ManagedBy string
 	Audit     audit.Sink
+	Clock     ownership.Clock
+	// FencingDelay defaults to five seconds when zero.
+	FencingDelay time.Duration
 }
 
 var ErrAuditUnavailable = errors.New("project mutation audit is unavailable")
@@ -376,8 +386,12 @@ func (e *Engine) reconcileManaged(ctx context.Context, input Input, installation
 	if claimRecord.Claim.Owner != decision.Owner {
 		return Result{}, &Error{Reason: ReasonOwnershipLost}
 	}
-	if !matchesManagedContext(bindingRecord.Binding, input, installation, slug, decision.Owner, marker, regional) {
+	if !matchesStaticManagedContext(bindingRecord.Binding, input, installation, slug, decision.Owner, marker) {
 		return Result{}, &Error{Reason: ReasonOwnershipLost}
+	}
+	bindingRecord, err = e.reconcileRegionalOwnership(ctx, input, bindingRecord, regional)
+	if err != nil {
+		return Result{}, err
 	}
 
 	remote, getErr := e.Adapter.GetBySlug(ctx, input.Connection.Organization, slug)
@@ -629,8 +643,152 @@ func (e *Engine) recordAuditReference(ctx context.Context, reference binding.Pro
 	return nil
 }
 
+func (e *Engine) reconcileRegionalOwnership(ctx context.Context, input Input, record binding.BindingRecord, desired *ownership.Marker) (binding.BindingRecord, error) {
+	pinned := record.Binding.RegionalOwnership
+	if equalRegionalOwnership(pinned, desired) {
+		return record, nil
+	}
+	if pinned == nil || desired == nil {
+		return binding.BindingRecord{}, &Error{Reason: ReasonRevisionConflict, cause: ownership.ErrConflict}
+	}
+	local := ownership.Local{Marker: *desired, Active: true}
+	if err := ownership.CanTakeOver(local, *pinned); err != nil {
+		return binding.BindingRecord{}, regionalOwnershipError(err)
+	}
+	updater, ok := e.Adapter.(RegionalOwnershipAdapter)
+	if !ok {
+		return binding.BindingRecord{}, &Error{Reason: ReasonInvalidState, cause: errors.New("project adapter does not support regional ownership updates")}
+	}
+	store := &regionalMarkerStore{
+		adapter: updater, reader: e.Adapter, organization: record.Binding.Organization,
+		slug: record.Binding.Slug, externalIdentity: record.Binding.ExternalIdentity,
+		previous: *pinned, desired: *desired,
+	}
+	observed, err := store.Read(ctx)
+	if err != nil {
+		return binding.BindingRecord{}, regionalOwnershipError(err)
+	}
+	if observed == *desired {
+		if err := e.recordAudit(ctx, input, audit.ActionUpdate, audit.OutcomeRecovered, audit.ReasonResultRecovered); err != nil {
+			return binding.BindingRecord{}, err
+		}
+		return e.updateRegionalBinding(ctx, record, desired)
+	}
+	claim, err := e.Bindings.GetClaim(ctx, record.Binding.Installation, record.Binding.Organization, record.Binding.Slug)
+	if err != nil || claim.Claim.Manager.UID != string(input.Project.UID) || claim.Claim.ExternalIdentity != record.Binding.ExternalIdentity || claim.Claim.Handoff != nil {
+		return binding.BindingRecord{}, &Error{Reason: ReasonOwnershipLost, cause: err}
+	}
+	if err := e.recordAudit(ctx, input, audit.ActionUpdate, audit.OutcomeStarted, audit.ReasonJournalSubmitted); err != nil {
+		return binding.BindingRecord{}, err
+	}
+	clock := e.Clock
+	if clock == nil {
+		clock = contextClock{}
+	}
+	delay := e.FencingDelay
+	if delay <= 0 {
+		delay = defaultRevisionFencingDelay
+	}
+	if err := ownership.TakeOver(ctx, store, clock, delay, local); err != nil {
+		reason := audit.ReasonApply
+		if store.wrote {
+			reason = audit.ReasonVerification
+		}
+		if auditErr := e.recordAudit(ctx, input, audit.ActionUpdate, audit.OutcomeFailed, reason); auditErr != nil {
+			return binding.BindingRecord{}, auditErr
+		}
+		return binding.BindingRecord{}, regionalOwnershipError(err)
+	}
+	if err := e.recordAudit(ctx, input, audit.ActionUpdate, audit.OutcomeSucceeded, audit.ReasonMutationVerified); err != nil {
+		return binding.BindingRecord{}, err
+	}
+	return e.updateRegionalBinding(ctx, record, desired)
+}
+
+func (e *Engine) updateRegionalBinding(ctx context.Context, record binding.BindingRecord, desired *ownership.Marker) (binding.BindingRecord, error) {
+	next := record.Binding
+	marker := *desired
+	next.RegionalOwnership = &marker
+	updated, err := e.Bindings.UpdateBinding(ctx, record, next)
+	if err != nil {
+		return binding.BindingRecord{}, err
+	}
+	return updated, nil
+}
+
+type regionalMarkerStore struct {
+	adapter          RegionalOwnershipAdapter
+	reader           Adapter
+	organization     string
+	slug             string
+	externalIdentity string
+	previous         ownership.Marker
+	desired          ownership.Marker
+	wrote            bool
+}
+
+func (s *regionalMarkerStore) Read(ctx context.Context) (ownership.Marker, error) {
+	remote, err := s.reader.GetBySlug(ctx, s.organization, s.slug)
+	if err != nil {
+		return ownership.Marker{}, err
+	}
+	if remote.Identity != s.externalIdentity || remote.RegionalEvidence == nil {
+		return ownership.Marker{}, ownership.ErrConflict
+	}
+	if ownership.ValidateEvidence(ownership.Local{Marker: s.desired, Active: true}, *remote.RegionalEvidence) == nil {
+		return s.desired, nil
+	}
+	if ownership.ValidateEvidence(ownership.Local{Marker: s.previous, Active: true}, *remote.RegionalEvidence) == nil {
+		return s.previous, nil
+	}
+	return ownership.Marker{}, ownership.ErrConflict
+}
+
+func (s *regionalMarkerStore) Write(ctx context.Context, marker ownership.Marker) error {
+	if marker != s.desired {
+		return ownership.ErrConflict
+	}
+	evidence, err := ownership.EvidenceFor(marker)
+	if err != nil {
+		return err
+	}
+	if err := s.adapter.UpdateRegionalEvidence(ctx, s.organization, s.slug, evidence); err != nil {
+		return err
+	}
+	s.wrote = true
+	return nil
+}
+
+type contextClock struct{}
+
+func (contextClock) Sleep(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func regionalOwnershipError(err error) error {
+	switch {
+	case errors.Is(err, ownership.ErrFenced):
+		return &Error{Reason: ReasonRevisionFenced, cause: err}
+	case errors.Is(err, ownership.ErrConflict), errors.Is(err, ownership.ErrChanged):
+		return &Error{Reason: ReasonRevisionConflict, cause: err}
+	default:
+		return err
+	}
+}
+
 func matchesManagedContext(state binding.ProjectBinding, input Input, installation, slug, owner string, marker binding.Marker, regional *ownership.Marker) bool {
-	return state.Version == binding.CurrentVersion && state.Project.UID == string(input.Project.UID) && state.Project.Namespace == input.Project.Namespace && state.Project.Name == input.Project.Name && state.Connection == input.ConnectionName && state.Installation == installation && state.Organization == input.Connection.Organization && state.Slug == slug && state.Owner == owner && state.Origin == binding.OriginManaged && state.AccessMode == binding.AccessManage && state.ManagerUID == string(input.Project.UID) && state.Marker != nil && state.Marker.Matches(marker) && equalRegionalOwnership(state.RegionalOwnership, regional)
+	return matchesStaticManagedContext(state, input, installation, slug, owner, marker) && equalRegionalOwnership(state.RegionalOwnership, regional)
+}
+
+func matchesStaticManagedContext(state binding.ProjectBinding, input Input, installation, slug, owner string, marker binding.Marker) bool {
+	return state.Version == binding.CurrentVersion && state.Project.UID == string(input.Project.UID) && state.Project.Namespace == input.Project.Namespace && state.Project.Name == input.Project.Name && state.Connection == input.ConnectionName && state.Installation == installation && state.Organization == input.Connection.Organization && state.Slug == slug && state.Owner == owner && state.Origin == binding.OriginManaged && state.AccessMode == binding.AccessManage && state.ManagerUID == string(input.Project.UID) && state.Marker != nil && state.Marker.Matches(marker)
 }
 
 func desiredRegionalOwnership(connection sentryv1alpha1.SentryConnectionSpec, owner, installation string) (*ownership.Marker, *ownership.Evidence, error) {

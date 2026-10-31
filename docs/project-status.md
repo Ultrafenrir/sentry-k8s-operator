@@ -114,10 +114,15 @@ an exact readback. Standby connections are rejected before project mutation.
 All managed child authorizers re-read that remote project evidence immediately before a
 Sentry mutation and fail closed on a changed revision, fingerprint, or external identity;
 guarded project deletion performs the same check in the project engine. This has unit-test
-evidence only and must not be described as live failover support. The controller does not
-yet take over an existing lower-revision marker with the required write-delay-read sequence,
-promote standby project candidates, or perform adoption. Revision takeover is therefore the
-first remaining ownership task.
+evidence only and must not be described as live failover support. A strictly larger Active
+revision now performs an exact pre-read of the pinned marker, updates only the compact remote
+evidence, waits for a bounded five-second fencing interval, verifies a read-after-write, and
+then advances protected state. A retry recovers when the remote write completed before the
+protected-state update. Equal-revision conflicts, lower local revisions, foreign markers,
+missing evidence, and replaced identities fail closed.
+The update endpoint has HTTP contract-test coverage but has not been exercised against live
+Sentry. The controller does not yet promote standby project candidates or perform adoption;
+those are the next remaining ownership tasks.
 
 The reusable alert-policy design decision is complete: `SentryAlertPolicy` is cluster
 scoped, ordinary cluster RBAC controls policy CRUD, and any project may opt in. There is no
