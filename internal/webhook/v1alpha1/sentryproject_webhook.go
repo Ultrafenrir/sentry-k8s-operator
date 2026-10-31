@@ -150,6 +150,9 @@ func validateSentryProject(obj *sentryconfigurationv1alpha1.SentryProject) error
 		if obj.Spec.Lifecycle.OnDelete == sentryconfigurationv1alpha1.OnDeleteDeleteProject {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("lifecycle", "onDelete"), "Standby cannot delete the project"))
 		}
+		if obj.Spec.GrantAccess != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("grantAccess"), "Standby cannot manage project access"))
+		}
 	}
 	create := obj.Spec.Project.Create != nil
 	use := obj.Spec.Project.Use != nil
@@ -171,6 +174,9 @@ func validateSentryProject(obj *sentryconfigurationv1alpha1.SentryProject) error
 		if obj.Spec.Settings != nil {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("settings"), "project.use is read-only"))
 		}
+		if obj.Spec.GrantAccess != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("grantAccess"), "project.use is read-only"))
+		}
 		if obj.Spec.NotificationTargets != nil {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("notificationTargets"), "project.use is read-only"))
 		}
@@ -182,6 +188,22 @@ func validateSentryProject(obj *sentryconfigurationv1alpha1.SentryProject) error
 		}
 		if obj.Spec.Lifecycle.OnDelete == sentryconfigurationv1alpha1.OnDeleteDeleteProject {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("lifecycle", "onDelete"), "project.use cannot delete an external project"))
+		}
+	}
+	if obj.Spec.GrantAccess != nil {
+		seen := map[string]bool{}
+		for index, team := range obj.Spec.GrantAccess.Teams {
+			teamPath := specPath.Child("grantAccess", "teams").Index(index)
+			for _, message := range validation.IsDNS1123Label(team) {
+				allErrs = append(allErrs, field.Invalid(teamPath, team, message))
+			}
+			if seen[team] {
+				allErrs = append(allErrs, field.Duplicate(teamPath, team))
+			}
+			seen[team] = true
+			if create && team == obj.Spec.Project.Create.Team {
+				allErrs = append(allErrs, field.Invalid(teamPath, team, "grantAccess must not repeat project.create.team"))
+			}
 		}
 	}
 	if obj.Spec.DSN != nil && obj.Spec.DSN.Secret != "" {

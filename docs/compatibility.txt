@@ -1,5 +1,5 @@
 SENTRY CONFIGURATION OPERATOR — COMPATIBILITY MATRIX
-Source review: 2026-10-30
+Source review: 2026-10-31
 Status: Contract baseline plus recorded disposable-stack evidence; not a production or SaaS
 certification.
 
@@ -26,6 +26,7 @@ certification.
 | Project create with `default_rules=false` | Verified | Verified | Required for managed creation. |
 | Automatic active client key | Verified | Verified | Required for immediate DSN publication. |
 | Existing project read | Verified | Verified | Subject to access policy. |
+| Additional project team access | Verified | Verified | Public project-team endpoints; live grant/revoke acceptance passed. |
 | Typed inbound filters | Verified | Verified | Browser extensions, localhost, web crawlers. |
 | Typed PII settings | Verified | Verified | Scrub flags plus safe/sensitive fields. |
 | Legacy issue rules | Verified | Unsupported | 26.10.1 collection route returns 404. |
@@ -47,6 +48,12 @@ marker. It never sends a second blind POST. It selects an active project client 
 publishes only the public DSN to the application Secret. Secret/token/private key material
 does not enter status or logs.
 
+Managed projects may attach additional authorized teams through `grantAccess`. The
+controller lists project teams, pins each managed team identity, verifies add/remove
+mutations, and leaves unrelated teams untouched. A clean disposable-stack run verified
+grant, read-back, revoke, and preservation of the primary project team on both supported
+versions.
+
 5. Settings
 
 Both supported versions expose compatible public filter endpoints and project settings for
@@ -60,6 +67,11 @@ The legacy adapter owns Sentry issue and metric rules using protected markers an
 The modern adapter owns an attached metric detector/workflow pair. Delete/disable semantics
 are adapter-specific and validated before mutation. Omitted alerts remain unmanaged; an
 explicit empty map cleans up only operator-owned alerts.
+
+Direct alerts and reusable cluster-scoped alert policies have live configuration evidence
+on both supported targets. Policy generation updates preserve protected child ownership and
+report aggregate rollout only after policy-owned targets and alerts are Ready. This does not
+prove that Slack or PagerDuty delivered a notification.
 
 7. Integrations
 

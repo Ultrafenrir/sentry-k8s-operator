@@ -39,6 +39,10 @@ func TestControllerMetricsExposeOnlyFixedLabels(t *testing.T) {
 	metrics.ObserveReconcile(controllerConnection, ctrl.Result{}, errors.New("private-error-SHOULD-NOT-LEAK"), -time.Second)
 	metrics.ObserveCondition(controllerProject, "Ready", metav1.ConditionTrue)
 	metrics.ObserveCondition(controllerProject, "AlertsReady", metav1.ConditionFalse)
+	metrics.ObserveReconcile(controllerAlertPolicy, ctrl.Result{}, nil, time.Second)
+	metrics.ObserveCondition(controllerAlertPolicy, "RolloutComplete", metav1.ConditionTrue)
+	metrics.ObserveCondition(controllerProject, "AlertPolicyReady", metav1.ConditionTrue)
+	metrics.ObserveCondition(controllerProject, "GrantAccessReady", metav1.ConditionTrue)
 	metrics.ObserveCondition("private-controller-SHOULD-NOT-LEAK", "private-condition-SHOULD-NOT-LEAK", "private-status-SHOULD-NOT-LEAK")
 
 	families, err := registry.Gather()
@@ -52,8 +56,12 @@ func TestControllerMetricsExposeOnlyFixedLabels(t *testing.T) {
 	for _, expected := range []string{
 		"controller=project outcome=requeue",
 		"controller=connection outcome=error",
+		"controller=alertpolicy outcome=success",
 		"condition=Ready controller=project status=True",
 		"condition=AlertsReady controller=project status=False",
+		"condition=RolloutComplete controller=alertpolicy status=True",
+		"condition=AlertPolicyReady controller=project status=True",
+		"condition=GrantAccessReady controller=project status=True",
 		"condition=unknown controller=unknown status=unknown",
 	} {
 		if !strings.Contains(encoded, expected) {

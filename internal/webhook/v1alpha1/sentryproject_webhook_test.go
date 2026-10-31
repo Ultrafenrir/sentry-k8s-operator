@@ -75,6 +75,17 @@ var _ = Describe("SentryProject Webhook", func() {
 		Expect(err).To(MatchError(ContainSubstring("project.use is read-only")))
 	})
 
+	It("accepts additional team slugs and rejects the primary team", func() {
+		obj := managedProject("checkout")
+		obj.Spec.GrantAccess = &sentryconfigurationv1alpha1.ProjectGrantAccess{Teams: []string{"backend", "security"}}
+		_, err := validator.ValidateCreate(context.Background(), obj)
+		Expect(err).NotTo(HaveOccurred())
+
+		obj.Spec.GrantAccess.Teams = []string{"payments"}
+		_, err = validator.ValidateCreate(context.Background(), obj)
+		Expect(err).To(MatchError(ContainSubstring("must not repeat project.create.team")))
+	})
+
 	It("rejects ambiguous names within one provider", func() {
 		obj := managedProject("checkout")
 		obj.Spec.NotificationTargets = &sentryconfigurationv1alpha1.NotificationTargets{Slack: map[string][]string{

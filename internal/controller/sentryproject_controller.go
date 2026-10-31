@@ -44,6 +44,7 @@ import (
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/dsn"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/policy"
 	projectruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/project"
+	projectaccessruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/projectaccess"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/registration"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/resolver"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
@@ -58,6 +59,8 @@ type ClientKeyLister func(context.Context, *sentryapi.Client, string, string) ([
 
 type SettingsAdapterFactory func(*sentryapi.Client) settingsruntime.Adapter
 
+type ProjectAccessAdapterFactory func(*sentryapi.Client) projectaccessruntime.Adapter
+
 type DestinationCatalogFactory func(*sentryapi.Client) destination.Catalog
 
 type AlertAdapterFactory func(*sentryapi.Client, map[string]binding.DestinationBinding) alertsruntime.Adapter
@@ -70,13 +73,14 @@ type SentryProjectReconciler struct {
 	Bindings *binding.Store
 	// OutputSecrets bypasses the Secret cache, which is deliberately limited to
 	// the distinct platform-credential and protected-state namespaces.
-	OutputSecrets         client.Client
-	ManagedBy             string
-	NewAdapter            AdapterFactory
-	ListKeys              ClientKeyLister
-	NewSettingsAdapter    SettingsAdapterFactory
-	NewDestinationCatalog DestinationCatalogFactory
-	NewAlertAdapter       AlertAdapterFactory
+	OutputSecrets           client.Client
+	ManagedBy               string
+	NewAdapter              AdapterFactory
+	ListKeys                ClientKeyLister
+	NewSettingsAdapter      SettingsAdapterFactory
+	NewProjectAccessAdapter ProjectAccessAdapterFactory
+	NewDestinationCatalog   DestinationCatalogFactory
+	NewAlertAdapter         AlertAdapterFactory
 	// RegistrationRecovery uses a direct uncached client. It completes a durable
 	// Telegram publish/fence release before any Sentry API dependency is needed.
 	RegistrationRecovery *registration.Service
@@ -87,6 +91,8 @@ type SentryProjectReconciler struct {
 	Audit                audit.Sink
 	DestinationAudit     audit.Sink
 }
+
+const projectDriftReconcileInterval = 30 * time.Second
 
 // +kubebuilder:rbac:groups=sentryconfiguration.io,resources=sentryprojects,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=sentryconfiguration.io,resources=sentryprojects/status,verbs=get;update;patch
@@ -172,6 +178,8 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err != nil {
 		return r.reportFailure(ctx, resource, reasonForError(err), "Project reconciliation is safely blocked; no unverified mutation was performed.")
 	}
+	projectAccessResult := r.reconcileProjectAccess(ctx, resource, connection, apiClient, result)
+	projectAccessErr := projectAccessResult.Err
 	dsnResult, err := r.reconcileDSN(ctx, resource, connection, apiClient, result)
 	dsnErr := err
 	settingsResult := r.reconcileSettings(ctx, resource, connection, apiClient, result)
@@ -217,6 +225,15 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		Reason:             settingsReason,
 		Message:            settingsMessage,
 	})
+	projectAccessApplicable := resource.Spec.GrantAccess != nil || len(projectAccessResult.Bindings) > 0
+	projectAccessStatus, projectAccessReason, projectAccessMessage := projectAccessCondition(projectAccessApplicable, projectAccessErr)
+	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+		Type:               "GrantAccessReady",
+		Status:             projectAccessStatus,
+		ObservedGeneration: resource.Generation,
+		Reason:             projectAccessReason,
+		Message:            projectAccessMessage,
+	})
 	destinationApplicable := effectiveResource.Spec.NotificationTargets != nil || len(destinationResult.Statuses) > 0
 	destinationStatus, destinationReason, destinationMessage := destinationCondition(destinationApplicable, destinationResult, destinationErr)
 	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
@@ -242,7 +259,7 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		Reason:             "ProjectVerified",
 		Message:            "Project identity, access mode and ownership evidence are verified.",
 	})
-	ready := policyStatus == metav1.ConditionTrue && (!dsnApplicable || dsnStatus == metav1.ConditionTrue) && (!settingsApplicable || settingsStatus == metav1.ConditionTrue) && (!destinationApplicable || destinationStatus == metav1.ConditionTrue) && (!alertsApplicable || alertsStatus == metav1.ConditionTrue)
+	ready := policyStatus == metav1.ConditionTrue && (!dsnApplicable || dsnStatus == metav1.ConditionTrue) && (!settingsApplicable || settingsStatus == metav1.ConditionTrue) && (!projectAccessApplicable || projectAccessStatus == metav1.ConditionTrue) && (!destinationApplicable || destinationStatus == metav1.ConditionTrue) && (!alertsApplicable || alertsStatus == metav1.ConditionTrue)
 	readyStatus := metav1.ConditionTrue
 	readyReason := "ProjectVerified"
 	readyMessage := "Project identity, access mode and all applicable components are verified."
@@ -265,7 +282,7 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if !ready {
 		return ctrl.Result{RequeueAfter: jitterDuration(30 * time.Second)}, nil
 	}
-	return ctrl.Result{RequeueAfter: jitterDuration(10 * time.Minute)}, nil
+	return ctrl.Result{RequeueAfter: jitterDuration(projectDriftReconcileInterval)}, nil
 }
 
 func (r *SentryProjectReconciler) resumePendingRegistration(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject) (bool, error) {
@@ -326,6 +343,16 @@ func settingsCondition(applicable bool, result settingsruntime.Result, err error
 	return metav1.ConditionTrue, "SettingsReady", "All requested typed project settings match desired state."
 }
 
+func projectAccessCondition(applicable bool, err error) (metav1.ConditionStatus, string, string) {
+	if !applicable {
+		return metav1.ConditionUnknown, "NotApplicable", "No additional project team access is managed."
+	}
+	if err != nil {
+		return metav1.ConditionFalse, reasonForError(err), "Additional project team access could not be fully reconciled."
+	}
+	return metav1.ConditionTrue, "GrantAccessReady", "All requested additional teams have project access."
+}
+
 func destinationCondition(applicable bool, result destination.Result, err error) (metav1.ConditionStatus, string, string) {
 	if !applicable {
 		return metav1.ConditionUnknown, "NotApplicable", "No notification destinations are configured."
@@ -371,6 +398,70 @@ type dsnReconcileResult struct {
 	ClientKey           string
 	Phase               dsn.Phase
 	ExternalNameChanged bool
+}
+
+func (r *SentryProjectReconciler) reconcileProjectAccess(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, apiClient *sentryapi.Client, projectResult projectruntime.Result) projectaccessruntime.Result {
+	record, err := r.Bindings.GetBinding(ctx, string(resource.UID))
+	if err != nil {
+		return projectaccessruntime.Result{Err: err}
+	}
+	if resource.Spec.GrantAccess == nil && len(record.Binding.GrantedTeams) == 0 {
+		return projectaccessruntime.Result{Bindings: map[string]string{}}
+	}
+	if projectResult.AccessMode != binding.AccessManage || resource.Spec.Project.Create == nil {
+		return projectaccessruntime.Result{Bindings: record.Binding.GrantedTeams, Err: projectaccessruntime.ErrInvalidInput}
+	}
+	var adapter projectaccessruntime.Adapter
+	if r.NewProjectAccessAdapter != nil {
+		adapter = r.NewProjectAccessAdapter(apiClient)
+	} else {
+		adapter = &projectaccessruntime.HTTPAdapter{Client: apiClient}
+	}
+	authorizedDesired, policyErr := policy.AuthorizedProjectAccessTeams(resource.Namespace, resource.Spec, connection.Spec)
+	result := (&projectaccessruntime.Engine{Adapter: adapter, Audit: r.Audit}).Reconcile(ctx, projectaccessruntime.Input{
+		Organization: connection.Spec.Organization, ProjectSlug: record.Binding.Slug,
+		PrimaryTeam: resource.Spec.Project.Create.Team, Desired: authorizedDesired, Current: record.Binding.GrantedTeams,
+		LocalResource: resource.Namespace + "/" + resource.Name, Generation: resource.Generation,
+		Authorize: r.projectAccessAuthorizer(resource, connection, record.Binding, authorizedDesired),
+	})
+	result.Err = errors.Join(result.Err, policyErr)
+	if reflect.DeepEqual(record.Binding.GrantedTeams, result.Bindings) {
+		return result
+	}
+	next := record.Binding
+	next.GrantedTeams = result.Bindings
+	if _, err := r.Bindings.UpdateBinding(ctx, record, next); err != nil {
+		result.Err = errors.Join(result.Err, err)
+	}
+	return result
+}
+
+func (r *SentryProjectReconciler) projectAccessAuthorizer(original *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, expected binding.ProjectBinding, expectedTeams []string) projectaccessruntime.Authorization {
+	return func(ctx context.Context) error {
+		if err := r.dsnAuthorizer(original, connection, expected)(ctx); err != nil {
+			return err
+		}
+		latest := &sentryconfigurationv1alpha1.SentryProject{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(original), latest); err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(latest.Spec.GrantAccess, original.Spec.GrantAccess) {
+			return projectaccessruntime.ErrAuthorization
+		}
+		latestConnection := &sentryconfigurationv1alpha1.SentryConnection{}
+		if err := r.Get(ctx, client.ObjectKey{Name: connection.Name}, latestConnection); err != nil {
+			return err
+		}
+		latestTeams, policyErr := policy.AuthorizedProjectAccessTeams(latest.Namespace, latest.Spec, latestConnection.Spec)
+		if !reflect.DeepEqual(latestTeams, expectedTeams) || (policyErr != nil && !policy.IsKind(policyErr, policy.ErrorAccessDenied)) {
+			return projectaccessruntime.ErrAuthorization
+		}
+		state, err := r.Bindings.GetBinding(ctx, string(original.UID))
+		if err != nil || !reflect.DeepEqual(state.Binding.GrantedTeams, expected.GrantedTeams) {
+			return projectaccessruntime.ErrAuthorization
+		}
+		return nil
+	}
 }
 
 func (r *SentryProjectReconciler) reconcileDSN(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, apiClient *sentryapi.Client, projectResult projectruntime.Result) (dsnReconcileResult, error) {
@@ -1364,6 +1455,18 @@ func reasonForError(err error) string {
 	}
 	if errors.Is(err, settingsruntime.ErrUnsupportedFilter) {
 		return "SettingsUnsupported"
+	}
+	if errors.Is(err, projectaccessruntime.ErrAuthorization) {
+		return "AuthorizationChanged"
+	}
+	if errors.Is(err, projectaccessruntime.ErrIdentityChange) {
+		return "TeamIdentityChanged"
+	}
+	if errors.Is(err, projectaccessruntime.ErrInvalidInput) {
+		return "GrantAccessInvalid"
+	}
+	if errors.Is(err, projectaccessruntime.ErrVerification) {
+		return "GrantAccessVerificationFailed"
 	}
 	if errors.Is(err, destination.ErrExternalObjectReplaced) {
 		return "ExternalObjectReplaced"

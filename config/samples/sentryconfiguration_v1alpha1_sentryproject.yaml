@@ -12,6 +12,9 @@ spec:
   project:
     create:
       team: payments
+  grantAccess:
+    teams:
+      - platform-observability
   notificationTargets:
     slack:
       company-slack:

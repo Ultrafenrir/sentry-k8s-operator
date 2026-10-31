@@ -36,6 +36,7 @@ spec:
           - checkout-prod
       teams:
         - payments
+        - platform-observability
       allowCreate: true
       existingProjects:
         observe:

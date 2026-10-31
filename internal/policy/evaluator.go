@@ -93,14 +93,46 @@ func Evaluate(namespace string, project sentryv1alpha1.SentryProjectSpec, connec
 // settings, DSN, or another allowed destination from reconciling.
 func EvaluateProject(namespace string, project sentryv1alpha1.SentryProjectSpec, connection sentryv1alpha1.SentryConnectionSpec) (Decision, error) {
 	project.NotificationTargets = nil
+	project.GrantAccess = nil
 	return Evaluate(namespace, project, connection)
+}
+
+// AuthorizedProjectAccessTeams returns the independently authorized subset so revoked
+// grants can be cleaned up without blocking the project's unrelated components.
+func AuthorizedProjectAccessTeams(namespace string, project sentryv1alpha1.SentryProjectSpec, connection sentryv1alpha1.SentryConnectionSpec) ([]string, error) {
+	decision, err := EvaluateProject(namespace, project, connection)
+	if err != nil {
+		return nil, err
+	}
+	if decision.AccessMode != "Manage" || project.Project.Create == nil {
+		return nil, &Error{Kind: ErrorAccessDenied}
+	}
+	rule, err := ruleForNamespace(namespace, connection.Access)
+	if err != nil {
+		return nil, err
+	}
+	if project.GrantAccess == nil {
+		return nil, nil
+	}
+	result := make([]string, 0, len(project.GrantAccess.Teams))
+	denied := false
+	for _, team := range project.GrantAccess.Teams {
+		if team == project.Project.Create.Team || !contains(rule.Teams, team) {
+			denied = true
+			continue
+		}
+		result = append(result, team)
+	}
+	if denied {
+		return result, &Error{Kind: ErrorAccessDenied}
+	}
+	return result, nil
 }
 
 // EvaluateDestination evaluates project access plus exactly one destination selector.
 // Callers use this both before lookup and immediately before protected-state CAS.
 func EvaluateDestination(namespace string, project sentryv1alpha1.SentryProjectSpec, connection sentryv1alpha1.SentryConnectionSpec, destination sentryv1alpha1.DestinationSpec) (Decision, error) {
-	project.NotificationTargets = nil
-	decision, err := Evaluate(namespace, project, connection)
+	decision, err := EvaluateProject(namespace, project, connection)
 	if err != nil {
 		return Decision{}, err
 	}

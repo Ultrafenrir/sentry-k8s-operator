@@ -39,7 +39,7 @@ type Result struct {
 
 func Merge(project *sentryv1alpha1.SentryProject, policy *sentryv1alpha1.SentryAlertPolicy) (Result, error) {
 	projectSpec := project.Spec
-	projectOwner := binding.ChildOwner{Kind: binding.ChildOwnerProject, Name: project.Name, UID: string(project.UID), Generation: project.Generation}
+	projectOwner := binding.ChildOwner{Kind: binding.ChildOwnerProject, Name: project.Name, UID: string(project.UID)}
 	if policy == nil {
 		return Result{Targets: cloneTargets(projectSpec.NotificationTargets), Alerts: cloneAlerts(projectSpec.Alerts), TargetOwners: ownersForTargets(projectSpec.NotificationTargets, projectOwner), AlertOwners: ownersForAlerts(localAlerts(projectSpec), projectOwner)}, nil
 	}
@@ -76,7 +76,7 @@ func Merge(project *sentryv1alpha1.SentryProject, policy *sentryv1alpha1.SentryA
 		mergedAlerts = map[string]sentryv1alpha1.AlertSpec{}
 	}
 	maps.Copy(mergedAlerts, localAlerts(projectSpec))
-	policyOwner := binding.ChildOwner{Kind: binding.ChildOwnerPolicy, Name: policy.Name, UID: string(policy.UID), Generation: policy.Generation}
+	policyOwner := binding.ChildOwner{Kind: binding.ChildOwnerPolicy, Name: policy.Name, UID: string(policy.UID)}
 	targetOwners := ownersForTargets(policy.Spec.NotificationTargets, policyOwner)
 	maps.Copy(targetOwners, ownersForTargets(projectSpec.NotificationTargets, projectOwner))
 	alertOwners := ownersForAlerts(policy.Spec.Alerts, policyOwner)

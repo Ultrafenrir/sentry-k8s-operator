@@ -319,7 +319,10 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "sentryconnection")
 		os.Exit(1)
 	}
-	if err := (&controller.SentryAlertPolicyReconciler{Client: mgr.GetClient(), Bindings: bindingStore}).SetupWithManager(mgr); err != nil {
+	if err := (&controller.SentryAlertPolicyReconciler{
+		Client: mgr.GetClient(), Bindings: bindingStore,
+		Recorder: mgr.GetEventRecorder("sentryalertpolicy-controller"), Metrics: controllerMetrics,
+	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "sentryalertpolicy")
 		os.Exit(1)
 	}

@@ -4,8 +4,8 @@ An alpha Kubernetes operator for declaring a Sentry project next to an applicati
 public API uses readable project, team, Slack, PagerDuty, and Telegram names; external IDs,
 DSNs, tokens, Telegram chat IDs, and operation journals stay out of CR specs and status.
 
-The repository currently provides project ownership, public DSN publication, typed
-filters/PII settings, destination pinning, legacy and modern alert adapters, protected
+The repository currently provides project ownership, declarative project-team access,
+public DSN publication, typed filters/PII settings, destination pinning, legacy and modern alert adapters, protected
 Telegram registration/delivery components, recovery tooling, metrics, and alpha packaging.
 It is **not production-ready**: Slack runtime discovery, live external delivery, complete
 upgrade recovery, SaaS acceptance, and hosted release evidence are still incomplete. See

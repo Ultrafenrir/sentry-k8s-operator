@@ -116,14 +116,20 @@ Evidence boundary and remaining work:
 - Live 24.7.1 verified marker-bearing legacy issue rule create/read/update/delete-to-inactive
   and exclusion from the active list. It also confirmed that delete is scheduled deletion,
   not a non-destructive disable toggle.
-- Live 24.7.1 also verified an events count() legacy metric alert with empty actions:
-  create/read/update by stable ID and delete-to-404. Its public API still has no accepted
-  non-destructive disable/enable route.
+- Live 24.7.1 also verified an events count() legacy metric alert with a fake local
+  PagerDuty service: create/read/update by stable ID and delete-to-404. The server returns
+  `alertThreshold` as the decimal JSON number `20.0`; the adapter accepts that lossless
+  representation and keeps the rule Ready. Its public API still has no accepted
+  non-destructive disable/enable route. This proves configuration only, not delivery.
 - Live 26.10.1 verified workflow create/read/update and bulk disable/enable by exact ID.
   It then created an attached `metric_issue` detector with an events/count() data source,
   static high/OK thresholds and no external actions; detector read, bulk disable/enable and
   delete-to-404 all preserved exact identity. Workflow delete-to-404 completed afterwards.
   This proves a usable local detector/workflow lifecycle, but not actions or delivery.
+- Clean controller acceptance on both supported versions exercised direct alerts and a
+  cluster-scoped `SentryAlertPolicy`, then changed the policy generation in place. Protected
+  child identity remained stable and aggregate rollout converged to one desired and one
+  ready project with `RolloutComplete=True`.
 - `spec.alerts` now publishes only first-seen, regression and event-count with local
   Slack/PagerDuty destination references. An absent field remains unmanaged; an explicit
   empty map deletes protected children. Status exposes only local key/state/reason and an

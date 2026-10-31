@@ -59,7 +59,7 @@ func TestProjectControllerRecoversPendingRegistrationWithoutSentryClient(t *test
 		ExternalIdentity: "project-id", Marker: &binding.Marker{Origin: "managed", Owner: "payments", ManagedBy: "operator"},
 		ManagerUID: reference.UID, ClaimName: "claim",
 		Destinations: map[string]binding.DestinationBinding{"telegram/payments-alerts": {
-			Owner: binding.ChildOwner{Kind: binding.ChildOwnerProject, Name: reference.Name, UID: reference.UID, Generation: reference.Generation},
+			Owner: binding.ChildOwner{Kind: binding.ChildOwnerProject, Name: reference.Name, UID: reference.UID},
 			Kind:  "telegram", SelectorHash: "selector", State: "RegistrationRequired",
 			Telegram: &binding.TelegramBinding{
 				Challenge: &challenge, Target: &binding.TelegramTarget{ChatIdentity: "-100123"},

@@ -60,3 +60,12 @@ custom authorization webhook. Any project may opt in with `spec.alertPolicy`. Po
 project alert/target keys must not conflict, and each alert may reference only targets from
 its own ownership scope. Protected child state records the exact project or policy UID so a
 same-name recreation cannot inherit external Sentry objects.
+
+8. Project team access
+
+Managed projects may declare additional readable team slugs in `spec.grantAccess.teams`.
+Every slug must be allowed by the namespace's connection access rule. The create team is
+already attached and cannot be repeated. The controller pins each managed Sentry team
+identity, grants or revokes through the public project-team endpoints, and never removes an
+unmanaged team. Direct user access is not published because Sentry project access is
+team-based.

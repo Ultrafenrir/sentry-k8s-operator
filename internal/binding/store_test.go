@@ -184,7 +184,7 @@ func TestBindingValidationRejectsCorruptProtectedAlertState(t *testing.T) {
 	valid.PinnedAdapters = map[string]string{"alerts": "legacy-issue-24.7.1"}
 	valid.Alerts = map[string]AlertBinding{
 		"new-issue": {
-			Owner:   ChildOwner{Kind: ChildOwnerProject, Name: "checkout", UID: "alert-uid", Generation: 1},
+			Owner:   ChildOwner{Kind: ChildOwnerProject, Name: "checkout", UID: "alert-uid"},
 			Adapter: "legacy-issue-24.7.1", ExternalIdentity: "alert-123", Trigger: "first-seen",
 			DesiredHash: strings.Repeat("a", 64), Enabled: true, Destinations: []string{"telegram/chat"}, Marker: marker,
 		},
@@ -243,7 +243,7 @@ func TestHasPolicyChildrenUsesExactOwnerUID(t *testing.T) {
 	value := testBinding("project-uid", marker)
 	value.Destinations = map[string]DestinationBinding{
 		"slack/incidents": {
-			Owner: ChildOwner{Kind: ChildOwnerPolicy, Name: "common-alerts", UID: "policy-uid", Generation: 3},
+			Owner: ChildOwner{Kind: ChildOwnerPolicy, Name: "common-alerts", UID: "policy-uid"},
 			Kind:  "slack", SelectorHash: "selector", ResourceName: "incidents", State: "Active",
 		},
 	}

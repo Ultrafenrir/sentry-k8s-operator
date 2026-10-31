@@ -66,6 +66,23 @@ spec:
       team: payments
 ```
 
+To grant additional Sentry teams access to the managed project, use exact team slugs that
+the same connection access rule allows. The primary create team is already attached and
+must not be repeated:
+
+```yaml
+spec:
+  grantAccess:
+    teams:
+      - platform-observability
+      - security
+```
+
+The operator manages only teams declared through `grantAccess`. It preserves unrelated
+teams, pins each managed team's Sentry identity in protected state, and revokes a previously
+managed team when it is removed from the list. User membership is intentionally outside the
+alpha API.
+
 ```sh
 kubectl apply -f sentryproject.yaml
 kubectl -n checkout-prod wait sentryproject/checkout \

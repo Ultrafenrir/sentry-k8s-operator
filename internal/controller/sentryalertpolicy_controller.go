@@ -17,29 +17,41 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	sentryv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/alerts"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/destination"
 )
 
-const sentryAlertPolicyFinalizer = "sentryconfiguration.io/alert-policy-protection"
+const (
+	sentryAlertPolicyFinalizer   = "sentryconfiguration.io/alert-policy-protection"
+	policyRolloutRequeueInterval = 2 * time.Second
+)
 
 // SentryAlertPolicyReconciler maintains bounded aggregate policy status. Policy changes
 // enqueue projects; projects remain the only reconcilers that mutate Sentry children.
 type SentryAlertPolicyReconciler struct {
 	client.Client
 	Bindings *binding.Store
+	Recorder events.EventRecorder
+	Metrics  *Metrics
 }
 
 // +kubebuilder:rbac:groups=sentryconfiguration.io,resources=sentryalertpolicies,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=sentryconfiguration.io,resources=sentryalertpolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=sentryconfiguration.io,resources=sentryprojects,verbs=get;list;watch
 
-func (r *SentryAlertPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *SentryAlertPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (reconcileResult ctrl.Result, reconcileErr error) {
+	started := time.Now()
+	defer func() {
+		r.Metrics.ObserveReconcile(controllerAlertPolicy, reconcileResult, reconcileErr, time.Since(started))
+	}()
 	policy := &sentryv1alpha1.SentryAlertPolicy{}
 	if err := r.Get(ctx, req.NamespacedName, policy); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -96,16 +108,13 @@ func (r *SentryAlertPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			pending++
 			continue
 		}
-		condition := meta.FindStatusCondition(project.Status.Conditions, "AlertPolicyReady")
-		switch {
-		case condition == nil || condition.ObservedGeneration != project.Generation:
+		switch policyConsumerRolloutStatus(policy, project) {
+		case metav1.ConditionUnknown:
 			pending++
-		case condition.Status == metav1.ConditionTrue:
+		case metav1.ConditionTrue:
 			ready++
-		case condition.Status == metav1.ConditionFalse:
+		case metav1.ConditionFalse:
 			failed++
-		default:
-			pending++
 		}
 	}
 	policy.Status.Rollout = sentryv1alpha1.AlertPolicyRolloutStatus{DesiredProjects: desired, ReadyProjects: ready, FailedProjects: failed, PendingProjects: pending}
@@ -126,7 +135,50 @@ func (r *SentryAlertPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if err := r.Status().Patch(ctx, policy, client.MergeFrom(base)); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, nil
+	emitConditionChangesObserved(r.Recorder, r.Metrics, controllerAlertPolicy, policy, base.Status.Conditions, policy.Status.Conditions)
+	return alertPolicyRolloutResult(pending), nil
+}
+
+func alertPolicyRolloutResult(pending int32) ctrl.Result {
+	if pending > 0 {
+		// A project can update its protected binding without changing its public status.
+		// Recheck pending rollouts so the aggregate status observes that durable update.
+		return ctrl.Result{RequeueAfter: policyRolloutRequeueInterval}
+	}
+	return ctrl.Result{}
+}
+
+func policyConsumerRolloutStatus(policy *sentryv1alpha1.SentryAlertPolicy, project *sentryv1alpha1.SentryProject) metav1.ConditionStatus {
+	condition := meta.FindStatusCondition(project.Status.Conditions, "AlertPolicyReady")
+	if condition == nil || condition.ObservedGeneration != project.Generation || condition.Status == metav1.ConditionUnknown {
+		return metav1.ConditionUnknown
+	}
+	if condition.Status != metav1.ConditionTrue {
+		return metav1.ConditionFalse
+	}
+	targets, err := policy.Spec.NotificationTargets.Flatten()
+	if err != nil {
+		return metav1.ConditionFalse
+	}
+	for key := range targets {
+		status, found := project.Status.NotificationTargets[key]
+		if !found {
+			return metav1.ConditionUnknown
+		}
+		if status.State != destination.StateActive {
+			return metav1.ConditionFalse
+		}
+	}
+	for key := range policy.Spec.Alerts {
+		status, found := project.Status.Alerts[key]
+		if !found {
+			return metav1.ConditionUnknown
+		}
+		if status.State != alerts.StateReady {
+			return metav1.ConditionFalse
+		}
+	}
+	return metav1.ConditionTrue
 }
 
 func (r *SentryAlertPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {

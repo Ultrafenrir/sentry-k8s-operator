@@ -106,7 +106,7 @@ func TestServiceKeepsFencesUntilResumablePublishCompletes(t *testing.T) {
 		Marker:     &binding.Marker{Origin: "managed", Owner: challenge.Owner, ManagedBy: "company-op"},
 		ManagerUID: challenge.Project.UID, ClaimName: "claim",
 		Destinations: map[string]binding.DestinationBinding{"telegram/payments-alerts": {
-			Owner: binding.ChildOwner{Kind: binding.ChildOwnerProject, Name: challenge.Project.Name, UID: challenge.Project.UID, Generation: challenge.Project.Generation},
+			Owner: binding.ChildOwner{Kind: binding.ChildOwnerProject, Name: challenge.Project.Name, UID: challenge.Project.UID},
 			Kind:  "telegram", SelectorHash: challenge.SelectorHash, ResourceName: "payments-alerts",
 			State: destination.StateRegistrationRequired,
 		}},

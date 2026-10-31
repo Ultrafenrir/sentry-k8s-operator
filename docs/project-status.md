@@ -15,6 +15,8 @@ The operator provides:
 - namespaced `SentryProject` create-or-use lifecycle with guarded ownership, protected
   operation journals, default-rule suppression, active DSN publication, drift repair, and
   Retain/DeleteProject deletion policy;
+- declarative additional project-team access with connection-policy authorization,
+  protected team identity pinning, and unmanaged-team preservation;
 - typed inbound filters and PII settings;
 - readable Slack, PagerDuty, and Telegram notification targets with protected identity
   pinning and fail-closed re-resolution;
@@ -39,16 +41,26 @@ Verified against disposable self-hosted Sentry:
 
 | Target | Verified boundary |
 | --- | --- |
-| Sentry 24.7.1 feature-complete | Project/key/settings CRUD, legacy issue and metric alert CRUD, controller lost-response recovery, and settings drift repair. Event ingestion was blocked by Relay memory health on the constrained Docker VM. |
-| Sentry 26.10.1 errors-only | Project/key/settings CRUD, modern metric detector/workflow lifecycle, controller lost-response recovery, and settings drift repair. This is configuration-only evidence. |
+| Sentry 24.7.1 feature-complete | Project/key/settings CRUD, legacy issue and metric alert CRUD, controller lost-response recovery, settings drift repair, and additional-team grant/revoke with primary-team preservation. This is configuration-only evidence; the earlier ingestion attempt was blocked by Relay memory health. |
+| Sentry 26.10.1 errors-only | Project/key/settings CRUD, modern metric detector/workflow lifecycle, controller lost-response recovery, settings drift repair, and additional-team grant/revoke with primary-team preservation. This is configuration-only evidence. |
 
 Sentry 26.10.1 returns 404 for the legacy `/rules/` and `/alert-rules/` collection routes.
 Legacy compatibility must remain not ready on that server.
 
-The latest local kind demo proved modern managed-project creation, an existing-project
-read-only consumer, DSN publication, filters/PII settings, modern alerts, PagerDuty catalog
-pinning with a fake local service fixture, and controller metrics presence. Browser
-automation was unavailable, so no automated UI claim was made.
+The 2026-10-31 clean kind acceptance used browser automation on both Sentry versions to
+create teams and pre-existing projects before the operator attached read-only consumers.
+It also proved managed project creation and deletion, existing-project retention, DSN
+publication, filters/PII settings, additional-team access, fake local PagerDuty catalog
+pinning, direct and policy-owned alerts, policy updates, and paused-project behavior. The
+26.10.1 run repaired browser-induced settings drift within 9 seconds and exposed bounded
+controller, alert-policy, condition-transition, and synchronization metrics. The 24.7.1
+run accepted a decimal `20.0` metric threshold returned by Sentry. All of this remains
+configuration-only evidence; the fake PagerDuty service did not deliver a notification.
+
+Additional project-team access is covered by generated schema, admission, policy, domain,
+HTTP adapter, and controller tests. On 2026-10-31 clean disposable-stack runs verified
+grant, read-back, revoke, and primary-team preservation against both supported Sentry
+versions. Direct user access remains outside the alpha contract.
 
 ## Expected incomplete local resources
 
@@ -100,8 +112,25 @@ scoped, ordinary cluster RBAC controls policy CRUD, and any project may opt in. 
 policy owner field or custom authorization webhook. Policy and project targets use separate
 ownership scopes, exact UIDs are persisted in protected bindings, updates enqueue all
 consumers, and a finalizer holds deletion until policy-owned children are gone. Runtime and
-generated-contract verification pass in unit and envtest suites. No policy rollout has been
-exercised against live Sentry, so this is not live configuration or delivery evidence.
+generated-contract verification pass in unit and envtest suites. Clean live runs on both
+supported Sentry versions exercised initial rollout and an in-place policy generation
+update through `RolloutComplete=True`. This proves configuration reconciliation, not
+external notification delivery.
+
+### Project configuration expansion backlog
+
+The current project settings contract intentionally covers only three standard inbound
+filters and five PII fields. Expand it through typed, independently reconciled components;
+do not add an arbitrary Sentry settings map. Every new mutation path must use the regional
+ownership fence, preserve unmanaged external objects, and gain explicit capability evidence
+on both supported self-hosted versions before it is described as portable.
+
+Keep high-churn delivery artifacts outside controller ownership. Releases, deploys, source
+map uploads, debug information file uploads, environments, events, issues, and feedback
+belong to CI/CD or observed runtime state. Organization-wide billing, spend allocation, and
+quota policy also require a separate organization-level contract. External IDs, hook
+secrets, private DSNs, symbol-source credentials, security tokens, and raw secret-bearing
+payloads must remain in Secret references or protected state, never public specs or status.
 
 1. Implement the self-service ownership and regional failover contract without changing the
    external project slug. A connection declares a human-readable `region`, Active/Standby
@@ -115,17 +144,52 @@ exercised against live Sentry, so this is not live configuration or delivery evi
    mutation, and honest about the bounded in-flight-write risk without a Sentry CAS. Exact
    handoff and release remain the normal project-level promotion paths; no user boolean may
    steal ownership.
-2. Turn the manual clean local demo sequence into a bounded Make target or script that
+2. Complete the controller-owned Sentry service-hook lifecycle needed by protected Telegram
+   delivery. Create or recover exactly one owned project hook, pin its external identity,
+   publish the protected source plan and verifier configuration in fail-closed order, rotate
+   HMAC secrets through an overlap, verify the live hook after every mutation, and remove
+   only the exact owned hook. Public DNS, trusted certificates, and real delivery remain
+   separate evidence boundaries.
+3. Expand stable typed project settings. Add the standard filtered-transaction and
+   legacy-browser filters with validated subfilters, then evaluate auto-resolve age, default
+   environment, crash-report retention, JavaScript/source-map scraping, allowed domains, and
+   automatic release creation. Keep TLS verification under platform policy. Treat custom
+   inbound filters as an experimental, capability-gated child resource rather than folding
+   their condition trees into the common settings contract.
+4. Add project issue-ownership configuration without colliding with regional operator
+   ownership terminology. Use an `issueOwnership` contract for bounded ownership rules,
+   fallthrough behavior, auto-assignment, and CODEOWNERS synchronization. Start with readable
+   team references; direct user/email ownership stays outside the alpha contract until its
+   authorization and identity-pinning model is designed.
+5. Add managed client-key lifecycle as a separately owned child resource. Support explicit
+   creation, activation, rate limits, rotation, and guarded deletion while continuing to
+   publish only public DSNs. Use journals and protected identity pinning so interrupted
+   creates, same-name replacements, or partial rotations cannot leak secret material or
+   select an unrelated key.
+6. Design typed grouping and advanced data-scrubbing contracts. Cover grouping profiles,
+   grouping enhancements, fingerprinting rules, secondary-grouping migration, and advanced
+   Relay PII rules only after canonical serialization and cross-version semantics are
+   proven. Do not expose raw vendor JSON or an unvalidated settings dictionary.
+7. Add native symbolication and repository configuration only through explicit child
+   ownership. Built-in symbol sources and native source-server mapping may be typed project
+   settings; custom HTTP/cloud symbol sources require Secret references and exact cleanup.
+   Repository links, code mappings, and CODEOWNERS need stable connection-owned aliases so
+   public resources never contain numeric Sentry or integration IDs.
+8. Evaluate project quota protection after the core settings work: spike protection,
+   client-key error rate limits, and manual dynamic-sampling targets/biases are useful but
+   feature- and deployment-dependent. Keep them unavailable unless capability evidence
+   proves safe read, update, drift repair, and disable behavior on the selected target.
+9. Turn the manual clean local demo sequence into a bounded Make target or script that
    creates no real credentials, records expected partial states, and is safe to rerun.
-3. Add a source-tested local PagerDuty fixture helper, or remove the fixture-dependent demo
+10. Add a source-tested local PagerDuty fixture helper, or remove the fixture-dependent demo
    from the default path. It must use a clearly invalid routing key and never claim delivery.
-4. Add a capability-evidence workflow so the demo no longer requires a manual status patch.
+11. Add a capability-evidence workflow so the demo no longer requires a manual status patch.
    The controller must not infer capabilities from a version string alone.
-5. Add an automated API report that lists created Sentry projects, keys, filters, PII
+12. Add an automated API report that lists created Sentry projects, keys, filters, PII
    settings, detectors, workflows, and legacy rules without exposing DSNs or tokens.
-6. Improve Docker Desktop credential-helper diagnostics around local image builds while
+13. Improve Docker Desktop credential-helper diagnostics around local image builds while
    preserving a fail-closed default.
-7. Continue non-external backlog work from the English task progress documents, with focused
+14. Continue non-external backlog work from the English task progress documents, with focused
    tests and evidence-boundary updates.
 
 ## Resume checklist

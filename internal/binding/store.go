@@ -398,6 +398,14 @@ func validateBinding(binding ProjectBinding) error {
 			return ErrInvalidRecord
 		}
 	}
+	if len(binding.GrantedTeams) > 50 || (len(binding.GrantedTeams) > 0 && (binding.Origin != OriginManaged || binding.AccessMode != AccessManage)) {
+		return ErrInvalidRecord
+	}
+	for slug, identity := range binding.GrantedTeams {
+		if len(validation.IsDNS1123Label(slug)) != 0 || identity == "" || len(identity) > 512 || strings.ContainsAny(identity, "\r\n\x00") {
+			return ErrInvalidRecord
+		}
+	}
 	return nil
 }
 

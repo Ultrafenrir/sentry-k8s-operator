@@ -105,14 +105,13 @@ const (
 // ChildOwner is protected ownership of one alert or notification target. UID prevents a
 // recreated policy with the same name from inheriting external objects.
 type ChildOwner struct {
-	Kind       string `json:"kind"`
-	Name       string `json:"name"`
-	UID        string `json:"uid"`
-	Generation int64  `json:"generation"`
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+	UID  string `json:"uid"`
 }
 
 func (o ChildOwner) Valid() bool {
-	return (o.Kind == ChildOwnerProject || o.Kind == ChildOwnerPolicy) && o.Name != "" && o.UID != "" && o.Generation > 0
+	return (o.Kind == ChildOwnerProject || o.Kind == ChildOwnerPolicy) && o.Name != "" && o.UID != ""
 }
 
 // TelegramBinding is protected registration/outbox state. Numeric identities and
@@ -165,6 +164,7 @@ type ProjectBinding struct {
 	ChildIdentities  map[string]string             `json:"childIdentities,omitempty"`
 	Tombstones       map[string]bool               `json:"tombstones,omitempty"`
 	DSN              *DSNBinding                   `json:"dsn,omitempty"`
+	GrantedTeams     map[string]string             `json:"grantedTeams,omitempty"`
 	Destinations     map[string]DestinationBinding `json:"destinations,omitempty"`
 	Alerts           map[string]AlertBinding       `json:"alerts,omitempty"`
 	AlertPolicy      *AppliedAlertPolicy           `json:"alertPolicy,omitempty"`

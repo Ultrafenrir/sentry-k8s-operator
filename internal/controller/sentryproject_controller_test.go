@@ -42,6 +42,7 @@ import (
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/destination"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/dsn"
 	projectruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/project"
+	projectaccessruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/projectaccess"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
 	settingsruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/settings"
 )
@@ -64,6 +65,7 @@ var _ = Describe("SentryProject Controller", func() {
 		var keyLabel string
 		var projectSerial int
 		var settingsAdapter *controllerFakeSettingsAdapter
+		var projectAccessAdapter *controllerFakeProjectAccessAdapter
 		var destinationCatalog *controllerFakeDestinationCatalog
 		var alertAdapter *controllerFakeAlertAdapter
 
@@ -88,7 +90,7 @@ var _ = Describe("SentryProject Controller", func() {
 					Access: []sentryconfigurationv1alpha1.AccessRule{{
 						Owner:       "payments",
 						Namespaces:  sentryconfigurationv1alpha1.NamespaceAccess{MatchNames: []string{resourceNamespace}},
-						Teams:       []string{"payments"},
+						Teams:       []string{"payments", "backend"},
 						AllowCreate: true,
 					}},
 				},
@@ -117,6 +119,7 @@ var _ = Describe("SentryProject Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			adapter = &controllerFakeProjectAdapter{projects: make(map[string]projectruntime.RemoteProject)}
 			settingsAdapter = &controllerFakeSettingsAdapter{}
+			projectAccessAdapter = &controllerFakeProjectAccessAdapter{teams: []projectaccessruntime.Team{{Identity: "team-payments", Slug: "payments"}}}
 			destinationCatalog = &controllerFakeDestinationCatalog{}
 			alertAdapter = &controllerFakeAlertAdapter{objects: make(map[string]alertsruntime.Observed)}
 			reconciler = &SentryProjectReconciler{
@@ -139,7 +142,10 @@ var _ = Describe("SentryProject Controller", func() {
 					key.Label = keyLabel
 					return []dsn.ClientKey{key}, nil
 				},
-				NewSettingsAdapter:    func(*sentryapi.Client) settingsruntime.Adapter { return settingsAdapter },
+				NewSettingsAdapter: func(*sentryapi.Client) settingsruntime.Adapter { return settingsAdapter },
+				NewProjectAccessAdapter: func(*sentryapi.Client) projectaccessruntime.Adapter {
+					return projectAccessAdapter
+				},
 				NewDestinationCatalog: func(*sentryapi.Client) destination.Catalog { return destinationCatalog },
 				NewAlertAdapter: func(*sentryapi.Client, map[string]binding.DestinationBinding) alertsruntime.Adapter {
 					return alertAdapter
@@ -213,6 +219,57 @@ var _ = Describe("SentryProject Controller", func() {
 				HaveField("Status", metav1.ConditionTrue),
 				HaveField("Reason", "ProjectVerified"),
 			)))
+		})
+
+		It("grants and revokes additional team access while preserving the primary team", func() {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			resource := &sentryconfigurationv1alpha1.SentryProject{}
+			Expect(k8sClient.Get(ctx, key, resource)).To(Succeed())
+			resource.Spec.GrantAccess = &sentryconfigurationv1alpha1.ProjectGrantAccess{Teams: []string{"backend"}}
+			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, key, resource)).To(Succeed())
+			Expect(resource.Status.Conditions).To(ContainElement(And(
+				HaveField("Type", "GrantAccessReady"), HaveField("Status", metav1.ConditionTrue),
+			)))
+			record, err := reconciler.Bindings.GetBinding(ctx, string(resource.UID))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(record.Binding.GrantedTeams).To(Equal(map[string]string{"backend": "team-backend"}))
+
+			connection := &sentryconfigurationv1alpha1.SentryConnection{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: connectionName}, connection)).To(Succeed())
+			connection.Spec.Access[0].Teams = []string{"payments"}
+			Expect(k8sClient.Update(ctx, connection)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, key, resource)).To(Succeed())
+			Expect(resource.Status.Conditions).To(ContainElement(And(
+				HaveField("Type", "GrantAccessReady"), HaveField("Status", metav1.ConditionFalse),
+				HaveField("Reason", "AccessDenied"),
+			)))
+			record, err = reconciler.Bindings.GetBinding(ctx, string(resource.UID))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(record.Binding.GrantedTeams).To(BeEmpty())
+
+			connection.Spec.Access[0].Teams = []string{"payments", "backend"}
+			Expect(k8sClient.Update(ctx, connection)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, key, resource)).To(Succeed())
+			resource.Spec.GrantAccess = &sentryconfigurationv1alpha1.ProjectGrantAccess{}
+			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			record, err = reconciler.Bindings.GetBinding(ctx, string(resource.UID))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(record.Binding.GrantedTeams).To(BeEmpty())
+			Expect(projectAccessAdapter.teams).To(Equal([]projectaccessruntime.Team{{Identity: "team-payments", Slug: "payments"}}))
 		})
 
 		It("reports a persistent readable client-key rename without changing the pinned identity", func() {
@@ -628,6 +685,29 @@ type controllerFakeSettingsAdapter struct {
 	state          settingsruntime.ProjectState
 	filterUpdates  int
 	projectUpdates []settingsruntime.ProjectPatch
+}
+
+type controllerFakeProjectAccessAdapter struct {
+	teams []projectaccessruntime.Team
+}
+
+func (a *controllerFakeProjectAccessAdapter) ListTeams(context.Context, string, string) ([]projectaccessruntime.Team, error) {
+	return append([]projectaccessruntime.Team(nil), a.teams...), nil
+}
+
+func (a *controllerFakeProjectAccessAdapter) GrantTeam(_ context.Context, _, _, slug string) error {
+	a.teams = append(a.teams, projectaccessruntime.Team{Identity: "team-" + slug, Slug: slug})
+	return nil
+}
+
+func (a *controllerFakeProjectAccessAdapter) RevokeTeam(_ context.Context, _, _, identity string) error {
+	for index, team := range a.teams {
+		if team.Identity == identity {
+			a.teams = append(a.teams[:index], a.teams[index+1:]...)
+			return nil
+		}
+	}
+	return errors.New("team not found")
 }
 
 type controllerFakeAlertAdapter struct {

@@ -169,7 +169,7 @@ func challengeEndpointFixture(t *testing.T) (*ChallengeHandler, *fakeTokenReview
 		Origin: binding.OriginManaged, AccessMode: binding.AccessManage, ExternalIdentity: "project-id",
 		Marker: &binding.Marker{Origin: "managed", Owner: "payments", ManagedBy: "company-op"}, ManagerUID: string(project.UID), ClaimName: "claim",
 		Destinations: map[string]binding.DestinationBinding{"telegram/payments-alerts": {
-			Owner: binding.ChildOwner{Kind: binding.ChildOwnerProject, Name: project.Name, UID: string(project.UID), Generation: project.Generation},
+			Owner: binding.ChildOwner{Kind: binding.ChildOwnerProject, Name: project.Name, UID: string(project.UID)},
 			Kind:  "telegram", SelectorHash: selectorHash, ResourceName: "payments-alerts", State: destination.StateRegistrationRequired,
 		}},
 	})

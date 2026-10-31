@@ -1,0 +1,12 @@
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryProject
+metadata:
+  name: invalid-use-grant-access
+  namespace: checkout-prod
+spec:
+  sentry: company-sentry
+  project:
+    use: checkout-api
+  grantAccess:
+    teams:
+      - backend

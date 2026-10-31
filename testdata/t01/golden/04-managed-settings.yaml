@@ -9,6 +9,9 @@ spec:
     create:
       team: payments
       platform: python
+  grantAccess:
+    teams:
+      - platform-observability
   settings:
     filters:
       browserExtensions: true

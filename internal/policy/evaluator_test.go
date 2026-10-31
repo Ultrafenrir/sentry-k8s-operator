@@ -164,6 +164,32 @@ func TestEvaluateRequiresExactTeam(t *testing.T) {
 	}
 }
 
+func TestEvaluateRequiresEveryGrantedTeamToBeAuthorized(t *testing.T) {
+	t.Parallel()
+	connection := testConnection()
+	connection.Access[0].Teams = append(connection.Access[0].Teams, "backend")
+	project := sentryv1alpha1.SentryProjectSpec{
+		Project:     sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
+		GrantAccess: &sentryv1alpha1.ProjectGrantAccess{Teams: []string{"backend"}},
+	}
+	allowed, err := AuthorizedProjectAccessTeams("checkout-prod", project, connection)
+	if err != nil || len(allowed) != 1 || allowed[0] != "backend" {
+		t.Fatalf("authorized grant rejected: %v", err)
+	}
+	project.GrantAccess.Teams = append(project.GrantAccess.Teams, "security")
+	allowed, err = AuthorizedProjectAccessTeams("checkout-prod", project, connection)
+	if !IsKind(err, ErrorAccessDenied) || len(allowed) != 1 || allowed[0] != "backend" {
+		t.Fatalf("unauthorized grant error=%v", err)
+	}
+	if decision, baseErr := EvaluateProject("checkout-prod", project, connection); baseErr != nil || decision.AccessMode != "Manage" {
+		t.Fatalf("grant denial blocked base project decision=%#v err=%v", decision, baseErr)
+	}
+	project.GrantAccess.Teams = []string{"payments"}
+	if _, err := AuthorizedProjectAccessTeams("checkout-prod", project, connection); !IsKind(err, ErrorAccessDenied) {
+		t.Fatalf("primary team repetition error=%v", err)
+	}
+}
+
 func testConnection() sentryv1alpha1.SentryConnectionSpec {
 	return sentryv1alpha1.SentryConnectionSpec{
 		Access: []sentryv1alpha1.AccessRule{{

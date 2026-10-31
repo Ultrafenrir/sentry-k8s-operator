@@ -280,7 +280,7 @@ func registrationBinding(t *testing.T, store *binding.Store) binding.ProjectRefe
 	_, err := store.CreateBinding(context.Background(), binding.ProjectBinding{
 		Version: binding.CurrentVersion, Project: reference, Connection: "company", Installation: "https://sentry.example", Organization: "company", Slug: "checkout", Owner: "payments", Origin: binding.OriginManaged, AccessMode: binding.AccessManage, ExternalIdentity: "project-id", Marker: &marker, ManagerUID: reference.UID, ClaimName: "claim",
 		Destinations: map[string]binding.DestinationBinding{"telegram/payments-alerts": {
-			Owner: binding.ChildOwner{Kind: binding.ChildOwnerProject, Name: reference.Name, UID: reference.UID, Generation: reference.Generation},
+			Owner: binding.ChildOwner{Kind: binding.ChildOwnerProject, Name: reference.Name, UID: reference.UID},
 			Kind:  "telegram", SelectorHash: "selector-hash", ResourceName: "payments-alerts", State: "RegistrationRequired",
 		}},
 	})

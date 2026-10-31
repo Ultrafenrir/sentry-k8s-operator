@@ -28,6 +28,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -48,6 +49,7 @@ import (
 	connectionruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/connection"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/dsn"
 	projectruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/project"
+	projectaccessruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/projectaccess"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
 	settingsruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/settings"
 )
@@ -154,6 +156,7 @@ var _ = Describe("Live Sentry project recovery", Label("live-sentry"), func() {
 
 		versionSlug := strings.ReplaceAll(version, ".", "-")
 		slug := "live-settings-" + versionSlug
+		grantTeam := "sko-grant-" + versionSlug + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 		proxy := newLostCreateResponseProxy(upstream, slug)
 		proxy.dropped.Store(true)
 		defer proxy.Close()
@@ -172,7 +175,7 @@ var _ = Describe("Live Sentry project recovery", Label("live-sentry"), func() {
 				}},
 				Access: []sentryv1alpha1.AccessRule{{
 					Owner: "live", Namespaces: sentryv1alpha1.NamespaceAccess{MatchNames: []string{"default"}},
-					Teams: []string{team}, AllowCreate: true,
+					Teams: []string{team, grantTeam}, AllowCreate: true,
 				}},
 			},
 		}
@@ -204,7 +207,8 @@ var _ = Describe("Live Sentry project recovery", Label("live-sentry"), func() {
 						SensitiveFields: &desiredSensitive, SafeFields: &desiredSafe,
 					},
 				},
-				Lifecycle: sentryv1alpha1.LifecycleSpec{OnDelete: sentryv1alpha1.OnDeleteDeleteProject},
+				GrantAccess: &sentryv1alpha1.ProjectGrantAccess{Teams: []string{grantTeam}},
+				Lifecycle:   sentryv1alpha1.LifecycleSpec{OnDelete: sentryv1alpha1.OnDeleteDeleteProject},
 			},
 		}
 		Expect(k8sClient.Create(context.Background(), resource)).To(Succeed())
@@ -214,6 +218,8 @@ var _ = Describe("Live Sentry project recovery", Label("live-sentry"), func() {
 			Token: []byte(token), CABundle: certificatePEM(proxy.Certificate()),
 		})
 		Expect(err).NotTo(HaveOccurred())
+		createLiveTeam(apiClient, organization, grantTeam)
+		defer deleteLiveTeam(apiClient, organization, grantTeam)
 		auditSink := &liveAuditSink{}
 		reconciler := &SentryProjectReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(), Registry: registry,
@@ -231,6 +237,23 @@ var _ = Describe("Live Sentry project recovery", Label("live-sentry"), func() {
 		Expect(result.Requeue).To(BeTrue())
 		_, err = reconciler.Reconcile(context.Background(), reconcile.Request{NamespacedName: key})
 		Expect(err).NotTo(HaveOccurred())
+		accessAdapter := &projectaccessruntime.HTTPAdapter{Client: apiClient}
+		teams, err := accessAdapter.ListTeams(context.Background(), organization, slug)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(liveTeamSlugs(teams)).To(And(ContainElement(team), ContainElement(grantTeam)))
+		Expect(k8sClient.Get(context.Background(), key, resource)).To(Succeed())
+		Expect(meta.FindStatusCondition(resource.Status.Conditions, "GrantAccessReady")).To(And(
+			HaveField("Status", metav1.ConditionTrue), HaveField("Reason", "GrantAccessReady"),
+		))
+
+		resource.Spec.GrantAccess = &sentryv1alpha1.ProjectGrantAccess{}
+		Expect(k8sClient.Update(context.Background(), resource)).To(Succeed())
+		_, err = reconciler.Reconcile(context.Background(), reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		teams, err = accessAdapter.ListTeams(context.Background(), organization, slug)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(liveTeamSlugs(teams)).To(ContainElement(team))
+		Expect(liveTeamSlugs(teams)).NotTo(ContainElement(grantTeam))
 
 		adapter := &settingsruntime.HTTPAdapter{Client: apiClient}
 		assertLiveSettings(adapter, organization, slug, trueValue, desiredSensitive, desiredSafe)
@@ -399,6 +422,42 @@ func assertLiveSettings(adapter *settingsruntime.HTTPAdapter, organization, slug
 	Expect(*state.SensitiveFields).To(Equal(sensitive))
 	Expect(state.SafeFields).NotTo(BeNil())
 	Expect(*state.SafeFields).To(Equal(safe))
+}
+
+func createLiveTeam(client *sentryapi.Client, organization, slug string) {
+	var response struct {
+		ID   string `json:"id"`
+		Slug string `json:"slug"`
+	}
+	_, err := client.DoJSON(context.Background(), sentryapi.Request{
+		Method: http.MethodPost,
+		Path:   "/api/0/organizations/" + url.PathEscape(organization) + "/teams/",
+		Body: struct {
+			Slug string `json:"slug"`
+		}{Slug: slug},
+		RetrySafe: false,
+		Operation: "create-live-grant-team",
+	}, &response)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(response.ID).NotTo(BeEmpty())
+	Expect(response.Slug).To(Equal(slug))
+}
+
+func deleteLiveTeam(client *sentryapi.Client, organization, slug string) {
+	_, _ = client.DoJSON(context.Background(), sentryapi.Request{
+		Method:    http.MethodDelete,
+		Path:      "/api/0/teams/" + url.PathEscape(organization) + "/" + url.PathEscape(slug) + "/",
+		RetrySafe: false,
+		Operation: "delete-live-grant-team",
+	}, nil)
+}
+
+func liveTeamSlugs(teams []projectaccessruntime.Team) []string {
+	result := make([]string, 0, len(teams))
+	for _, team := range teams {
+		result = append(result, team.Slug)
+	}
+	return result
 }
 
 func deleteLiveControllerFixtures(key types.NamespacedName, connectionName string) {

@@ -105,7 +105,10 @@ creates a managed project and Kubernetes binding/claim/DSN Secret, introduces ex
 into all three filters and five PII fields, and requires one reconcile to restore them with
 exactly three filter PUTs and one narrow project PUT. A following reconcile must perform no
 settings mutation, both SettingsReady and Ready must remain true, and guarded deletion must
-complete. The matrix runs both acceptance layers after bootstrap and before removing the stack.
+complete. The same case creates an additional authorized team, grants it project access,
+verifies `GrantAccessReady`, removes the desired grant, and requires the additional team to
+be revoked while the primary project team remains attached. The matrix runs both acceptance
+layers after bootstrap and before removing the stack.
 
 `make sentry-live-config-api` runs the same public API project, key, settings, filter and
 alert object lifecycle checks, but intentionally skips event ingestion and filter-behavior
@@ -155,6 +158,11 @@ above its 95% health threshold and rejected the first synthetic envelope with 50
 configuration lifecycle evidence only, not event ingestion, filter behavior, or delivery
 acceptance.
 
+On 2026-10-31 a new clean 24.7.1 feature-complete run repeated the configuration-only API
+and controller gates successfully. It also verified additional-team grant, read-back,
+revoke, and primary-team preservation through the real public project-team endpoints. Event
+ingestion was intentionally skipped, so this run adds configuration evidence only.
+
 A clean 26.10.1 feature-complete attempt completed the upstream ClickHouse and PostgreSQL
 migrations, but the web and Snuba API health checks did not stabilize within the practical
 10–12 minute local limit. Snuba initialization took 479 seconds under memory pressure. The
@@ -170,6 +178,11 @@ managed volume were removed afterwards. `errors-only` is sufficient evidence for
 configuration APIs, but it must not be represented as feature-complete ingestion or delivery
 acceptance. Detector families beyond the verified metric detector, external actions,
 integrations, delivery, and SaaS remain unverified.
+
+On 2026-10-31 the clean 26.10.1 `errors-only` run was repeated after the project-access
+change. The configuration-only API and controller gates passed, including additional-team
+grant, read-back, revoke, and primary-team preservation. The version-scoped runtime, token,
+and managed volumes were removed afterwards.
 
 Legacy issue and metric alert routes are evidenced only by the 24.7.1 run above. A live
 26.10.1 stack returns `404` for the legacy `/rules/` and `/alert-rules/` collection routes;

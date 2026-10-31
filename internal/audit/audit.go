@@ -132,7 +132,7 @@ func validComponentAction(component Component, action Action) bool {
 	case ComponentDestinations:
 		return action == ActionDelete
 	case ComponentProjects:
-		return action == ActionCreate || action == ActionDelete
+		return action == ActionCreate || action == ActionUpdate || action == ActionDelete
 	case ComponentRegistration:
 		return action == ActionRegister
 	default:

@@ -27,6 +27,14 @@ Observation without DSN use does not take mutation ownership. Authorized DSN con
 creates a local binding only for the required key identity. Same-name replacements and
 external renames fail closed.
 
+Additional team access
+
+`spec.grantAccess.teams` manages additional exact team slugs on a managed project. The
+connection access rule must authorize every requested team. Protected bindings pin the
+external team identities, so a same-slug replacement fails closed and a removed desired
+entry revokes only the previously managed identity. Teams attached outside this field are
+preserved. Direct user membership remains outside the alpha contract.
+
 Lifecycle
 
 The finalizer handles protected cleanup before removing Kubernetes ownership. `Retain`
@@ -47,5 +55,8 @@ only after live configuration acceptance against the disposable target.
 Verification
 
 `make verify-t03` covers journaling, lost-response recovery, claims, handoff, read-only
-classification, deletion, redaction, and failure injection. Disposable live acceptance has
-also recovered an intentionally discarded project-create response without a second POST.
+classification, team-access identity pinning, deletion, redaction, and failure injection.
+Disposable live acceptance has also recovered an intentionally discarded project-create
+response without a second POST. On 2026-10-31 clean disposable-stack runs also verified
+additional-team grant, read-back, revoke, and primary-team preservation against Sentry
+24.7.1 feature-complete and Sentry 26.10.1 errors-only.

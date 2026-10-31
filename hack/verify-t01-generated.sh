@@ -18,6 +18,13 @@ test "$(cd "$root_dir" && GOMODCACHE="$product_gomodcache" GOCACHE="$product_goc
   "$go_bin" list -m -f '{{.Version}}' k8s.io/apimachinery)" = v0.36.0
 test "$(find "$root_dir/testdata/t01/golden" -type f -name '*.yaml' | wc -l | tr -d ' ')" = 6
 
+for resource in sentryalertpolicies sentryconnections sentryprojects; do
+  if ! rg -q "^- bases/sentryconfiguration.io_${resource}\\.yaml$" "$root_dir/config/crd/kustomization.yaml"; then
+    echo "canonical CRD kustomization is missing ${resource}" >&2
+    exit 1
+  fi
+done
+
 ruby -ryaml -rjson -e '
   puts JSON.generate(YAML.load_file(ARGV.fetch(0)))
 ' "$root_dir/config/rbac/role.yaml" >"$tmp_dir/rbac.json"

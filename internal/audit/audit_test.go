@@ -102,6 +102,18 @@ func TestRegistrationAcceptsOnlyRegisterAction(t *testing.T) {
 	}
 }
 
+func TestProjectsAcceptAccessUpdateAction(t *testing.T) {
+	t.Parallel()
+	event := Event{
+		Timestamp: time.Now(), Component: ComponentProjects, Action: ActionUpdate,
+		Outcome: OutcomeSucceeded, Reason: ReasonMutationVerified,
+		LocalResource: "payments/checkout", Revision: 3,
+	}
+	if err := Validate(event); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDestinationsAcceptOnlyCleanupDelete(t *testing.T) {
 	t.Parallel()
 	event := Event{

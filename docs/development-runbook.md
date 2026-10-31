@@ -230,6 +230,11 @@ Confirm project names, client keys, inbound filters, PII settings, detector/work
 and disabled alert state. Do not claim UI evidence when browser automation is unavailable;
 record API and status output instead.
 
+Successful project reconciliation schedules a 30-second drift check. This bound is intended
+for prompt repair of managed settings and other observable configuration without relying on
+a Sentry webhook. A live acceptance run must change the remote value first, then record both
+the incorrect read-back and the repaired read-back before claiming drift repair.
+
 ## 10. Inspect controller metrics
 
 The default endpoint is authenticated TLS. A lightweight direct diagnostic can first verify
@@ -250,10 +255,14 @@ metrics are:
 
 - `sentry_operator_reconciles_total`;
 - `sentry_operator_reconcile_duration_seconds`;
-- `sentry_operator_condition_transitions_total`.
+- `sentry_operator_condition_transitions_total`;
+- `sentry_operator_sync_resources`.
 
-Metrics use bounded controller, outcome, condition, and status labels. They must not expose
-namespace, object name, Sentry identity, raw error, Secret, DSN, or destination data.
+Metrics use bounded controller, outcome, condition, status, synchronization mechanism, and
+synchronization state labels. The fixed controller set includes `connection`, `project`, and
+`alertpolicy`; policy rollout is represented by the `RolloutComplete` condition. Metrics
+must not expose namespace, object name, Sentry identity, raw error, Secret, DSN, or
+destination data.
 
 ## 11. Focused verification and handoff
 

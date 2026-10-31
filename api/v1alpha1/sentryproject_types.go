@@ -280,11 +280,24 @@ type LifecycleSpec struct {
 	OnDelete OnDeletePolicy `json:"onDelete,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="!has(self.project.use) || (!has(self.settings) && !has(self.notificationTargets) && !has(self.alerts))",message="project.use forbids settings, notification targets and alerts"
+// ProjectGrantAccess declares additional Sentry teams that may access a managed project.
+// Team slugs are canonical; user membership remains outside this API.
+type ProjectGrantAccess struct {
+	// +kubebuilder:validation:MaxItems=50
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=64
+	// +kubebuilder:validation:items:Pattern=`^[a-z](?:[a-z0-9-]*[a-z0-9])?$`
+	// +listType=set
+	// +optional
+	Teams []string `json:"teams,omitempty"`
+}
+
+// +kubebuilder:validation:XValidation:rule="!has(self.project.use) || (!has(self.settings) && !has(self.notificationTargets) && !has(self.alerts) && !has(self.grantAccess))",message="project.use forbids settings, notification targets, alerts and grantAccess"
 // +kubebuilder:validation:XValidation:rule="!has(self.project.use) || !has(self.alertPolicy)",message="project.use forbids alertPolicy"
 // +kubebuilder:validation:XValidation:rule="!has(self.project.use) || self.lifecycle.onDelete != 'DeleteProject'",message="project.use forbids lifecycle.onDelete DeleteProject"
-// +kubebuilder:validation:XValidation:rule="self.role != 'Standby' || (!has(self.settings) && self.lifecycle.onDelete != 'DeleteProject')",message="Standby forbids settings and DeleteProject lifecycle"
+// +kubebuilder:validation:XValidation:rule="self.role != 'Standby' || (!has(self.settings) && !has(self.grantAccess) && self.lifecycle.onDelete != 'DeleteProject')",message="Standby forbids settings, grantAccess and DeleteProject lifecycle"
 // +kubebuilder:validation:XValidation:rule="!has(self.alerts) || self.alerts.all(k, k.matches('^[a-z](?:[a-z0-9-]*[a-z0-9])?$'))",message="alert names must be lowercase DNS labels"
+// +kubebuilder:validation:XValidation:rule="!has(self.grantAccess) || !has(self.project.create) || !has(self.grantAccess.teams) || !self.grantAccess.teams.exists(t, t == self.project.create.team)",message="grantAccess.teams must not repeat project.create.team"
 // SentryProjectSpec defines the desired state of SentryProject.
 type SentryProjectSpec struct {
 	// +kubebuilder:validation:MinLength=1
@@ -307,6 +320,11 @@ type SentryProjectSpec struct {
 
 	// +optional
 	Settings *ProjectSettings `json:"settings,omitempty"`
+
+	// GrantAccess manages additional team access for a managed project. The connection access
+	// rule must authorize every team slug.
+	// +optional
+	GrantAccess *ProjectGrantAccess `json:"grantAccess,omitempty"`
 
 	// +optional
 	NotificationTargets *NotificationTargets `json:"notificationTargets,omitempty"`

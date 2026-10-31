@@ -118,6 +118,21 @@ spec:
                     minLength: 1
                     type: string
                 type: object
+              grantAccess:
+                description: |-
+                  GrantAccess manages additional team access for a managed project. The connection access
+                  rule must authorize every team slug.
+                properties:
+                  teams:
+                    items:
+                      maxLength: 64
+                      minLength: 1
+                      pattern: ^[a-z](?:[a-z0-9-]*[a-z0-9])?$
+                      type: string
+                    maxItems: 50
+                    type: array
+                    x-kubernetes-list-type: set
+                type: object
               lifecycle:
                 default: {}
                 description: LifecycleSpec defines deletion behavior.
@@ -250,18 +265,22 @@ spec:
             - sentry
             type: object
             x-kubernetes-validations:
-            - message: project.use forbids settings, notification targets and alerts
+            - message: project.use forbids settings, notification targets, alerts
+                and grantAccess
               rule: '!has(self.project.use) || (!has(self.settings) && !has(self.notificationTargets)
-                && !has(self.alerts))'
+                && !has(self.alerts) && !has(self.grantAccess))'
             - message: project.use forbids alertPolicy
               rule: '!has(self.project.use) || !has(self.alertPolicy)'
             - message: project.use forbids lifecycle.onDelete DeleteProject
               rule: '!has(self.project.use) || self.lifecycle.onDelete != ''DeleteProject'''
-            - message: Standby forbids settings and DeleteProject lifecycle
-              rule: self.role != 'Standby' || (!has(self.settings) && self.lifecycle.onDelete
-                != 'DeleteProject')
+            - message: Standby forbids settings, grantAccess and DeleteProject lifecycle
+              rule: self.role != 'Standby' || (!has(self.settings) && !has(self.grantAccess)
+                && self.lifecycle.onDelete != 'DeleteProject')
             - message: alert names must be lowercase DNS labels
               rule: '!has(self.alerts) || self.alerts.all(k, k.matches(''^[a-z](?:[a-z0-9-]*[a-z0-9])?$''))'
+            - message: grantAccess.teams must not repeat project.create.team
+              rule: '!has(self.grantAccess) || !has(self.project.create) || !has(self.grantAccess.teams)
+                || !self.grantAccess.teams.exists(t, t == self.project.create.team)'
           status:
             description: status defines the observed state of SentryProject
             properties:

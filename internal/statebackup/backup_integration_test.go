@@ -84,7 +84,7 @@ func TestProtectedStateRoundTripAgainstAPIServer(t *testing.T) {
 		PinnedAdapters: map[string]string{"project": "legacy-24.7.1", "alerts": "legacy-issue-24.7.1"},
 		Alerts: map[string]binding.AlertBinding{
 			"new-issue": {
-				Owner:   binding.ChildOwner{Kind: binding.ChildOwnerProject, Name: project.Name, UID: project.UID, Generation: project.Generation},
+				Owner:   binding.ChildOwner{Kind: binding.ChildOwnerProject, Name: project.Name, UID: project.UID},
 				Adapter: "legacy-issue-24.7.1", ExternalIdentity: "external-alert-id",
 				Trigger: "first-seen", DesiredHash: testDigest("alert"), Enabled: true,
 				Destinations: []string{"telegram/ops"}, Marker: *marker,
@@ -92,7 +92,7 @@ func TestProtectedStateRoundTripAgainstAPIServer(t *testing.T) {
 		},
 		Destinations: map[string]binding.DestinationBinding{
 			"telegram/ops": {
-				Owner: binding.ChildOwner{Kind: binding.ChildOwnerProject, Name: project.Name, UID: project.UID, Generation: project.Generation},
+				Owner: binding.ChildOwner{Kind: binding.ChildOwnerProject, Name: project.Name, UID: project.UID},
 				Kind:  "telegram", ResourceName: "ops", State: "Active", SelectorHash: testDigest("selector"),
 				Telegram: &binding.TelegramBinding{
 					Target: &binding.TelegramTarget{ChatIdentity: "-100123"}, Phase: registration.PhasePendingPublish,

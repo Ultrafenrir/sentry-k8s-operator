@@ -27,17 +27,18 @@ import (
 )
 
 const (
-	controllerProject    = "project"
-	controllerConnection = "connection"
-	metricsUnknown       = "unknown"
-	syncProject          = "project"
-	syncDSN              = "dsn"
-	syncSettings         = "settings"
-	syncDestinations     = "destinations"
-	syncAlerts           = "alerts"
-	syncReady            = "ready"
-	syncBlocked          = "blocked"
-	syncInactive         = "inactive"
+	controllerProject     = "project"
+	controllerConnection  = "connection"
+	controllerAlertPolicy = "alertpolicy"
+	metricsUnknown        = "unknown"
+	syncProject           = "project"
+	syncDSN               = "dsn"
+	syncSettings          = "settings"
+	syncDestinations      = "destinations"
+	syncAlerts            = "alerts"
+	syncReady             = "ready"
+	syncBlocked           = "blocked"
+	syncInactive          = "inactive"
 )
 
 var syncMechanisms = []string{syncProject, syncDSN, syncSettings, syncDestinations, syncAlerts}
@@ -164,7 +165,7 @@ func (m *Metrics) replaceProjectSynchronization(key string, next map[string]stri
 
 func safeController(value string) string {
 	switch value {
-	case controllerProject, controllerConnection:
+	case controllerProject, controllerConnection, controllerAlertPolicy:
 		return value
 	default:
 		return metricsUnknown
@@ -173,7 +174,7 @@ func safeController(value string) string {
 
 func safeCondition(value string) string {
 	switch value {
-	case "CredentialsReady", "DSNReady", "SettingsReady", "NotificationTargetsReady", "AlertsReady", "ProjectReady", "Ready":
+	case "CredentialsReady", "AlertPolicyReady", "DSNReady", "SettingsReady", "GrantAccessReady", "NotificationTargetsReady", "AlertsReady", "ProjectReady", "Ready", "RolloutComplete":
 		return value
 	default:
 		return metricsUnknown

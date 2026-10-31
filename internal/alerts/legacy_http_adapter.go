@@ -118,7 +118,7 @@ type legacyMetricAction struct {
 
 type legacyMetricTrigger struct {
 	Label          string               `json:"label"`
-	AlertThreshold int64                `json:"alertThreshold"`
+	AlertThreshold float64              `json:"alertThreshold"`
 	Actions        []legacyMetricAction `json:"actions"`
 }
 
@@ -331,7 +331,7 @@ func (a *LegacyHTTPAdapter) payload(adapter, projectSlug, name string, desired D
 		Name: name, QueryType: 0, Dataset: "events", Aggregate: "count()", Query: "",
 		TimeWindow: desired.WindowMinutes, ResolveThreshold: 0, ThresholdType: 0,
 		ThresholdPeriod: 1, Projects: []string{projectSlug}, EventTypes: []string{"error"},
-		Triggers: []legacyMetricTrigger{{Label: "critical", AlertThreshold: desired.Threshold, Actions: actions.([]legacyMetricAction)}},
+		Triggers: []legacyMetricTrigger{{Label: "critical", AlertThreshold: float64(desired.Threshold), Actions: actions.([]legacyMetricAction)}},
 	}, nil
 }
 

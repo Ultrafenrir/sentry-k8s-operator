@@ -121,6 +121,30 @@ func TestLegacyHTTPAdapterMetricLifecycleAndPayload(t *testing.T) {
 	}
 }
 
+func TestLegacyHTTPAdapterAcceptsDecimalMetricThresholds(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/0/organizations/company/alert-rules/" || request.Method != http.MethodGet {
+			http.NotFound(w, request)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":"22","name":"checkout:volume:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef [managed;o=payments;m=sko]","status":0,"triggers":[{"label":"critical","alertThreshold":20.0,"actions":[]}]}]`))
+	}))
+	defer server.Close()
+
+	adapter := &LegacyHTTPAdapter{Client: modernTestClient(t, server)}
+	items, err := adapter.list(context.Background(), LegacyMetricAdapter, "company", "checkout")
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items=%#v err=%v", items, err)
+	}
+	response, ok := items[0].(legacyMetricResponse)
+	if !ok || len(response.Triggers) != 1 || response.Triggers[0].AlertThreshold != 20 {
+		t.Fatalf("response=%#v", items[0])
+	}
+}
+
 func TestLegacyHTTPAdapterRejectsUnsupportedState(t *testing.T) {
 	t.Parallel()
 	adapter := &LegacyHTTPAdapter{Client: &sentryapi.Client{}, Destinations: map[string]binding.DestinationBinding{

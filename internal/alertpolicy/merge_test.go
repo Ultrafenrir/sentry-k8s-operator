@@ -2,6 +2,7 @@ package alertpolicy
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,6 +29,15 @@ func TestMergeKeepsPolicyAndProjectOwnershipScopesSeparate(t *testing.T) {
 	}
 	if result.PolicyUID != "policy-uid" || len(*result.Alerts) != 2 {
 		t.Fatalf("result=%#v", result)
+	}
+	policy.Generation++
+	project.Generation++
+	afterGenerationChange, err := Merge(project, policy)
+	if err != nil {
+		t.Fatalf("Merge after generation change: %v", err)
+	}
+	if !reflect.DeepEqual(result.TargetOwners, afterGenerationChange.TargetOwners) || !reflect.DeepEqual(result.AlertOwners, afterGenerationChange.AlertOwners) {
+		t.Fatalf("child ownership changed with generation: before=%#v/%#v after=%#v/%#v", result.TargetOwners, result.AlertOwners, afterGenerationChange.TargetOwners, afterGenerationChange.AlertOwners)
 	}
 }
 
