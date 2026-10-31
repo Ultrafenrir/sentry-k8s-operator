@@ -103,6 +103,23 @@ func TestManagedCreateRejectsStandbyConnectionBeforeExternalMutation(t *testing.
 	}
 }
 
+func TestManagedCreateRejectsStandbyProjectBeforeExternalLookup(t *testing.T) {
+	t.Parallel()
+	engine, adapter, store := testEngine(t)
+	input := managedInput("checkout", "uid-one", "payments")
+	input.Project.Spec.Role = sentryv1alpha1.ProjectRoleStandby
+
+	if _, err := engine.Reconcile(context.Background(), input); !IsReason(err, ReasonProjectStandby) {
+		t.Fatalf("standby project error=%v", err)
+	}
+	if adapter.getCalls != 0 || adapter.createCalls != 0 {
+		t.Fatalf("standby project made get=%d create=%d calls", adapter.getCalls, adapter.createCalls)
+	}
+	if _, err := store.GetBinding(context.Background(), "uid-one"); !errors.Is(err, binding.ErrNotFound) {
+		t.Fatalf("standby project left binding: %v", err)
+	}
+}
+
 func TestRegionalRevisionTakeoverUsesDelayReadbackAndPinsNewRevision(t *testing.T) {
 	t.Parallel()
 	engine, adapter, store := testEngine(t)
@@ -576,6 +593,7 @@ func TestDeleteProjectRejectsSameSlugReplacement(t *testing.T) {
 type fakeAdapter struct {
 	mu                  sync.Mutex
 	projects            map[string]RemoteProject
+	getCalls            int
 	createCalls         int
 	lastCreate          CreateRequest
 	loseCreateResponse  bool
@@ -602,6 +620,7 @@ func (a *fakeAdapter) UpdateRegionalEvidence(_ context.Context, _, slug string, 
 func (a *fakeAdapter) GetBySlug(_ context.Context, _, slug string) (RemoteProject, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.getCalls++
 	project, found := a.projects[slug]
 	if !found {
 		return RemoteProject{}, &sentryapi.APIError{Kind: sentryapi.ErrorNotFound, StatusCode: 404, Operation: "get-project"}

@@ -122,7 +122,9 @@ protected-state update. Equal-revision conflicts, lower local revisions, foreign
 missing evidence, and replaced identities fail closed.
 The update endpoint has HTTP contract-test coverage but has not been exercised against live
 Sentry. The controller does not yet promote standby project candidates or perform adoption;
-those are the next remaining ownership tasks.
+those are the next remaining ownership tasks. Project-level Standby is now explicitly
+fail-closed before any external lookup or durable claim; until candidate observation is
+implemented, it no longer falls through the Active create path.
 
 The reusable alert-policy design decision is complete: `SentryAlertPolicy` is cluster
 scoped, ordinary cluster RBAC controls policy CRUD, and any project may opt in. There is no

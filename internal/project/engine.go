@@ -40,6 +40,7 @@ const (
 	ReasonOwnershipConflict      ErrorReason = "OwnershipConflict"
 	ReasonOwnershipLost          ErrorReason = "OwnershipLost"
 	ReasonConnectionStandby      ErrorReason = "ConnectionStandby"
+	ReasonProjectStandby         ErrorReason = "ProjectStandby"
 	ReasonRevisionFenced         ErrorReason = "RevisionFenced"
 	ReasonRevisionConflict       ErrorReason = "RevisionConflict"
 	ReasonExternalDeleted        ErrorReason = "ExternalDeleted"
@@ -168,6 +169,9 @@ func (e *Engine) Reconcile(ctx context.Context, input Input) (Result, error) {
 		return Result{}, err
 	}
 	if input.Project.Spec.Project.Create != nil {
+		if input.Project.Spec.Role == sentryv1alpha1.ProjectRoleStandby {
+			return Result{}, &Error{Reason: ReasonProjectStandby}
+		}
 		if e.Audit == nil {
 			return Result{}, &Error{Reason: ReasonInvalidState, cause: ErrAuditUnavailable}
 		}
