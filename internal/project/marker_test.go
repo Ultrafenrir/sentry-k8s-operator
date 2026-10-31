@@ -18,9 +18,11 @@ package project
 
 import (
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/ownership"
 )
 
 func TestManagedNameExactRoundTripAndBudget(t *testing.T) {
@@ -37,6 +39,30 @@ func TestManagedNameExactRoundTripAndBudget(t *testing.T) {
 	}
 	if _, err := FormatManagedName("CheckoutXX", marker); !errors.Is(err, ErrMarkerNameTooLong) {
 		t.Fatalf("over-budget marker error = %v", err)
+	}
+}
+
+func TestRegionalManagedNameRoundTripKeepsSlugBudget(t *testing.T) {
+	t.Parallel()
+	evidence, err := ownership.EvidenceFor(ownership.Marker{
+		Region: "eu-west-1", Revision: math.MaxInt64, Owner: "payments", Installation: "company-sentry-op",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := FormatRegionalManagedNameFromSlug("checkout-service", evidence)
+	if err != nil {
+		t.Fatalf("format regional name: %v", err)
+	}
+	if len([]rune(name)) > sentryProjectNameMaxRunes {
+		t.Fatalf("regional name exceeds Sentry limit: %q", name)
+	}
+	parsed, found := ParseRegionalManagedName(name)
+	if !found || parsed != evidence {
+		t.Fatalf("parsed=%#v found=%v want=%#v", parsed, found, evidence)
+	}
+	if _, found := ParseRegionalManagedName(name + " trailing"); found {
+		t.Fatalf("regional marker accepted trailing data: %q", name)
 	}
 }
 

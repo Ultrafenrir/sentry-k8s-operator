@@ -15,7 +15,10 @@ package ownership
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"strconv"
 	"time"
 )
 
@@ -24,6 +27,7 @@ var (
 	ErrFenced   = errors.New("connection revision is fenced")
 	ErrConflict = errors.New("equal revision ownership conflict")
 	ErrChanged  = errors.New("ownership marker changed during fencing")
+	ErrInvalid  = errors.New("ownership marker is invalid")
 )
 
 // Marker is protected remote ownership evidence. Installation is a stable operator
@@ -38,6 +42,43 @@ type Marker struct {
 type Local struct {
 	Marker
 	Active bool
+}
+
+const evidenceFingerprintBytes = 12
+
+// Evidence is the compact remote representation of a complete ownership Marker. Revision
+// remains readable so a stale writer can distinguish fencing from an equal-revision
+// conflict. Fingerprint binds region, revision, owner and installation without exposing
+// protected installation identity in the Sentry project name.
+type Evidence struct {
+	Revision    int64
+	Fingerprint string
+}
+
+// EvidenceFor returns a stable 96-bit SHA-256 fingerprint. The bounded token is a remote
+// collision-resistant fence, not an authentication secret.
+func EvidenceFor(marker Marker) (Evidence, error) {
+	if marker.Region == "" || marker.Revision <= 0 || marker.Owner == "" || marker.Installation == "" {
+		return Evidence{}, ErrInvalid
+	}
+	digest := sha256.Sum256([]byte(marker.Region + "\x00" + strconv.FormatInt(marker.Revision, 10) + "\x00" + marker.Owner + "\x00" + marker.Installation))
+	return Evidence{Revision: marker.Revision, Fingerprint: hex.EncodeToString(digest[:evidenceFingerprintBytes])}, nil
+}
+
+// ValidateEvidence classifies compact remote evidence immediately before an external
+// mutation. The revision comparison is performed before the exact fingerprint comparison.
+func ValidateEvidence(local Local, remote Evidence) error {
+	if !local.Active {
+		return ErrStandby
+	}
+	if remote.Revision != local.Revision {
+		return ErrFenced
+	}
+	expected, err := EvidenceFor(local.Marker)
+	if err != nil || remote.Fingerprint != expected.Fingerprint {
+		return ErrConflict
+	}
+	return nil
 }
 
 // ValidateMutation classifies one exact marker read immediately before an external write.

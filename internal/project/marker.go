@@ -20,10 +20,12 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/ownership"
 )
 
 const sentryProjectNameMaxRunes = 50
@@ -31,6 +33,8 @@ const sentryProjectNameMaxRunes = 50
 var (
 	markerComponentPattern = regexp.MustCompile(`^[a-z](?:[a-z0-9.-]*[a-z0-9])?$`)
 	managedNamePattern     = regexp.MustCompile(`^(.+) \[managed;o=([a-z](?:[a-z0-9.-]*[a-z0-9])?);m=([a-z](?:[a-z0-9.-]*[a-z0-9])?)\]$`)
+	regionalNamePattern    = regexp.MustCompile(`^(.+) \[sko;v=([0-9a-z]+);h=([0-9a-f]{24})\]$`)
+	evidenceHashPattern    = regexp.MustCompile(`^[0-9a-f]{24}$`)
 	ErrInvalidMarker       = errors.New("managed marker is invalid")
 	ErrMarkerNameTooLong   = errors.New("managed display name exceeds Sentry limit")
 )
@@ -49,6 +53,38 @@ func FormatManagedName(displayName string, marker binding.Marker) (string, error
 		return "", ErrMarkerNameTooLong
 	}
 	return name, nil
+}
+
+// FormatRegionalManagedNameFromSlug stores compact regional evidence while keeping the
+// external project slug unchanged. Base36 bounds the largest int64 revision to 13 runes.
+func FormatRegionalManagedNameFromSlug(slug string, evidence ownership.Evidence) (string, error) {
+	slug = strings.TrimSpace(slug)
+	if slug == "" || evidence.Revision <= 0 || !evidenceHashPattern.MatchString(evidence.Fingerprint) {
+		return "", ErrInvalidMarker
+	}
+	suffix := fmt.Sprintf(" [sko;v=%s;h=%s]", strconv.FormatInt(evidence.Revision, 36), evidence.Fingerprint)
+	budget := sentryProjectNameMaxRunes - utf8.RuneCountInString(suffix)
+	if budget < 1 {
+		return "", ErrMarkerNameTooLong
+	}
+	runes := []rune(slug)
+	if len(runes) > budget {
+		runes = runes[:budget]
+	}
+	return string(runes) + suffix, nil
+}
+
+// ParseRegionalManagedName accepts only the complete compact regional suffix.
+func ParseRegionalManagedName(name string) (ownership.Evidence, bool) {
+	matches := regionalNamePattern.FindStringSubmatch(name)
+	if len(matches) != 4 || strings.TrimSpace(matches[1]) == "" {
+		return ownership.Evidence{}, false
+	}
+	revision, err := strconv.ParseInt(matches[2], 36, 64)
+	if err != nil || revision <= 0 {
+		return ownership.Evidence{}, false
+	}
+	return ownership.Evidence{Revision: revision, Fingerprint: matches[3]}, true
 }
 
 // FormatManagedNameFromSlug derives the Sentry display name from the Kubernetes resource
