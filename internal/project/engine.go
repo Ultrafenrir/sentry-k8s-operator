@@ -28,6 +28,7 @@ import (
 	sentryv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/audit"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/ownership"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/policy"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
 )
@@ -80,10 +81,11 @@ func IsReason(err error, reason ErrorReason) bool {
 
 // RemoteProject is internal adapter data. Identity never enters public spec or status.
 type RemoteProject struct {
-	Identity string
-	Slug     string
-	URL      string
-	Marker   *binding.Marker
+	Identity         string
+	Slug             string
+	URL              string
+	Marker           *binding.Marker
+	RegionalEvidence *ownership.Evidence
 }
 
 // CreateRequest is the source-confirmed atomic project create contract.
@@ -94,6 +96,9 @@ type CreateRequest struct {
 	Platform     string
 	DefaultRules bool
 	Marker       binding.Marker
+	// RegionalEvidence replaces the legacy readable marker in the remote project name when
+	// connection-wide revision fencing is enabled. Marker remains protected child ownership.
+	RegionalEvidence *ownership.Evidence
 }
 
 // Adapter isolates version-specific Sentry HTTP details from ownership logic.

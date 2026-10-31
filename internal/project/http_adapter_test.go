@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/ownership"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
 )
 
@@ -65,6 +66,38 @@ func TestHTTPAdapterMatchesSourceDerivedCreateContract(t *testing.T) {
 	}
 	if remote.Identity == "" || remote.Slug != "checkout" || remote.Marker == nil || *remote.Marker != marker {
 		t.Fatalf("remote = %#v", remote)
+	}
+}
+
+func TestHTTPAdapterCreatesProjectWithRegionalRevisionEvidence(t *testing.T) {
+	t.Parallel()
+	regionalMarker := ownership.Marker{Region: "eu-west-1", Revision: 35, Owner: "payments", Installation: "company-sentry-op"}
+	evidence, err := ownership.EvidenceFor(regionalMarker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		name, _ := body["name"].(string)
+		parsed, found := ParseRegionalManagedName(name)
+		if !found || parsed != evidence || body["slug"] != "checkout" {
+			t.Errorf("regional create body = %#v", body)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": "internal-project-id", "name": name, "slug": "checkout"})
+	}))
+	defer server.Close()
+	adapter := &HTTPAdapter{Client: testHTTPClient(t, server)}
+	remote, err := adapter.Create(context.Background(), CreateRequest{
+		Organization: "company", Slug: "checkout", Team: "payments", DefaultRules: false,
+		Marker:           binding.Marker{Origin: "managed", Owner: "payments", ManagedBy: "company-sentry-op"},
+		RegionalEvidence: &evidence,
+	})
+	if err != nil || remote.RegionalEvidence == nil || *remote.RegionalEvidence != evidence || remote.Marker != nil {
+		t.Fatalf("regional remote=%#v err=%v", remote, err)
 	}
 }
 

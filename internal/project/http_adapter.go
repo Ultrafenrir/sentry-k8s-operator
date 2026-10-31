@@ -51,7 +51,7 @@ func (a *HTTPAdapter) GetBySlug(ctx context.Context, organization, slug string) 
 }
 
 func (a *HTTPAdapter) Create(ctx context.Context, request CreateRequest) (RemoteProject, error) {
-	managedName, err := FormatManagedNameFromSlug(request.Slug, request.Marker)
+	managedName, err := managedProjectName(request)
 	if err != nil {
 		return RemoteProject{}, err
 	}
@@ -78,10 +78,24 @@ func (a *HTTPAdapter) Create(ctx context.Context, request CreateRequest) (Remote
 		return RemoteProject{}, err
 	}
 	remote := remoteFromResponse(response)
-	if remote.Identity == "" || remote.Slug != request.Slug || remote.Marker == nil || !request.Marker.Matches(*remote.Marker) {
+	if remote.Identity == "" || remote.Slug != request.Slug || !matchesCreateEvidence(remote, request) {
 		return RemoteProject{}, &sentryapi.APIError{Kind: sentryapi.ErrorDecode, StatusCode: http.StatusCreated, Operation: "create-project"}
 	}
 	return remote, nil
+}
+
+func managedProjectName(request CreateRequest) (string, error) {
+	if request.RegionalEvidence != nil {
+		return FormatRegionalManagedNameFromSlug(request.Slug, *request.RegionalEvidence)
+	}
+	return FormatManagedNameFromSlug(request.Slug, request.Marker)
+}
+
+func matchesCreateEvidence(remote RemoteProject, request CreateRequest) bool {
+	if request.RegionalEvidence != nil {
+		return remote.RegionalEvidence != nil && *remote.RegionalEvidence == *request.RegionalEvidence
+	}
+	return remote.Marker != nil && request.Marker.Matches(*remote.Marker)
 }
 
 func (a *HTTPAdapter) Delete(ctx context.Context, organization, slug string) error {
@@ -98,6 +112,9 @@ func remoteFromResponse(response projectResponse) RemoteProject {
 	remote := RemoteProject{Identity: response.ID, Slug: response.Slug, URL: response.AbsoluteURL}
 	if marker, found := ParseManagedName(response.Name); found {
 		remote.Marker = &marker
+	}
+	if evidence, found := ParseRegionalManagedName(response.Name); found {
+		remote.RegionalEvidence = &evidence
 	}
 	return remote
 }
