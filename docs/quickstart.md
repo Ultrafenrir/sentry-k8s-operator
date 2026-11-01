@@ -83,6 +83,11 @@ teams, pins each managed team's Sentry identity in protected state, and revokes 
 managed team when it is removed from the list. User membership is intentionally outside the
 alpha API.
 
+To adopt a project that already has the same slug, use this `project.create` shape with an
+explicitly Active owned connection and set the connection's
+`projectManagement.unmanagedProjects` to `Adopt`. Do not switch to `project.use`: that selector
+is permanently read-only and intentionally forbids managed components.
+
 ```sh
 kubectl apply -f sentryproject.yaml
 kubectl -n checkout-prod wait sentryproject/checkout \

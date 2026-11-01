@@ -174,22 +174,28 @@ func TestPinnedAdapterAndOwnershipFailClosed(t *testing.T) {
 	}
 }
 
-func TestCapabilityWithoutToggleAcceptsOnlyEnabledDesiredState(t *testing.T) {
+func TestCapabilityWithoutToggleIsolatesDisabledDesiredState(t *testing.T) {
 	t.Parallel()
 	adapter := newFakeAdapter()
 	input := baseInput(adapter, func(context.Context) error { return nil })
 	input.Capabilities = []Capability{{Name: "legacy", Triggers: allTriggers(), SupportsUpdate: true, SupportsToggle: false}}
-	input.Desired = map[string]Desired{"rule": {Trigger: TriggerFirstSeen, Enabled: true, Notify: []string{"chat"}}}
-	result := newTestEngine(adapter).Reconcile(context.Background(), input)
-	if result.Err() != nil || result.PinnedAdapter != "legacy" || result.Statuses["rule"].State != StateReady {
-		t.Fatalf("enabled legacy result=%#v", result)
+	currentDesired := Desired{Trigger: TriggerFirstSeen, Enabled: true, Notify: []string{"chat"}}
+	current := boundAlert("disabled", "legacy", currentDesired, testMarker)
+	adapter.objects[current.ExternalIdentity] = observedFromBinding(current)
+	input.Current = map[string]binding.AlertBinding{"disabled": current}
+	input.Desired = map[string]Desired{
+		"enabled":  {Trigger: TriggerFirstSeen, Enabled: true, Notify: []string{"chat"}},
+		"disabled": {Trigger: TriggerFirstSeen, Enabled: false, Notify: []string{"chat"}},
 	}
-	input.Current = nil
-	input.PinnedAdapter = ""
-	input.Desired["rule"] = Desired{Trigger: TriggerFirstSeen, Enabled: false, Notify: []string{"chat"}}
-	result = newTestEngine(adapter).Reconcile(context.Background(), input)
-	if !errors.Is(result.Statuses["rule"].Err, ErrAdapterUnavailable) || len(result.Bindings) != 0 {
-		t.Fatalf("disabled legacy result=%#v", result)
+	result := newTestEngine(adapter).Reconcile(context.Background(), input)
+	if result.PinnedAdapter != "legacy" || result.Statuses["enabled"].State != StateReady {
+		t.Fatalf("enabled legacy child result=%#v", result)
+	}
+	if result.Statuses["disabled"].State != StateError || !errors.Is(result.Statuses["disabled"].Err, ErrAdapterUnavailable) {
+		t.Fatalf("disabled legacy child result=%#v", result)
+	}
+	if _, ok := result.Bindings["enabled"]; !ok || len(result.Bindings) != 2 || !reflect.DeepEqual(result.Bindings["disabled"], current) {
+		t.Fatalf("unsupported child affected compatible bindings=%#v", result.Bindings)
 	}
 }
 

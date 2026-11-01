@@ -385,7 +385,11 @@ func selectCapability(input Input, keys []string) (Capability, error) {
 		}
 		compatible := true
 		for _, key := range keys {
-			if !candidate.Triggers[input.Desired[key].Trigger] || (!candidate.SupportsToggle && !input.Desired[key].Enabled) {
+			// Adapter selection is shared by every alert in the component. Toggle
+			// support is intentionally checked per child in updateOne so one
+			// unsupported disabled rule cannot make unrelated compatible rules
+			// report AlertAdapterUnavailable.
+			if !candidate.Triggers[input.Desired[key].Trigger] {
 				compatible = false
 				break
 			}

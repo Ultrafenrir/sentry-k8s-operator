@@ -59,28 +59,22 @@ search and detail views still showed the independently correct regression rule.
 
 ## First-release decision
 
-The 2026-11-01 deployed-controller run found one release-blocking ownership gap. A manually
-created project can be observed as `External/ReadOnly` and safely retained, but it cannot be
-promoted by the deployed controllers. After a valid Standby-to-Active revision increase, the
-connection controller reports `OwnershipReady=False`, reason `RevisionUnverified`, and keeps
-`effectiveRole=Standby`. The project controller therefore keeps an explicitly Active project
-request in effective Standby even after `unmanagedProjects: Adopt` is enabled. The same result
-was reproduced on both supported Sentry versions without changing or replacing the external
-project.
+The apparent deployed-controller adoption blocker in the first QA pass was an invalid test
+scenario: it used `project.use`, whose API contract is permanently read-only. The supported
+takeover path is `project.create` with the existing slug, an explicitly Active owned
+connection, and `projectManagement.unmanagedProjects: Adopt`. Clean kind runs against both
+supported Sentry versions adopted manually created projects without replacing their remote
+identities, reported `Managed/Manage/Active` and `Ready=True`, and removed the ownership marker
+while preserving the same project after Retain. The retained projects were verified through
+both the public API and browser UI. Existing-project adoption is therefore **go within this
+explicit policy boundary**.
 
-The direct full-controller acceptance still proves the adoption engine when supplied with an
-explicitly proven Active connection. That does not prove that the deployed connection and
-project controllers can bootstrap the first remote ownership marker together. The first
-release is therefore **no-go for the advertised existing-project adoption user story** until
-that bootstrap path is implemented and repeated in clean kind plus browser acceptance. If
-adoption is removed from the advertised first-release scope, Observe/ReadOnly plus Retain is
-live-proven and fail-closed.
-
-One additional legacy behavior needs product clarification rather than data recovery: setting
-one Sentry 24.7.1 legacy alert to `enabled: false` selects no compatible combined legacy
-adapter and temporarily reports every alert child unavailable. Re-enabling the alert restored
-all four children and preserved their external identities. Modern 26.10.1 alert enable/disable
-works independently and was browser-verified.
+The legacy alert engine now isolates an unsupported `enabled: false` request to that alert
+child. A clean Sentry 24.7.1 run kept the other three legacy children Ready with their remote
+objects present while the disabled child reported `AlertAdapterUnavailable` and the aggregate
+reported `AlertsPartiallyApplied`. Re-enabling remains required because the legacy API has no
+accepted non-destructive toggle. Modern 26.10.1 alert enable/disable remains independently
+supported and browser-verified.
 
 Additional project-team access is covered by generated schema, admission, policy, domain,
 HTTP adapter, and controller tests. On 2026-10-31 clean disposable-stack runs verified

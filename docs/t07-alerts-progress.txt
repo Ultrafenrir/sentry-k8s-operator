@@ -150,8 +150,9 @@ Evidence boundary and remaining work:
   `legacy-24.7.1` selects the combined issue/metric adapter and `modern-26.10.1` selects the
   verified metric_issue detector/workflow adapter. Missing or incompatible profiles fail
   before mutation. Legacy accepts only enabled desired rules because delete is not a pause;
-  modern supports toggles. A trigger-family change that lacks safe in-place semantics also
-  fails without delete/recreate.
+  an unsupported disabled child fails independently while compatible siblings continue to
+  reconcile. Modern supports toggles. A trigger-family change that lacks safe in-place
+  semantics also fails without delete/recreate.
 - The project controller now resolves destinations first, reconciles alerts through the
   protected operation journal and audit sink, reauthorizes every mutation against current
   project policy/profile/bindings, CAS-persists alert bindings/pin/tombstones, and publishes

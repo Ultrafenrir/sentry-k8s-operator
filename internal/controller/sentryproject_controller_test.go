@@ -45,6 +45,7 @@ import (
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/destination"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/dsn"
 	issueownershipruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/issueownership"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/ownership"
 	projectruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/project"
 	projectaccessruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/projectaccess"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
@@ -262,6 +263,45 @@ var _ = Describe("SentryProject Controller", func() {
 				HaveField("Status", metav1.ConditionTrue),
 				HaveField("Reason", "ProjectVerified"),
 			)))
+		})
+
+		It("adopts an existing unmarked slug through project.create without connection status promotion", func() {
+			connection := &sentryconfigurationv1alpha1.SentryConnection{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: connectionName}, connection)).To(Succeed())
+			connection.Spec.Ownership = &sentryconfigurationv1alpha1.ConnectionOwnership{
+				Region: "qa-primary", Role: sentryconfigurationv1alpha1.ConnectionRoleActive, Revision: 1,
+			}
+			connection.Spec.ProjectManagement.UnmanagedProjects = sentryconfigurationv1alpha1.UnmanagedProjectsAdopt
+			Expect(k8sClient.Update(ctx, connection)).To(Succeed())
+
+			adapter.projects[resourceName] = projectruntime.RemoteProject{
+				Identity: "preexisting-project", Slug: resourceName,
+				URL: "https://sentry.example.test/projects/" + resourceName,
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &sentryconfigurationv1alpha1.SentryProject{}
+			Expect(k8sClient.Get(ctx, key, updated)).To(Succeed())
+			Expect(updated.Status.Origin).To(Equal(string(binding.OriginManaged)))
+			Expect(updated.Status.AccessMode).To(Equal(binding.AccessManage))
+			Expect(updated.Status.EffectiveRole).To(Equal(string(sentryconfigurationv1alpha1.ProjectRoleActive)))
+			Expect(meta.FindStatusCondition(updated.Status.Conditions, "ProjectReady")).To(And(
+				HaveField("Status", metav1.ConditionTrue), HaveField("Reason", "ProjectVerified"),
+			))
+			Expect(adapter.createCalls).To(Equal(0))
+			Expect(adapter.updateEvidenceCalls).To(Equal(1))
+
+			record, err := reconciler.Bindings.GetBinding(ctx, string(updated.UID))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(record.Binding.ExternalIdentity).To(Equal("preexisting-project"))
+			Expect(record.Binding.Origin).To(Equal(binding.OriginManaged))
+			Expect(record.Binding.AccessMode).To(Equal(binding.AccessManage))
+			Expect(record.Binding.RegionalOwnership).NotTo(BeNil())
+			Expect(adapter.projects[resourceName].RegionalEvidence).NotTo(BeNil())
 		})
 
 		It("creates, publishes, and safely rotates a managed client key", func() {
@@ -1156,10 +1196,11 @@ func (controllerAuditSink) Record(_ context.Context, event audit.Event) error {
 }
 
 type controllerFakeProjectAdapter struct {
-	mu           sync.Mutex
-	projects     map[string]projectruntime.RemoteProject
-	createCalls  int
-	releaseCalls int
+	mu                  sync.Mutex
+	projects            map[string]projectruntime.RemoteProject
+	createCalls         int
+	updateEvidenceCalls int
+	releaseCalls        int
 }
 
 type controllerFakeServiceHookAdapter struct {
@@ -1487,6 +1528,20 @@ func (a *controllerFakeProjectAdapter) Delete(_ context.Context, _, slug string)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	delete(a.projects, slug)
+	return nil
+}
+
+func (a *controllerFakeProjectAdapter) UpdateRegionalEvidence(_ context.Context, _, slug string, evidence ownership.Evidence) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	project, found := a.projects[slug]
+	if !found {
+		return &sentryapi.APIError{Kind: sentryapi.ErrorNotFound, StatusCode: 404, Operation: "update-project-ownership"}
+	}
+	a.updateEvidenceCalls++
+	project.Marker = nil
+	project.RegionalEvidence = &evidence
+	a.projects[slug] = project
 	return nil
 }
 

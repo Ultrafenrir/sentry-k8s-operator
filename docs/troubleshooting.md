@@ -65,8 +65,10 @@ investigation; do not infer that a missing response means a missing external obj
 - `ProjectAlreadyExists`: the requested managed slug existed before this create intent and
   the connection policy does not authorize adoption of that exact unmarked project. The
   default is `Reject`; choose a different readable slug or use an explicitly granted
-  read-only `project.use` resource. `Adopt` is a platform policy for an explicitly Active
-  owned connection, not a per-project force-takeover switch.
+  read-only `project.use` resource. To take the existing slug under management, keep
+  `project.create` and configure `Adopt` on an explicitly Active owned connection. `project.use`
+  never becomes writable and is not an adoption request. `Adopt` is a platform policy, not a
+  per-project force-takeover switch.
 - `OwnershipConflict`: another SentryProject manager claim owns this project. Do not delete
   protected state or create a second writer.
 - `RevisionUnverified`: the requested Active connection revision has not been verified
