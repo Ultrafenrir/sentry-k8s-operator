@@ -79,6 +79,7 @@ spec:
                       - first-seen
                       - regression
                       - event-count
+                      - user-count
                       type: string
                     windowMinutes:
                       format: int32
@@ -90,9 +91,9 @@ spec:
                   - trigger
                   type: object
                   x-kubernetes-validations:
-                  - message: event-count requires windowMinutes and threshold; issue
-                      triggers forbid them
-                    rule: 'self.trigger == ''event-count'' ? (has(self.windowMinutes)
+                  - message: metric triggers require windowMinutes and threshold;
+                      issue triggers forbid them
+                    rule: 'self.trigger in [''event-count'', ''user-count''] ? (has(self.windowMinutes)
                       && has(self.threshold)) : (!has(self.windowMinutes) && !has(self.threshold))'
                 maxProperties: 100
                 type: object

@@ -26,10 +26,9 @@ import (
 
 // InputVersions are safe hashes used only to detect rotations.
 type InputVersions struct {
-	Token       [32]byte
-	CABundle    [32]byte
-	BotToken    [32]byte
-	WebhookAuth [32]byte
+	Token    [32]byte
+	CABundle [32]byte
+	BotToken [32]byte
 }
 
 type registryEntry struct {
@@ -140,10 +139,9 @@ func (r *Registry) Delete(name string) {
 
 func hashInputs(inputs SecretInputs) InputVersions {
 	return InputVersions{
-		Token:       sha256.Sum256(inputs.Token),
-		CABundle:    sha256.Sum256(inputs.CABundle),
-		BotToken:    sha256.Sum256(inputs.BotToken),
-		WebhookAuth: sha256.Sum256(inputs.WebhookAuth),
+		Token:    sha256.Sum256(inputs.Token),
+		CABundle: sha256.Sum256(inputs.CABundle),
+		BotToken: sha256.Sum256(inputs.BotToken),
 	}
 }
 
@@ -152,7 +150,6 @@ func cloneInputs(inputs SecretInputs) SecretInputs {
 		Token:                 append([]byte(nil), inputs.Token...),
 		CABundle:              append([]byte(nil), inputs.CABundle...),
 		BotToken:              append([]byte(nil), inputs.BotToken...),
-		WebhookAuth:           append([]byte(nil), inputs.WebhookAuth...),
 		AllowInsecureHTTP:     inputs.AllowInsecureHTTP,
 		InsecureSkipTLSVerify: inputs.InsecureSkipTLSVerify,
 	}

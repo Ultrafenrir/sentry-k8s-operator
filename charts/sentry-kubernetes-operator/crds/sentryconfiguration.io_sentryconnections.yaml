@@ -157,8 +157,10 @@ spec:
                 properties:
                   caBundleSecretRef:
                     description: |-
-                      SecretKeyReference identifies one key in a Secret from the fixed operator namespace.
-                      Namespace is intentionally not user-configurable.
+                      SecretKeyReference identifies one key in a Secret. The containing resource determines
+                      the lookup namespace: connection credentials use the fixed operator namespace, while
+                      namespaced project children use their SentryProject namespace. Namespace is never
+                      user-configurable.
                     properties:
                       key:
                         maxLength: 253
@@ -174,8 +176,10 @@ spec:
                     type: object
                   tokenSecretRef:
                     description: |-
-                      SecretKeyReference identifies one key in a Secret from the fixed operator namespace.
-                      Namespace is intentionally not user-configurable.
+                      SecretKeyReference identifies one key in a Secret. The containing resource determines
+                      the lookup namespace: connection credentials use the fixed operator namespace, while
+                      namespaced project children use their SentryProject namespace. Namespace is never
+                      user-configurable.
                     properties:
                       key:
                         maxLength: 253
@@ -254,14 +258,82 @@ spec:
                         - name
                         x-kubernetes-list-type: map
                     type: object
+                  sourceCode:
+                    description: SourceCodeIntegrations declares stable aliases for
+                      installed integrations and repositories.
+                    properties:
+                      installations:
+                        items:
+                          description: |-
+                            SourceCodeIntegrationCatalogEntry declares one installed source-code integration and its
+                            readable repository aliases. Declaring an entry never installs an integration or imports a
+                            repository.
+                          properties:
+                            name:
+                              maxLength: 63
+                              minLength: 1
+                              pattern: ^[a-z](?:[a-z0-9-]*[a-z0-9])?$
+                              type: string
+                            provider:
+                              description: SourceCodeProvider is a portable Sentry
+                                source-code integration provider.
+                              enum:
+                              - github
+                              - github_enterprise
+                              - gitlab
+                              - bitbucket
+                              - vsts
+                              type: string
+                            repositories:
+                              items:
+                                description: |-
+                                  SourceCodeRepositoryCatalogEntry maps one stable local alias to one repository already
+                                  imported by a declared source-code integration. Numeric Sentry repository identities stay
+                                  in protected state.
+                                properties:
+                                  name:
+                                    maxLength: 63
+                                    minLength: 1
+                                    pattern: ^[a-z](?:[a-z0-9-]*[a-z0-9])?$
+                                    type: string
+                                  sentryName:
+                                    maxLength: 200
+                                    minLength: 1
+                                    type: string
+                                required:
+                                - name
+                                - sentryName
+                                type: object
+                              maxItems: 200
+                              type: array
+                              x-kubernetes-list-map-keys:
+                              - name
+                              x-kubernetes-list-type: map
+                            sentryName:
+                              maxLength: 200
+                              minLength: 1
+                              type: string
+                          required:
+                          - name
+                          - provider
+                          - sentryName
+                          type: object
+                        maxItems: 100
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                    type: object
                   telegram:
                     description: TelegramIntegration configures the platform-owned
                       Telegram delivery route.
                     properties:
                       botTokenSecretRef:
                         description: |-
-                          SecretKeyReference identifies one key in a Secret from the fixed operator namespace.
-                          Namespace is intentionally not user-configurable.
+                          SecretKeyReference identifies one key in a Secret. The containing resource determines
+                          the lookup namespace: connection credentials use the fixed operator namespace, while
+                          namespaced project children use their SentryProject namespace. Namespace is never
+                          user-configurable.
                         properties:
                           key:
                             maxLength: 253
@@ -280,27 +352,17 @@ spec:
                         minLength: 9
                         pattern: ^https://[^[:space:]]+$
                         type: string
-                      webhookAuthSecretRef:
+                      serviceHookRevision:
+                        default: 1
                         description: |-
-                          SecretKeyReference identifies one key in a Secret from the fixed operator namespace.
-                          Namespace is intentionally not user-configurable.
-                        properties:
-                          key:
-                            maxLength: 253
-                            minLength: 1
-                            type: string
-                          name:
-                            maxLength: 253
-                            minLength: 1
-                            type: string
-                        required:
-                        - key
-                        - name
-                        type: object
+                          ServiceHookRevision is a platform-controlled monotonic trigger for replacing the
+                          Sentry-generated hook secret without placing that secret in the public API.
+                        format: int64
+                        minimum: 1
+                        type: integer
                     required:
                     - botTokenSecretRef
                     - receiverURL
-                    - webhookAuthSecretRef
                     type: object
                 type: object
               organization:
@@ -387,6 +449,10 @@ spec:
                 || !has(self.credentials.caBundleSecretRef)'
             - message: credentials.caBundleSecretRef requires an HTTPS URL
               rule: self.url.startsWith('https://') || !has(self.credentials.caBundleSecretRef)
+            - message: projectManagement.unmanagedProjects Adopt requires ownership.role
+                Active
+              rule: self.projectManagement.unmanagedProjects != 'Adopt' || (has(self.ownership)
+                && self.ownership.role == 'Active')
           status:
             description: status defines the observed state of SentryConnection
             properties:

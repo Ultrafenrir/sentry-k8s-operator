@@ -43,6 +43,9 @@ func TestControllerMetricsExposeOnlyFixedLabels(t *testing.T) {
 	metrics.ObserveCondition(controllerAlertPolicy, "RolloutComplete", metav1.ConditionTrue)
 	metrics.ObserveCondition(controllerProject, "AlertPolicyReady", metav1.ConditionTrue)
 	metrics.ObserveCondition(controllerProject, "GrantAccessReady", metav1.ConditionTrue)
+	metrics.ObserveCondition(controllerProject, "IssueOwnershipReady", metav1.ConditionTrue)
+	metrics.ObserveCondition(controllerProject, "ClientKeysReady", metav1.ConditionTrue)
+	metrics.ObserveCondition(controllerProject, "SymbolSourcesReady", metav1.ConditionTrue)
 	metrics.ObserveCondition("private-controller-SHOULD-NOT-LEAK", "private-condition-SHOULD-NOT-LEAK", "private-status-SHOULD-NOT-LEAK")
 
 	families, err := registry.Gather()
@@ -62,6 +65,9 @@ func TestControllerMetricsExposeOnlyFixedLabels(t *testing.T) {
 		"condition=RolloutComplete controller=alertpolicy status=True",
 		"condition=AlertPolicyReady controller=project status=True",
 		"condition=GrantAccessReady controller=project status=True",
+		"condition=IssueOwnershipReady controller=project status=True",
+		"condition=ClientKeysReady controller=project status=True",
+		"condition=SymbolSourcesReady controller=project status=True",
 		"condition=unknown controller=unknown status=unknown",
 	} {
 		if !strings.Contains(encoded, expected) {
@@ -81,6 +87,9 @@ func TestSynchronizationMetricsAggregateWithoutResourceLabels(t *testing.T) {
 		{Type: "ProjectReady", Status: metav1.ConditionTrue},
 		{Type: "DSNReady", Status: metav1.ConditionFalse},
 		{Type: "SettingsReady", Status: metav1.ConditionUnknown},
+		{Type: "IssueOwnershipReady", Status: metav1.ConditionTrue},
+		{Type: "ClientKeysReady", Status: metav1.ConditionTrue},
+		{Type: "SymbolSourcesReady", Status: metav1.ConditionTrue},
 	})
 	metrics.ObserveProjectSynchronization("private/team-b", []metav1.Condition{
 		{Type: "ProjectReady", Status: metav1.ConditionTrue},
@@ -90,6 +99,8 @@ func TestSynchronizationMetricsAggregateWithoutResourceLabels(t *testing.T) {
 	assertGaugeValue(t, metrics.synchronizations.WithLabelValues(syncDSN, syncBlocked), 2)
 	assertGaugeValue(t, metrics.synchronizations.WithLabelValues(syncAlerts, syncBlocked), 1)
 	assertGaugeValue(t, metrics.synchronizations.WithLabelValues(syncSettings, syncInactive), 1)
+	assertGaugeValue(t, metrics.synchronizations.WithLabelValues(syncIssueOwnership, syncReady), 1)
+	assertGaugeValue(t, metrics.synchronizations.WithLabelValues(syncSymbolSources, syncReady), 1)
 
 	metrics.ObserveProjectSynchronization("private/team-a", []metav1.Condition{
 		{Type: "ProjectReady", Status: metav1.ConditionTrue},

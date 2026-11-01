@@ -192,6 +192,17 @@ func TestBindingValidationRejectsCorruptProtectedAlertState(t *testing.T) {
 	if _, err := newTestStore(t).CreateBinding(context.Background(), valid); err != nil {
 		t.Fatalf("valid alert binding: %v", err)
 	}
+	standby := valid
+	standby.Project.UID = "standby-alert-uid"
+	standby.AccessMode = AccessReadOnly
+	standby.ManagerUID = ""
+	standby.ClaimName = ""
+	standbyAlert := valid.Alerts["new-issue"]
+	standbyAlert.Owner.UID = standby.Project.UID
+	standby.Alerts = map[string]AlertBinding{"new-issue": standbyAlert}
+	if _, err := newTestStore(t).CreateBinding(context.Background(), standby); err != nil {
+		t.Fatalf("valid standby-owned alert binding: %v", err)
+	}
 
 	tests := map[string]func(*ProjectBinding){
 		"invalid local key": func(value *ProjectBinding) {
@@ -230,6 +241,58 @@ func TestBindingValidationRejectsCorruptProtectedAlertState(t *testing.T) {
 			mutate(&candidate)
 			if _, err := newTestStore(t).CreateBinding(context.Background(), candidate); !errors.Is(err, ErrInvalidRecord) {
 				t.Fatalf("corrupt alert state error = %v", err)
+			}
+		})
+	}
+}
+
+func TestBindingValidationRejectsCorruptProtectedSymbolSourceState(t *testing.T) {
+	t.Parallel()
+
+	marker := Marker{Origin: "managed", Owner: "payments", ManagedBy: "company-sentry-operator"}
+	valid := testBinding("symbol-source-uid", marker)
+	valid.SymbolSources = map[string]SymbolSourceBinding{
+		"native-symbols": {
+			ExternalIdentity: "sko-source-123", RemoteName: "sko:native-symbols:fixture",
+			Type: "http", DesiredHash: strings.Repeat("a", 64),
+		},
+	}
+	if _, err := newTestStore(t).CreateBinding(context.Background(), valid); err != nil {
+		t.Fatalf("valid symbol-source binding: %v", err)
+	}
+
+	tests := map[string]func(*ProjectBinding){
+		"invalid local key": func(value *ProjectBinding) {
+			value.SymbolSources["Bad Key"] = value.SymbolSources["native-symbols"]
+			delete(value.SymbolSources, "native-symbols")
+		},
+		"unsupported type": func(value *ProjectBinding) {
+			source := value.SymbolSources["native-symbols"]
+			source.Type = "azure"
+			value.SymbolSources["native-symbols"] = source
+		},
+		"malformed hash": func(value *ProjectBinding) {
+			source := value.SymbolSources["native-symbols"]
+			source.DesiredHash = "not-a-digest"
+			value.SymbolSources["native-symbols"] = source
+		},
+		"empty identity": func(value *ProjectBinding) {
+			source := value.SymbolSources["native-symbols"]
+			source.ExternalIdentity = ""
+			value.SymbolSources["native-symbols"] = source
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			candidate := valid
+			candidate.Project.UID = "symbol-source-" + name
+			candidate.ManagerUID = candidate.Project.UID
+			candidate.SymbolSources = map[string]SymbolSourceBinding{
+				"native-symbols": valid.SymbolSources["native-symbols"],
+			}
+			mutate(&candidate)
+			if _, err := newTestStore(t).CreateBinding(context.Background(), candidate); !errors.Is(err, ErrInvalidRecord) {
+				t.Fatalf("corrupt symbol-source state error = %v", err)
 			}
 		})
 	}

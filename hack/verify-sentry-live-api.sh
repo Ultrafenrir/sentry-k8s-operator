@@ -104,6 +104,19 @@ assert_json() {
   fi
 }
 
+# Client-key responses contain server-generated secret material. This assertion must never
+# print a response body, even on failure.
+assert_sensitive_json() {
+  description=$1
+  filter=$2
+  file=$3
+  shift 3
+  if ! jq -e "$@" "$filter" "$file" >/dev/null; then
+    echo "live API assertion failed for secret-bearing response: $description" >&2
+    exit 1
+  fi
+}
+
 remove_stale_fixture_project() {
   stale_slug=$1
   stale_output="$temporary_dir/stale-$stale_slug.json"
@@ -172,6 +185,45 @@ assert_json "created project is readable by slug" \
   '.slug == $slug and .name == $name and (.id | type == "string")' \
   "$project_get" --arg slug "$project" --arg name "$managed_name"
 
+project_identity=$(jq -r '.id // empty' "$project_get")
+source_integrations="$temporary_dir/source-integrations.json"
+source_repositories="$temporary_dir/source-repositories.json"
+code_mapping_request="$temporary_dir/code-mapping-request.json"
+code_mapping_response="$temporary_dir/code-mapping-response.json"
+codeowners_request="$temporary_dir/codeowners-request.json"
+codeowners_response="$temporary_dir/codeowners-response.json"
+request GET "/api/0/organizations/$organization/integrations/?provider_key=github" '' "$source_integrations"
+assert_json "disposable source-code integration fixture is listed exactly once" \
+  '([.[] | select(.name == "SKO local source fixture" and .provider.key == "github" and (.id | type == "string"))] | length) == 1' \
+  "$source_integrations"
+source_integration_id=$(jq -r '.[] | select(.name == "SKO local source fixture" and .provider.key == "github") | .id' "$source_integrations")
+request GET "/api/0/organizations/$organization/repos/?integration_id=$source_integration_id" '' "$source_repositories"
+assert_json "disposable repository fixture is scoped to the exact integration" \
+  '([.[] | select(.name == "sko/local-repository" and (.id | type == "string") and ((.integrationId | tostring) == $integration))] | length) == 1' \
+  "$source_repositories" --arg integration "$source_integration_id"
+source_repository_id=$(jq -r '.[] | select(.name == "sko/local-repository") | .id' "$source_repositories")
+jq -n --arg integration "$source_integration_id" --arg repository "$source_repository_id" --arg project "$project_identity" \
+  '{integrationId:$integration, repositoryId:$repository, projectId:$project, stackRoot:"/", sourceRoot:"src", defaultBranch:"main"}' >"$code_mapping_request"
+request POST "/api/0/organizations/$organization/code-mappings/" "$code_mapping_request" "$code_mapping_response"
+assert_json "repository code mapping creates with exact integration, repository, project, and paths" \
+  '(.id | tostring | test("^[0-9]+$")) and ((.integrationId | tostring) == $integration) and ((.repoId | tostring) == $repository) and ((.projectId | tostring) == $project) and .stackRoot == "/" and .sourceRoot == "src" and .defaultBranch == "main"' \
+  "$code_mapping_response" --arg integration "$source_integration_id" --arg repository "$source_repository_id" --arg project "$project_identity"
+code_mapping_id=$(jq -r '.id | tostring' "$code_mapping_response")
+jq -n --arg integration "$source_integration_id" --arg repository "$source_repository_id" --arg project "$project_identity" \
+  '{integrationId:$integration, repositoryId:$repository, projectId:$project, stackRoot:"/srv/app", sourceRoot:"src", defaultBranch:"main"}' >"$code_mapping_request"
+request PUT "/api/0/organizations/$organization/code-mappings/$code_mapping_id/" "$code_mapping_request" "$code_mapping_response"
+assert_json "repository code mapping update preserves identity and round-trips drift-repair fields" \
+  '(.id | tostring) == $id and .stackRoot == "/srv/app" and .sourceRoot == "src" and .defaultBranch == "main"' \
+  "$code_mapping_response" --arg id "$code_mapping_id"
+
+codeowners_raw='src/* #sko-live'
+jq -n --arg mapping "$code_mapping_id" --arg raw "$codeowners_raw" '{codeMappingId:$mapping, raw:$raw}' >"$codeowners_request"
+request POST "/api/0/projects/$organization/$project/codeowners/" "$codeowners_request" "$codeowners_response"
+assert_json "CODEOWNERS child stores raw content against the exact code mapping" \
+  '(.id | tostring | test("^[0-9]+$")) and ((.codeMappingId | tostring) == $mapping) and .raw == $raw' \
+  "$codeowners_response" --arg mapping "$code_mapping_id" --arg raw "$codeowners_raw"
+codeowners_id=$(jq -r '.id | tostring' "$codeowners_response")
+
 recovery_request="$temporary_dir/recovery-request.json"
 recovery_response="$temporary_dir/recovery-response.json"
 jq -n --arg name "$recovery_name" --arg slug "$recovery_project" \
@@ -204,39 +256,115 @@ assert_json "project has one active Default client key with a local DSN" '
   )] | length) == 1
 ' "$keys_response"
 
+managed_key_request="$temporary_dir/managed-key-request.json"
+managed_key_response="$temporary_dir/managed-key-response.json"
+managed_key_detail="$temporary_dir/managed-key-detail.json"
+managed_key_name="sko:api:$(printf '%s' "$version" | tr -d '.'):r1"
+jq -n --arg name "$managed_key_name" '{name: $name, rateLimit: {count: 1000, window: 60}}' >"$managed_key_request"
+request POST "/api/0/projects/$organization/$project/keys/" "$managed_key_request" "$managed_key_response"
+assert_sensitive_json "managed client key create" '
+  .name == $name and .isActive == true and
+  .rateLimit.count == 1000 and .rateLimit.window == 60 and
+  (.id | type == "string") and (.dsn.public | type == "string")
+' "$managed_key_response" --arg name "$managed_key_name"
+managed_key_id=$(jq -r '.id // empty' "$managed_key_response")
+if ! printf '%s\n' "$managed_key_id" | grep -Eq '^[0-9a-f]{32}$'; then
+  echo 'created managed client key has an invalid identity' >&2
+  exit 1
+fi
+
+jq -n --arg name "$managed_key_name" '{name: $name, isActive: false, rateLimit: {count: 2000, window: 120}}' >"$managed_key_request"
+request PUT "/api/0/projects/$organization/$project/keys/$managed_key_id/" "$managed_key_request" "$managed_key_response"
+request GET "/api/0/projects/$organization/$project/keys/$managed_key_id/" '' "$managed_key_detail"
+assert_sensitive_json "managed client key update read-back" '
+  .id == $identity and .name == $name and .isActive == false and
+  .rateLimit.count == 2000 and .rateLimit.window == 120
+' "$managed_key_detail" --arg identity "$managed_key_id" --arg name "$managed_key_name"
+
+replacement_key_name="sko:api:$(printf '%s' "$version" | tr -d '.'):r2"
+jq -n --arg name "$replacement_key_name" '{name: $name}' >"$managed_key_request"
+request POST "/api/0/projects/$organization/$project/keys/" "$managed_key_request" "$managed_key_response"
+assert_sensitive_json "managed client key replacement create" '
+  .name == $name and .isActive == true and (.id | type == "string") and
+  (.dsn.public | type == "string")
+' "$managed_key_response" --arg name "$replacement_key_name"
+replacement_key_id=$(jq -r '.id // empty' "$managed_key_response")
+if ! printf '%s\n' "$replacement_key_id" | grep -Eq '^[0-9a-f]{32}$' || [ "$replacement_key_id" = "$managed_key_id" ]; then
+  echo 'replacement managed client key has an invalid identity' >&2
+  exit 1
+fi
+
+request DELETE "/api/0/projects/$organization/$project/keys/$managed_key_id/" '' "$managed_key_response"
+managed_key_status=$(curl --config "$auth_config" --silent --show-error --noproxy '*' \
+  --connect-timeout 2 --max-time 30 --output "$managed_key_detail" --write-out '%{http_code}' \
+  "$base_url/api/0/projects/$organization/$project/keys/$managed_key_id/")
+if [ "$managed_key_status" != 404 ]; then
+  echo "managed client key remained readable after delete: HTTP $managed_key_status" >&2
+  exit 1
+fi
+request DELETE "/api/0/projects/$organization/$project/keys/$replacement_key_id/" '' "$managed_key_response"
+replacement_key_status=$(curl --config "$auth_config" --silent --show-error --noproxy '*' \
+  --connect-timeout 2 --max-time 30 --output "$managed_key_detail" --write-out '%{http_code}' \
+  "$base_url/api/0/projects/$organization/$project/keys/$replacement_key_id/")
+if [ "$replacement_key_status" != 404 ]; then
+  echo "replacement managed client key remained readable after delete: HTTP $replacement_key_status" >&2
+  exit 1
+fi
+
 filters_response="$temporary_dir/filters-response.json"
 request GET "/api/0/projects/$organization/$project/filters/" '' "$filters_response"
 assert_json "published inbound filters are listed" '
   type == "array" and
   ([.[] | select(.id == "browser-extensions" and (.active | type == "boolean"))] | length) == 1 and
   ([.[] | select(.id == "localhost" and (.active | type == "boolean"))] | length) == 1 and
-  ([.[] | select(.id == "web-crawlers" and (.active | type == "boolean"))] | length) == 1
+  ([.[] | select(.id == "web-crawlers" and (.active | type == "boolean"))] | length) == 1 and
+  ([.[] | select(.id == "filtered-transaction" and (.active | type == "boolean"))] | length) == 1 and
+  ([.[] | select(.id == "legacy-browsers" and ((.active | type) == "boolean" or (.active | type) == "array"))] | length) == 1
 ' "$filters_response"
 
 filter_request="$temporary_dir/filter-request.json"
 filter_response="$temporary_dir/filter-response.json"
-for filter_state in 'browser-extensions false' 'localhost true' 'web-crawlers false'; do
+for filter_state in 'browser-extensions false' 'localhost true' 'web-crawlers false' 'filtered-transaction true'; do
   filter_id=${filter_state% *}
   filter_active=${filter_state#* }
   jq -n --argjson active "$filter_active" '{active: $active}' >"$filter_request"
   request PUT "/api/0/projects/$organization/$project/filters/$filter_id/" \
     "$filter_request" "$filter_response"
 done
+jq -n '{subfilters: ["ie", "chrome"]}' >"$filter_request"
+request PUT "/api/0/projects/$organization/$project/filters/legacy-browsers/" \
+  "$filter_request" "$filter_response"
 request GET "/api/0/projects/$organization/$project/filters/" '' "$filters_response"
 assert_json "inbound filter boolean updates round-trip" '
   ([.[] | select(.id == "browser-extensions" and .active == false)] | length) == 1 and
   ([.[] | select(.id == "localhost" and .active == true)] | length) == 1 and
-  ([.[] | select(.id == "web-crawlers" and .active == false)] | length) == 1
+  ([.[] | select(.id == "web-crawlers" and .active == false)] | length) == 1 and
+  ([.[] | select(.id == "filtered-transaction" and .active == true)] | length) == 1 and
+  ([.[] | select(.id == "legacy-browsers" and (.active | sort) == ["chrome", "ie"])] | length) == 1
 ' "$filters_response"
 
 settings_request="$temporary_dir/settings-request.json"
 settings_response="$temporary_dir/settings-response.json"
-jq -n '{
+relay_pii_config='{"rules":{"0":{"type":"email","redaction":{"method":"remove"}},"1":{"type":"anything","redaction":{"method":"replace","text":"[Filtered]"}}},"applications":{"$message":["0"],"extra.customer.email":["0"],"request.headers.Authorization":["1"]}}'
+grouping_enhancements='stack.abs_path:"*/node_modules/*" -app
+!stack.function:"vendor_*" +group'
+fingerprinting_rules='error.type:"DatabaseUnavailable" -> "database-unavailable"
+stack.function:"query_*" -> "database", {{ default }}'
+jq -n --arg relay_pii_config "$relay_pii_config" --arg grouping_enhancements "$grouping_enhancements" --arg fingerprinting_rules "$fingerprinting_rules" '{
   dataScrubber: true,
   dataScrubberDefaults: true,
   scrubIPAddresses: true,
   sensitiveFields: ["authorization", "password"],
-  safeFields: ["request.headers.x-request-id"]
+  safeFields: ["request.headers.x-request-id"],
+  resolveAge: 72,
+  defaultEnvironment: "production",
+  storeCrashReports: 10,
+  scrapeJavaScript: false,
+  allowedDomains: ["*.checkout.example.com", "https://checkout.example.com:443"],
+  relayPiiConfig: $relay_pii_config,
+  groupingEnhancements: $grouping_enhancements,
+  fingerprintingRules: $fingerprinting_rules,
+  builtinSymbolSources: ["electron", "microsoft", "nuget"]
 }' >"$settings_request"
 request PUT "/api/0/projects/$organization/$project/" "$settings_request" "$settings_response"
 request GET "/api/0/projects/$organization/$project/" '' "$settings_response"
@@ -245,8 +373,121 @@ assert_json "typed PII settings round-trip" '
   .dataScrubberDefaults == true and
   .scrubIPAddresses == true and
   .sensitiveFields == ["authorization", "password"] and
-  .safeFields == ["request.headers.x-request-id"]
-' "$settings_response"
+  .safeFields == ["request.headers.x-request-id"] and
+  .resolveAge == 72 and
+  .defaultEnvironment == "production" and
+  .storeCrashReports == 10 and
+  .scrapeJavaScript == false and
+  (.allowedDomains | sort) == ["*.checkout.example.com", "https://checkout.example.com:443"] and
+  (.relayPiiConfig | fromjson | (.rules["0"].type == "email") and (.applications["$message"] == ["0"])) and
+  .groupingEnhancements == $grouping_enhancements and
+  .fingerprintingRules == $fingerprinting_rules and
+  (.builtinSymbolSources | sort) == ["electron", "microsoft", "nuget"]
+' "$settings_response" --arg grouping_enhancements "$grouping_enhancements" --arg fingerprinting_rules "$fingerprinting_rules"
+
+symbol_source_request="$temporary_dir/symbol-source-request.json"
+symbol_source_response="$temporary_dir/symbol-source-response.json"
+jq -n '{
+  id: "sko-live-http-source",
+  name: "sko:http-symbols:live",
+  type: "http",
+  url: "https://symbols.example.invalid",
+  username: "reader",
+  password: "sko-live-symbol-secret-one",
+  layout: {type: "native", casing: "default"}
+}' >"$symbol_source_request"
+request POST "/api/0/projects/$organization/$project/symbol-sources/" "$symbol_source_request" "$symbol_source_response"
+assert_sensitive_json "HTTP symbol source create redacts its password" '
+  .id == "sko-live-http-source" and
+  .name == "sko:http-symbols:live" and
+  .type == "http" and
+  .url == "https://symbols.example.invalid" and
+  .password == {"hidden-secret": true}
+' "$symbol_source_response"
+
+jq -n '{
+  id: "sko-live-s3-source",
+  name: "sko:s3-symbols:live",
+  type: "s3",
+  bucket: "sko-live-symbols",
+  region: "eu-west-1",
+  access_key: "sko-live-access-key",
+  secret_key: "sko-live-secret-key",
+  prefix: "native/",
+  layout: {type: "symstore", casing: "lowercase"}
+}' >"$symbol_source_request"
+request POST "/api/0/projects/$organization/$project/symbol-sources/" "$symbol_source_request" "$symbol_source_response"
+assert_sensitive_json "S3 symbol source create redacts its secret key" '
+  .id == "sko-live-s3-source" and .type == "s3" and
+  .secret_key == {"hidden-secret": true}
+' "$symbol_source_response"
+
+jq -n '{
+  id: "sko-live-gcs-source",
+  name: "sko:gcs-symbols:live",
+  type: "gcs",
+  bucket: "sko-live-symbols",
+  client_email: "symbols@example.invalid",
+  private_key: "sko-live-private-key",
+  prefix: "debug/",
+  layout: {type: "unified", casing: "uppercase"}
+}' >"$symbol_source_request"
+request POST "/api/0/projects/$organization/$project/symbol-sources/" "$symbol_source_request" "$symbol_source_response"
+assert_sensitive_json "GCS symbol source create redacts its private key" '
+  .id == "sko-live-gcs-source" and .type == "gcs" and
+  .private_key == {"hidden-secret": true}
+' "$symbol_source_response"
+
+request GET "/api/0/projects/$organization/$project/symbol-sources/" '' "$symbol_source_response"
+assert_sensitive_json "custom symbol source list contains each exact owned identity" '
+  ([.[] | select(.id == "sko-live-http-source" and .password == {"hidden-secret": true})] | length) == 1 and
+  ([.[] | select(.id == "sko-live-s3-source" and .secret_key == {"hidden-secret": true})] | length) == 1 and
+  ([.[] | select(.id == "sko-live-gcs-source" and .private_key == {"hidden-secret": true})] | length) == 1
+' "$symbol_source_response"
+
+jq -n '{
+  id: "sko-live-http-source",
+  name: "sko:http-symbols:live",
+  type: "http",
+  url: "https://symbols-updated.example.invalid",
+  username: "reader",
+  password: "sko-live-symbol-secret-two",
+  layout: {type: "native", casing: "default"}
+}' >"$symbol_source_request"
+request PUT "/api/0/projects/$organization/$project/symbol-sources/?id=sko-live-http-source" "$symbol_source_request" "$symbol_source_response"
+assert_sensitive_json "HTTP symbol source update acknowledges non-secret drift and redacts rotated password" '
+  .id == "sko-live-http-source" and
+  .url == "https://symbols-updated.example.invalid" and
+  .password == {"hidden-secret": true}
+' "$symbol_source_response"
+
+for source_id in sko-live-http-source sko-live-s3-source sko-live-gcs-source; do
+  request DELETE "/api/0/projects/$organization/$project/symbol-sources/?id=$source_id" '' "$symbol_source_response"
+done
+request GET "/api/0/projects/$organization/$project/symbol-sources/" '' "$symbol_source_response"
+assert_sensitive_json "exact custom symbol source cleanup removes all three owned identities" '
+  ([.[] | select(.id | startswith("sko-live-"))] | length) == 0
+' "$symbol_source_response"
+
+ownership_request="$temporary_dir/ownership-request.json"
+ownership_response="$temporary_dir/ownership-response.json"
+ownership_raw=$(printf 'path:src/checkout/* #%s\ntags.environment:production #%s' "$team" "$team")
+jq -n --arg raw "$ownership_raw" '{
+  raw: $raw,
+  fallthrough: false,
+  autoAssignment: "Auto Assign to Issue Owner",
+  codeownersAutoSync: false
+}' >"$ownership_request"
+request PUT "/api/0/projects/$organization/$project/ownership/" "$ownership_request" "$ownership_response"
+request GET "/api/0/projects/$organization/$project/ownership/" '' "$ownership_response"
+assert_json "team-only issue ownership configuration round-trip" '
+  .raw == $raw and
+  .fallthrough == false and
+  .autoAssignment == "Auto Assign to Issue Owner" and
+  .codeownersAutoSync == false and
+  ([.schema.rules[].owners[] | select(.type == "team" and .name == $team)] | length) == 2 and
+  ([.schema.rules[].owners[] | select(.type == "user")] | length) == 0
+' "$ownership_response" --arg raw "$ownership_raw" --arg team "$team"
 
 public_key=$(jq -r '[.[] | select(.isActive == true)][0].public // empty' "$keys_response")
 project_id=$(jq -r '[.[] | select(.isActive == true)][0].projectId // empty' "$keys_response")
@@ -533,10 +774,10 @@ if [ "$version" = 24.7.1 ]; then
 
   metric_request="$temporary_dir/metric-request.json"
   metric_response="$temporary_dir/metric-response.json"
-  metric_name='Live event count [managed;o=acceptance;m=sko]'
+  metric_name='Live user count [managed;o=acceptance;m=sko]'
   jq -n --arg name "$metric_name" --arg project "$project" '{
     name: $name,
-    aggregate: "count()",
+    aggregate: "count_unique(user)",
     query: "",
     timeWindow: "300",
     resolveThreshold: 100,
@@ -555,13 +796,13 @@ if [ "$version" = 24.7.1 ]; then
   request GET "/api/0/organizations/$organization/alert-rules/$metric_id/" '' \
     "$metric_response"
   assert_json "legacy metric alert is readable by exact identity" \
-    '(.id | tostring) == $id and .name == $name and .aggregate == "count()"' \
+    '(.id | tostring) == $id and .name == $name and .aggregate == "count_unique(user)"' \
     "$metric_response" --arg id "$metric_id" --arg name "$metric_name"
 
-  updated_metric_name='Live event count updated [managed;o=acceptance;m=sko]'
+  updated_metric_name='Live user count updated [managed;o=acceptance;m=sko]'
   jq -n --arg name "$updated_metric_name" --arg project "$project" '{
     name: $name,
-    aggregate: "count()",
+    aggregate: "count_unique(user)",
     query: "",
     timeWindow: "300",
     resolveThreshold: 100,
@@ -634,7 +875,7 @@ else
 
   detector_request="$temporary_dir/detector-request.json"
   detector_response="$temporary_dir/detector-response.json"
-  detector_name='Live metric detector [managed;o=acceptance;m=sko]'
+  detector_name='Live user count detector [managed;o=acceptance;m=sko]'
   jq -n --arg name "$detector_name" --argjson workflow_id "$workflow_id" '{
     name: $name,
     type: "metric_issue",
@@ -643,7 +884,7 @@ else
       queryType: 0,
       dataset: "events",
       query: "",
-      aggregate: "count()",
+      aggregate: "count_unique(user)",
       timeWindow: 300,
       environment: null,
       eventTypes: ["error"]
@@ -662,6 +903,7 @@ else
     "$detector_request" "$detector_response"
   assert_json "modern metric detector is created and attached to the workflow" '
     .name == $name and .type == "metric_issue" and .enabled == true and
+    .dataSources[0].queryObj.snubaQuery.aggregate == "count_unique(tags[sentry:user])" and
     (.id | type == "string") and .projectId == $project_id
   ' "$detector_response" --arg name "$detector_name" --arg project_id "$project_id"
   detector_id=$(jq -r '.id' "$detector_response")
@@ -733,7 +975,62 @@ else
   fi
 fi
 
+service_hook_endpoint='https://hooks.example.invalid/events/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+service_hook_staging_endpoint='https://hooks.example.invalid/events/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+service_hook_request="$temporary_dir/service-hook-request.json"
+service_hook_response="$temporary_dir/service-hook-response.json"
+jq -n --arg url "$service_hook_staging_endpoint" \
+  '{url: $url, events: ["event.alert"], version: 0, isActive: false}' >"$service_hook_request"
+request POST "/api/0/projects/$organization/$project/hooks/" \
+  "$service_hook_request" "$service_hook_response"
+assert_sensitive_json "service hook create exposes the pinned active-on-create behavior and a generated secret" '
+  (.id | type == "string" and length > 0) and
+  .url == $url and .events == ["event.alert"] and .status == "active" and
+  (.secret | type == "string" and length >= 16 and length <= 512)
+' "$service_hook_response" --arg url "$service_hook_staging_endpoint"
+service_hook_id=$(jq -r '.id' "$service_hook_response")
+request GET "/api/0/projects/$organization/$project/hooks/$service_hook_id/" '' \
+  "$service_hook_response"
+assert_sensitive_json "staged service hook is independently readable by exact identity" '
+  .id == $id and .url == $url and .events == ["event.alert"] and .status == "active" and
+  (.secret | type == "string" and length >= 16 and length <= 512)
+' "$service_hook_response" --arg id "$service_hook_id" --arg url "$service_hook_staging_endpoint"
+jq -n --arg url "$service_hook_endpoint" \
+  '{url: $url, events: ["event.alert"], version: 0, isActive: true}' >"$service_hook_request"
+request PUT "/api/0/projects/$organization/$project/hooks/$service_hook_id/" \
+  "$service_hook_request" "$service_hook_response"
+assert_sensitive_json "service hook activation is readable from the mutation response" '
+  .id == $id and .url == $url and .events == ["event.alert"] and .status == "active" and
+  (.secret | type == "string" and length >= 16 and length <= 512)
+' "$service_hook_response" --arg id "$service_hook_id" --arg url "$service_hook_endpoint"
+request DELETE "/api/0/projects/$organization/$project/hooks/$service_hook_id/" '' \
+  "$service_hook_response"
+service_hook_status=$(curl --config "$auth_config" --silent --show-error --noproxy '*' \
+  --connect-timeout 2 --max-time 10 --output "$service_hook_response" --write-out '%{http_code}' \
+  "$base_url/api/0/projects/$organization/$project/hooks/$service_hook_id/")
+if [ "$service_hook_status" != 404 ]; then
+  echo "service hook remained readable after delete: HTTP $service_hook_status" >&2
+  exit 1
+fi
+
+api_report="$temporary_dir/api-report.json"
+SENTRY_VERSION="$version" SENTRY_PORT="$port" SENTRY_SELF_HOSTED_CACHE="$cache_dir" \
+  sh "$root_dir/hack/report-sentry-live-api.sh" >"$api_report"
+assert_json "read-only redacted API report covers the live project" '
+  .version == $version and
+  .organization == $organization and
+  ([.projects[] | select(.slug == $project)] | length) == 1 and
+  (.projects[] | select(.slug == $project) | .keys | length) >= 1 and
+  (.alerts.adapter == $adapter)
+' "$api_report" --arg version "$version" --arg organization "$organization" \
+  --arg project "$project" --arg adapter "$(if [ "$version" = 24.7.1 ]; then printf '%s' legacy-24.7.1; else printf '%s' modern-26.10.1; fi)"
+
 delete_response="$temporary_dir/delete-response.json"
+request DELETE "/api/0/projects/$organization/$project/codeowners/$codeowners_id/" '' "$codeowners_response"
+request DELETE "/api/0/organizations/$organization/code-mappings/$code_mapping_id/" '' "$code_mapping_response"
+request GET "/api/0/organizations/$organization/code-mappings/" '' "$code_mapping_response"
+assert_json "exact repository code mapping cleanup converges" \
+  '([.[] | select((.id | tostring) == $id)] | length) == 0' "$code_mapping_response" --arg id "$code_mapping_id"
 request DELETE "/api/0/projects/$organization/$recovery_project/" '' "$delete_response"
 if [ "$filter_project_created" = true ]; then
   request DELETE "/api/0/projects/$organization/$filter_project/" '' "$delete_response"
@@ -796,8 +1093,27 @@ if [ "$filter_project_created" = true ]; then
   fi
 fi
 
+evidence_dir="$cache_dir/evidence"
+evidence_file="$evidence_dir/$version-capabilities.json"
+mkdir -p "$evidence_dir"
+chmod 700 "$evidence_dir"
+evidence_temporary="$temporary_dir/capability-evidence.json"
+jq -n --arg version "$version" --arg organization "$organization" --arg gate "$(if [ "$config_only" = true ]; then printf '%s' sentry-live-config-api; else printf '%s' sentry-live-api; fi)" '
+  {
+    version: $version,
+    organization: $organization,
+    gate: $gate,
+    capabilities: [
+      "project.create.atomic-default-rules",
+      "project.create.automatic-active-key"
+    ]
+  }
+' >"$evidence_temporary"
+chmod 600 "$evidence_temporary"
+mv -f -- "$evidence_temporary" "$evidence_file"
+
 if [ "$config_only" = true ]; then
-  echo "Sentry $version live configuration API recovery/settings/alerts/delete acceptance passed (event ingestion intentionally skipped)"
+  echo "Sentry $version live configuration API recovery/client-key/settings/symbol-sources/code-mappings/CODEOWNERS-storage/issue-ownership/service-hooks/report/alerts-including-user-count/delete acceptance passed (event ingestion intentionally skipped)"
 else
-  echo "Sentry $version live API recovery/settings/filtering/alerts/delete acceptance passed"
+  echo "Sentry $version live API recovery/client-key/settings/symbol-sources/code-mappings/CODEOWNERS-storage/issue-ownership/service-hooks/report/filtering/alerts-including-user-count/delete acceptance passed"
 fi

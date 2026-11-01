@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -42,7 +43,8 @@ import (
 )
 
 func TestProtectedStateRoundTripAgainstAPIServer(t *testing.T) {
-	testEnvironment := &envtest.Environment{}
+	useExistingCluster := os.Getenv("USE_EXISTING_CLUSTER") == "true"
+	testEnvironment := &envtest.Environment{UseExistingCluster: &useExistingCluster}
 	config, err := testEnvironment.Start()
 	if err != nil {
 		t.Fatalf("start envtest API server: %v", err)
@@ -64,11 +66,35 @@ func TestProtectedStateRoundTripAgainstAPIServer(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
-	namespaces := Namespaces{State: "backup-state", Routing: "backup-routing", Delivery: "backup-delivery", HookSources: "backup-hook-sources"}
+	namespaces := Namespaces{State: "sko-backup-drill-state", Routing: "sko-backup-drill-routing", Delivery: "sko-backup-drill-delivery", HookSources: "sko-backup-drill-hook-sources"}
 	for _, name := range protectedNamespaces(namespaces) {
-		if err := kubernetesClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}); err != nil {
+		if err := kubernetesClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+			Name: name, Labels: map[string]string{"sentryconfiguration.io/test": "statebackup-kind-drill"},
+		}}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if useExistingCluster {
+		t.Cleanup(func() {
+			cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cleanupCancel()
+			for _, name := range protectedNamespaces(namespaces) {
+				namespace := &corev1.Namespace{}
+				if err := kubernetesClient.Get(cleanupContext, types.NamespacedName{Name: name}, namespace); err != nil {
+					if !apierrors.IsNotFound(err) {
+						t.Errorf("read drill namespace %s for cleanup: %v", name, err)
+					}
+					continue
+				}
+				if namespace.Labels["sentryconfiguration.io/test"] != "statebackup-kind-drill" {
+					t.Errorf("refusing to delete unowned drill namespace %s", name)
+					continue
+				}
+				if err := kubernetesClient.Delete(cleanupContext, namespace); err != nil && !apierrors.IsNotFound(err) {
+					t.Errorf("delete drill namespace %s: %v", name, err)
+				}
+			}
+		})
 	}
 
 	now := time.Date(2026, time.October, 30, 12, 0, 0, 0, time.UTC)

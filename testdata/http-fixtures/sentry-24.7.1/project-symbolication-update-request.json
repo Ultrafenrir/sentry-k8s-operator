@@ -1,0 +1,7 @@
+{
+  "builtinSymbolSources": [
+    "electron",
+    "microsoft",
+    "nuget"
+  ]
+}

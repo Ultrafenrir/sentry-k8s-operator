@@ -190,6 +190,35 @@ func TestEvaluateRequiresEveryGrantedTeamToBeAuthorized(t *testing.T) {
 	}
 }
 
+func TestAuthorizedIssueOwnershipTeamsRequiresAttachedConnectionAuthorizedTeams(t *testing.T) {
+	t.Parallel()
+
+	connection := testConnection()
+	connection.Access[0].Teams = append(connection.Access[0].Teams, "backend")
+	project := sentryv1alpha1.SentryProjectSpec{
+		Project:     sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
+		GrantAccess: &sentryv1alpha1.ProjectGrantAccess{Teams: []string{"backend"}},
+		IssueOwnership: &sentryv1alpha1.IssueOwnershipSpec{Rules: []sentryv1alpha1.IssueOwnershipRule{{
+			Matcher: sentryv1alpha1.IssueOwnershipMatcher{Type: sentryv1alpha1.IssueOwnershipMatcherPath, Pattern: "src/*"},
+			Teams:   []string{"payments", "backend"},
+		}}},
+	}
+	allowed, err := AuthorizedIssueOwnershipTeams("checkout-prod", project, connection)
+	if err != nil || len(allowed) != 2 || allowed[0] != "payments" || allowed[1] != "backend" {
+		t.Fatalf("allowed=%v err=%v", allowed, err)
+	}
+	project.IssueOwnership.Rules[0].Teams = append(project.IssueOwnership.Rules[0].Teams, "security")
+	allowed, err = AuthorizedIssueOwnershipTeams("checkout-prod", project, connection)
+	if !IsKind(err, ErrorAccessDenied) || len(allowed) != 2 {
+		t.Fatalf("allowed=%v err=%v", allowed, err)
+	}
+	project.GrantAccess.Teams = nil
+	project.IssueOwnership.Rules[0].Teams = []string{"backend"}
+	if _, err := AuthorizedIssueOwnershipTeams("checkout-prod", project, connection); !IsKind(err, ErrorAccessDenied) {
+		t.Fatalf("detached team error=%v", err)
+	}
+}
+
 func testConnection() sentryv1alpha1.SentryConnectionSpec {
 	return sentryv1alpha1.SentryConnectionSpec{
 		Access: []sentryv1alpha1.AccessRule{{

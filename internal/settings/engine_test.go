@@ -18,12 +18,31 @@ package settings
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
 
 	sentryv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
 )
+
+func TestFilterDecodesBooleanOrLegacySubfilterStateOnly(t *testing.T) {
+	t.Parallel()
+
+	var boolean Filter
+	if err := json.Unmarshal([]byte(`{"id":"filtered-transaction","active":true}`), &boolean); err != nil || !boolean.Active || boolean.SubfiltersPresent {
+		t.Fatalf("boolean=%#v err=%v", boolean, err)
+	}
+	var legacy Filter
+	if err := json.Unmarshal([]byte(`{"id":"legacy-browsers","active":["ie","chrome"]}`), &legacy); err != nil || legacy.Active || !legacy.SubfiltersPresent || !reflect.DeepEqual(legacy.Subfilters, []string{"ie", "chrome"}) {
+		t.Fatalf("legacy=%#v err=%v", legacy, err)
+	}
+	for _, payload := range []string{`{"id":"legacy-browsers","active":null}`, `{"id":"legacy-browsers"}`, `{"id":"legacy-browsers","active":{}}`} {
+		if err := json.Unmarshal([]byte(payload), &Filter{}); !errors.Is(err, ErrUnsupportedFilter) {
+			t.Fatalf("payload=%s err=%v", payload, err)
+		}
+	}
+}
 
 func TestEngineReconcilesOnlyExplicitFieldsAndWholeLists(t *testing.T) {
 	t.Parallel()
@@ -60,7 +79,10 @@ func TestEngineReconcilesOnlyExplicitFieldsAndWholeLists(t *testing.T) {
 	if result.Filters.Changed != 2 || result.PII.Changed != 2 || authorizations != 3 {
 		t.Fatalf("result=%#v authorizations=%d", result, authorizations)
 	}
-	if !reflect.DeepEqual(adapter.filterUpdates, []filterUpdate{{id: "browser-extensions", active: true}, {id: "localhost", active: false}}) {
+	if !reflect.DeepEqual(adapter.filterUpdates, []filterUpdate{
+		{id: "browser-extensions", patch: activeFilterPatch(true)},
+		{id: "localhost", patch: activeFilterPatch(false)},
+	}) {
 		t.Fatalf("filter updates = %#v", adapter.filterUpdates)
 	}
 	if len(adapter.projectUpdates) != 1 {
@@ -72,6 +94,303 @@ func TestEngineReconcilesOnlyExplicitFieldsAndWholeLists(t *testing.T) {
 	}
 	if patch.patch.SafeFields != nil || patch.patch.ScrubDefaults != nil || patch.patch.ScrubIPAddresses != nil {
 		t.Fatalf("unmanaged neighboring fields were included: %#v", patch.patch)
+	}
+}
+
+func TestEngineReconcilesFilteredTransactionsAndLegacyBrowserSubfilters(t *testing.T) {
+	t.Parallel()
+
+	trueValue := true
+	legacy := []sentryv1alpha1.LegacyBrowserFilter{
+		sentryv1alpha1.LegacyBrowserChrome,
+		sentryv1alpha1.LegacyBrowserIE,
+	}
+	adapter := &fakeAdapter{filters: []Filter{
+		{ID: "filtered-transaction", Active: false},
+		{ID: "legacy-browsers", Subfilters: []string{"firefox", "ie"}, SubfiltersPresent: true},
+	}}
+	authorizations := 0
+	result := (&Engine{Adapter: adapter}).Reconcile(context.Background(), Input{
+		Organization: "company", ProjectSlug: "checkout",
+		Desired: &sentryv1alpha1.ProjectSettings{Filters: &sentryv1alpha1.FilterSettings{
+			FilteredTransactions: &trueValue,
+			LegacyBrowsers:       &legacy,
+		}},
+		Authorize: func(context.Context) error { authorizations++; return nil },
+	})
+	if result.Err() != nil || result.Filters.Changed != 2 || authorizations != 2 {
+		t.Fatalf("result=%#v authorizations=%d", result, authorizations)
+	}
+	desiredLegacy := []string{"ie", "chrome"}
+	if !reflect.DeepEqual(adapter.filterUpdates, []filterUpdate{
+		{id: "filtered-transaction", patch: activeFilterPatch(true)},
+		{id: "legacy-browsers", patch: FilterPatch{Subfilters: &desiredLegacy}},
+	}) {
+		t.Fatalf("filter updates=%#v", adapter.filterUpdates)
+	}
+}
+
+func TestEngineReconcilesBehaviorSettingsWithOneFreshNarrowPatch(t *testing.T) {
+	t.Parallel()
+
+	currentResolve, desiredResolve := int64(24), int64(72)
+	currentEnvironment, desiredEnvironment := "staging", "production"
+	currentCrashLimit, desiredCrashLimit := int32(0), int32(-1)
+	currentScrape, desiredScrape := false, true
+	currentDomains := []string{"staging.example.com"}
+	desiredDomains := []string{"https://checkout.example.com:443", "*.checkout.example.com"}
+	adapter := &fakeAdapter{state: ProjectState{
+		ResolveAge: &currentResolve, DefaultEnvironment: &currentEnvironment,
+		StoreCrashReports: &currentCrashLimit, ScrapeJavaScript: &currentScrape,
+		AllowedDomains: &currentDomains,
+		ETag:           `"behavior-4"`,
+	}}
+	authorizations := 0
+	result := (&Engine{Adapter: adapter}).Reconcile(context.Background(), Input{
+		Organization: "company", ProjectSlug: "checkout",
+		Desired: &sentryv1alpha1.ProjectSettings{Behavior: &sentryv1alpha1.BehaviorSettings{
+			AutoResolveHours: &desiredResolve, DefaultEnvironment: &desiredEnvironment,
+			CrashReportLimit: &desiredCrashLimit, ScrapeJavaScript: &desiredScrape,
+			AllowedDomains: &desiredDomains,
+		}},
+		Authorize: func(context.Context) error { authorizations++; return nil },
+	})
+	if result.Err() != nil || result.Behavior.Changed != 5 || authorizations != 1 || adapter.reads != 1 || len(adapter.projectUpdates) != 1 {
+		t.Fatalf("result=%#v authorizations=%d adapter=%#v", result, authorizations, adapter)
+	}
+	update := adapter.projectUpdates[0]
+	if update.etag != `"behavior-4"` || update.patch.ResolveAge != &desiredResolve || update.patch.DefaultEnvironment != &desiredEnvironment ||
+		update.patch.StoreCrashReports != &desiredCrashLimit || update.patch.ScrapeJavaScript != &desiredScrape ||
+		update.patch.AllowedDomains == nil || !reflect.DeepEqual(*update.patch.AllowedDomains, []string{"*.checkout.example.com", "https://checkout.example.com:443"}) {
+		t.Fatalf("update=%#v", update)
+	}
+	if update.patch.ScrubData != nil || update.patch.SensitiveFields != nil {
+		t.Fatalf("unmanaged PII leaked into behavior patch: %#v", update.patch)
+	}
+}
+
+func TestEngineSerializesTypedAdvancedPIIAndGroupingRules(t *testing.T) {
+	t.Parallel()
+
+	advanced := []sentryv1alpha1.AdvancedPIIRule{
+		{
+			Type: "email", Redaction: "remove",
+			Applications: []sentryv1alpha1.AdvancedPIISelector{{Root: "message"}, {Root: "extra", Path: []string{"customer", "email"}}},
+		},
+		{
+			Type: "anything", Redaction: "replace", Replacement: "[Filtered]",
+			Applications: []sentryv1alpha1.AdvancedPIISelector{{Root: "request", Path: []string{"headers", "Authorization"}}},
+		},
+	}
+	enhancements := []sentryv1alpha1.GroupingEnhancementRule{
+		{Matcher: "path", Pattern: "*/node_modules/*", Action: "MarkOutOfApp"},
+		{Matcher: "function", Pattern: "vendor_*", Negate: true, Action: "Include"},
+	}
+	fingerprints := []sentryv1alpha1.FingerprintRule{
+		{Matcher: "error.type", Pattern: "DatabaseUnavailable", Values: []string{"database-unavailable"}},
+		{Matcher: "stack.function", Pattern: "query_*", Values: []string{"database"}, IncludeDefault: true},
+	}
+	adapter := &fakeAdapter{state: ProjectState{ETag: `"typed-3"`}}
+	authorizations := 0
+	result := (&Engine{Adapter: adapter}).Reconcile(context.Background(), Input{
+		Organization: "company", ProjectSlug: "checkout",
+		Desired: &sentryv1alpha1.ProjectSettings{
+			PII:      &sentryv1alpha1.PIISettings{AdvancedRules: &advanced},
+			Grouping: &sentryv1alpha1.GroupingSettings{Enhancements: &enhancements, Fingerprints: &fingerprints},
+		},
+		Authorize: func(context.Context) error { authorizations++; return nil },
+	})
+	if result.Err() != nil || result.PII.Changed != 1 || result.Grouping.Changed != 2 || authorizations != 2 || len(adapter.projectUpdates) != 2 {
+		t.Fatalf("result=%#v authorizations=%d updates=%#v", result, authorizations, adapter.projectUpdates)
+	}
+	pii := adapter.projectUpdates[0].patch.RelayPIIConfig
+	if pii == nil || *pii != `{"rules":{"0":{"type":"email","redaction":{"method":"remove"}},"1":{"type":"anything","redaction":{"method":"replace","text":"[Filtered]"}}},"applications":{"$message":["0"],"extra.customer.email":["0"],"request.headers.Authorization":["1"]}}` {
+		t.Fatalf("relay PII config=%v", pii)
+	}
+	grouping := adapter.projectUpdates[1].patch
+	if grouping.GroupingEnhancements == nil || *grouping.GroupingEnhancements != "stack.abs_path:\"*/node_modules/*\" -app\n!stack.function:\"vendor_*\" +group" {
+		t.Fatalf("enhancements=%v", grouping.GroupingEnhancements)
+	}
+	if grouping.FingerprintingRules == nil || *grouping.FingerprintingRules != "error.type:\"DatabaseUnavailable\" -> \"database-unavailable\"\nstack.function:\"query_*\" -> \"database\", {{ default }}" {
+		t.Fatalf("fingerprints=%v", grouping.FingerprintingRules)
+	}
+	if grouping.RelayPIIConfig != nil || adapter.projectUpdates[0].patch.GroupingEnhancements != nil {
+		t.Fatalf("independent component fields leaked across patches: %#v", adapter.projectUpdates)
+	}
+}
+
+func TestEngineConvergesOnCanonicalTypedRuleReadback(t *testing.T) {
+	t.Parallel()
+
+	advanced := []sentryv1alpha1.AdvancedPIIRule{{
+		Type: "ip", Redaction: "hash", Applications: []sentryv1alpha1.AdvancedPIISelector{{Root: "user", Path: []string{"ip_address"}}},
+	}}
+	enhancements := []sentryv1alpha1.GroupingEnhancementRule{{Matcher: "module", Pattern: "payments.*", Action: "Exclude"}}
+	fingerprints := []sentryv1alpha1.FingerprintRule{{Matcher: "message", Pattern: "timeout *", IncludeDefault: true}}
+	relay := `{"applications":{"user.ip_address":["0"]},"rules":{"0":{"redaction":{"method":"hash"},"type":"ip"}}}`
+	enhancementText := `stack.module:"payments.*" -group`
+	fingerprintText := `message:"timeout *" -> {{ default }}`
+	adapter := &fakeAdapter{state: ProjectState{
+		RelayPIIConfig: &relay, GroupingEnhancements: &enhancementText, FingerprintingRules: &fingerprintText,
+	}}
+	result := (&Engine{Adapter: adapter}).Reconcile(context.Background(), Input{
+		Organization: "company", ProjectSlug: "checkout",
+		Desired: &sentryv1alpha1.ProjectSettings{
+			PII:      &sentryv1alpha1.PIISettings{AdvancedRules: &advanced},
+			Grouping: &sentryv1alpha1.GroupingSettings{Enhancements: &enhancements, Fingerprints: &fingerprints},
+		},
+		Authorize: func(context.Context) error { t.Fatal("authorization called"); return nil },
+	})
+	if result.Err() != nil || result.PII.Changed != 0 || result.Grouping.Changed != 0 || len(adapter.projectUpdates) != 0 {
+		t.Fatalf("result=%#v updates=%#v", result, adapter.projectUpdates)
+	}
+}
+
+func TestEngineReconcilesPortableBuiltinSymbolSourcesAsASet(t *testing.T) {
+	t.Parallel()
+
+	current := []string{"microsoft"}
+	desired := []sentryv1alpha1.BuiltinSymbolSource{"nuget", "microsoft", "electron"}
+	adapter := &fakeAdapter{state: ProjectState{BuiltinSymbolSources: &current, ETag: `"symbols-2"`}}
+	authorizations := 0
+	result := (&Engine{Adapter: adapter}).Reconcile(context.Background(), Input{
+		Organization: "company", ProjectSlug: "checkout",
+		Desired:   &sentryv1alpha1.ProjectSettings{Symbolication: &sentryv1alpha1.SymbolicationSettings{BuiltinSources: &desired}},
+		Authorize: func(context.Context) error { authorizations++; return nil },
+	})
+	if result.Err() != nil || result.Symbolication.Changed != 1 || authorizations != 1 || len(adapter.projectUpdates) != 1 {
+		t.Fatalf("result=%#v authorizations=%d updates=%#v", result, authorizations, adapter.projectUpdates)
+	}
+	update := adapter.projectUpdates[0]
+	if update.etag != `"symbols-2"` || update.patch.BuiltinSymbolSources == nil || !reflect.DeepEqual(*update.patch.BuiltinSymbolSources, []string{"electron", "microsoft", "nuget"}) {
+		t.Fatalf("update=%#v", update)
+	}
+	if update.patch.GroupingEnhancements != nil || update.patch.RelayPIIConfig != nil {
+		t.Fatalf("unmanaged settings leaked into symbolication patch: %#v", update.patch)
+	}
+}
+
+func TestEngineRejectsUnknownOrDuplicateBuiltinSymbolSourcesBeforeRead(t *testing.T) {
+	t.Parallel()
+
+	for _, values := range [][]sentryv1alpha1.BuiltinSymbolSource{{"proton"}, {"microsoft", "microsoft"}} {
+		adapter := &fakeAdapter{}
+		result := (&Engine{Adapter: adapter}).Reconcile(context.Background(), Input{
+			Organization: "company", ProjectSlug: "checkout",
+			Desired:   &sentryv1alpha1.ProjectSettings{Symbolication: &sentryv1alpha1.SymbolicationSettings{BuiltinSources: &values}},
+			Authorize: func(context.Context) error { t.Fatal("authorization called"); return nil },
+		})
+		if !errors.Is(result.Err(), ErrInvalidDesiredState) || adapter.reads != 0 {
+			t.Fatalf("values=%v result=%#v reads=%d", values, result, adapter.reads)
+		}
+	}
+}
+
+func TestTypedRuleSerializersRejectUnrepresentableInput(t *testing.T) {
+	t.Parallel()
+
+	invalidPII := []sentryv1alpha1.AdvancedPIIRule{{
+		Type: "pattern", Redaction: "remove", Applications: []sentryv1alpha1.AdvancedPIISelector{{Root: "message"}},
+	}}
+	invalidGrouping := []sentryv1alpha1.GroupingEnhancementRule{{Matcher: "path", Pattern: "bad\npattern", Action: "Exclude"}}
+	invalidFingerprint := []sentryv1alpha1.FingerprintRule{{Matcher: "message", Pattern: "timeout", Values: []string{"{{ default }}"}}}
+	for name, desired := range map[string]*sentryv1alpha1.ProjectSettings{
+		"pii":         {PII: &sentryv1alpha1.PIISettings{AdvancedRules: &invalidPII}},
+		"grouping":    {Grouping: &sentryv1alpha1.GroupingSettings{Enhancements: &invalidGrouping}},
+		"fingerprint": {Grouping: &sentryv1alpha1.GroupingSettings{Fingerprints: &invalidFingerprint}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			adapter := &fakeAdapter{}
+			result := (&Engine{Adapter: adapter}).Reconcile(context.Background(), Input{
+				Organization: "company", ProjectSlug: "checkout", Desired: desired,
+				Authorize: func(context.Context) error { t.Fatal("authorization called"); return nil },
+			})
+			if !errors.Is(result.Err(), ErrInvalidDesiredState) || len(adapter.projectUpdates) != 0 {
+				t.Fatalf("result=%#v updates=%#v", result, adapter.projectUpdates)
+			}
+		})
+	}
+}
+
+func TestEngineTreatsMissingAndEmptyDefaultEnvironmentAsEquivalent(t *testing.T) {
+	t.Parallel()
+
+	empty := ""
+	adapter := &fakeAdapter{state: ProjectState{DefaultEnvironment: nil}}
+	result := (&Engine{Adapter: adapter}).Reconcile(context.Background(), Input{
+		Organization: "company", ProjectSlug: "checkout",
+		Desired:   &sentryv1alpha1.ProjectSettings{Behavior: &sentryv1alpha1.BehaviorSettings{DefaultEnvironment: &empty}},
+		Authorize: func(context.Context) error { t.Fatal("authorization called"); return nil },
+	})
+	if result.Err() != nil || result.Behavior.Changed != 0 || len(adapter.projectUpdates) != 0 {
+		t.Fatalf("result=%#v updates=%#v", result, adapter.projectUpdates)
+	}
+}
+
+func TestEngineRejectsInvalidBehaviorBeforeRead(t *testing.T) {
+	t.Parallel()
+
+	negativeResolve := int64(-1)
+	tooManyReports := int32(101)
+	invalidEnvironment := "production/internal"
+	emptyDomains := []string{}
+	mixedWildcardDomains := []string{"*", "example.com"}
+	pathDomains := []string{"https://example.com/path"}
+	invalidPortDomains := []string{"example.com:70000"}
+	duplicateDomains := []string{"example.com", "example.com"}
+	for _, behavior := range []*sentryv1alpha1.BehaviorSettings{
+		{AutoResolveHours: &negativeResolve},
+		{CrashReportLimit: &tooManyReports},
+		{DefaultEnvironment: &invalidEnvironment},
+		{AllowedDomains: &emptyDomains},
+		{AllowedDomains: &mixedWildcardDomains},
+		{AllowedDomains: &pathDomains},
+		{AllowedDomains: &invalidPortDomains},
+		{AllowedDomains: &duplicateDomains},
+	} {
+		adapter := &fakeAdapter{}
+		result := (&Engine{Adapter: adapter}).Reconcile(context.Background(), Input{
+			Organization: "company", ProjectSlug: "checkout",
+			Desired:   &sentryv1alpha1.ProjectSettings{Behavior: behavior},
+			Authorize: func(context.Context) error { t.Fatal("authorization called"); return nil },
+		})
+		if !errors.Is(result.Err(), ErrInvalidDesiredState) || adapter.reads != 0 {
+			t.Fatalf("behavior=%#v result=%#v reads=%d", behavior, result, adapter.reads)
+		}
+	}
+}
+
+func TestEngineTreatsExplicitEmptyLegacyBrowserSetAsDisabled(t *testing.T) {
+	t.Parallel()
+
+	empty := []sentryv1alpha1.LegacyBrowserFilter{}
+	adapter := &fakeAdapter{filters: []Filter{{ID: "legacy-browsers", Active: false}}}
+	result := (&Engine{Adapter: adapter}).Reconcile(context.Background(), Input{
+		Organization: "company", ProjectSlug: "checkout",
+		Desired:   &sentryv1alpha1.ProjectSettings{Filters: &sentryv1alpha1.FilterSettings{LegacyBrowsers: &empty}},
+		Authorize: func(context.Context) error { t.Fatal("authorization called"); return nil },
+	})
+	if result.Err() != nil || result.Filters.Changed != 0 || len(adapter.filterUpdates) != 0 {
+		t.Fatalf("result=%#v updates=%#v", result, adapter.filterUpdates)
+	}
+}
+
+func TestEngineRejectsUnknownOrDuplicateLegacyBrowserSubfiltersBeforeRead(t *testing.T) {
+	t.Parallel()
+
+	for _, values := range [][]sentryv1alpha1.LegacyBrowserFilter{
+		{"unsupported"},
+		{sentryv1alpha1.LegacyBrowserIE, sentryv1alpha1.LegacyBrowserIE},
+	} {
+		adapter := &fakeAdapter{}
+		result := (&Engine{Adapter: adapter}).Reconcile(context.Background(), Input{
+			Organization: "company", ProjectSlug: "checkout",
+			Desired:   &sentryv1alpha1.ProjectSettings{Filters: &sentryv1alpha1.FilterSettings{LegacyBrowsers: &values}},
+			Authorize: func(context.Context) error { t.Fatal("authorization called"); return nil },
+		})
+		if !errors.Is(result.Err(), ErrInvalidDesiredState) || adapter.reads != 0 {
+			t.Fatalf("values=%v result=%#v reads=%d", values, result, adapter.reads)
+		}
 	}
 }
 
@@ -101,7 +420,7 @@ func TestEngineRemovedBlocksStopManagementWithoutReset(t *testing.T) {
 		Desired:      nil,
 		Authorize:    func(context.Context) error { t.Fatal("authorization called"); return nil },
 	})
-	if result.Filters.Managed || result.PII.Managed || result.Err() != nil || adapter.reads != 0 {
+	if result.Filters.Managed || result.PII.Managed || result.Behavior.Managed || result.Grouping.Managed || result.Symbolication.Managed || result.Err() != nil || adapter.reads != 0 {
 		t.Fatalf("result=%#v adapter=%#v", result, adapter)
 	}
 }
@@ -147,8 +466,8 @@ func TestEngineAuthorizationChangePreventsMutation(t *testing.T) {
 }
 
 type filterUpdate struct {
-	id     string
-	active bool
+	id    string
+	patch FilterPatch
 }
 
 type projectUpdate struct {
@@ -169,8 +488,8 @@ func (a *fakeAdapter) ListFilters(context.Context, string, string) ([]Filter, er
 	return append([]Filter(nil), a.filters...), nil
 }
 
-func (a *fakeAdapter) UpdateFilter(_ context.Context, _, _, id string, active bool) error {
-	a.filterUpdates = append(a.filterUpdates, filterUpdate{id: id, active: active})
+func (a *fakeAdapter) UpdateFilter(_ context.Context, _, _, id string, patch FilterPatch) error {
+	a.filterUpdates = append(a.filterUpdates, filterUpdate{id: id, patch: patch})
 	return nil
 }
 
@@ -185,3 +504,5 @@ func (a *fakeAdapter) UpdateProjectState(_ context.Context, _, _ string, patch P
 }
 
 func stringSlicePointer(value []string) *[]string { return &value }
+
+func activeFilterPatch(value bool) FilterPatch { return FilterPatch{Active: &value} }

@@ -103,20 +103,183 @@ func TestManagedCreateRejectsStandbyConnectionBeforeExternalMutation(t *testing.
 	}
 }
 
-func TestManagedCreateRejectsStandbyProjectBeforeExternalLookup(t *testing.T) {
+func TestStandbyProjectObservesUnmanagedProjectWithoutClaim(t *testing.T) {
 	t.Parallel()
 	engine, adapter, store := testEngine(t)
+	adapter.projects["checkout"] = RemoteProject{Identity: "external-id", Slug: "checkout", URL: "https://sentry.example/projects/checkout"}
 	input := managedInput("checkout", "uid-one", "payments")
 	input.Project.Spec.Role = sentryv1alpha1.ProjectRoleStandby
+	input.Connection.ProjectManagement.UnmanagedProjects = sentryv1alpha1.UnmanagedProjectsStandby
 
-	if _, err := engine.Reconcile(context.Background(), input); !IsReason(err, ReasonProjectStandby) {
-		t.Fatalf("standby project error=%v", err)
+	result, err := engine.Reconcile(context.Background(), input)
+	if err != nil || result.Origin != binding.OriginExternal || result.AccessMode != binding.AccessReadOnly {
+		t.Fatalf("standby result=%#v error=%v", result, err)
 	}
-	if adapter.getCalls != 0 || adapter.createCalls != 0 {
+	if adapter.getCalls == 0 || adapter.createCalls != 0 {
 		t.Fatalf("standby project made get=%d create=%d calls", adapter.getCalls, adapter.createCalls)
 	}
+	record, err := store.GetBinding(context.Background(), "uid-one")
+	if err != nil || record.Binding.Origin != binding.OriginExternal || record.Binding.AccessMode != binding.AccessReadOnly || record.Binding.ExternalIdentity != "external-id" {
+		t.Fatalf("standby binding=%#v error=%v", record.Binding, err)
+	}
+	if _, err := store.GetClaim(context.Background(), "https://sentry.example", "company", "checkout"); !errors.Is(err, binding.ErrNotFound) {
+		t.Fatalf("standby project created claim: %v", err)
+	}
+}
+
+func TestStandbyProjectContributesToProtectedManagedProjectWithoutTakingClaim(t *testing.T) {
+	t.Parallel()
+	engine, adapter, store := testEngine(t)
+	manager := managedInput("checkout", "manager-uid", "payments")
+	manager.Connection.Ownership = &sentryv1alpha1.ConnectionOwnership{Region: "eu-west-1", Role: sentryv1alpha1.ConnectionRoleActive, Revision: 8}
+	if _, err := engine.Reconcile(context.Background(), manager); err != nil {
+		t.Fatal(err)
+	}
+	candidate := managedInput("checkout", "candidate-uid", "payments-two")
+	candidate.Project.Spec.Role = sentryv1alpha1.ProjectRoleStandby
+	candidate.Connection.Ownership = manager.Connection.Ownership.DeepCopy()
+	result, err := engine.Reconcile(context.Background(), candidate)
+	if err != nil || result.Origin != binding.OriginManaged || result.AccessMode != binding.AccessReadOnly || result.Owner != "payments" {
+		t.Fatalf("candidate result=%#v error=%v", result, err)
+	}
+	record, err := store.GetBinding(context.Background(), "candidate-uid")
+	if err != nil || record.Binding.Marker == nil || record.Binding.RegionalOwnership == nil || record.Binding.ManagerUID != "" || record.Binding.ClaimName != "" {
+		t.Fatalf("candidate binding=%#v error=%v", record.Binding, err)
+	}
+	claim, err := store.GetClaim(context.Background(), "https://sentry.example", "company", "checkout")
+	if err != nil || claim.Claim.Manager.UID != "manager-uid" {
+		t.Fatalf("manager claim=%#v error=%v", claim.Claim, err)
+	}
+	if adapter.createCalls != 1 || adapter.updateEvidenceCalls != 0 {
+		t.Fatalf("candidate create=%d update=%d", adapter.createCalls, adapter.updateEvidenceCalls)
+	}
+}
+
+func TestExactHandoffPromotesStandbyWithoutExternalMutation(t *testing.T) {
+	t.Parallel()
+	engine, adapter, store := testEngine(t)
+	manager := managedInput("checkout", "manager-uid", "payments")
+	manager.Connection.Ownership = &sentryv1alpha1.ConnectionOwnership{Region: "eu-west-1", Role: sentryv1alpha1.ConnectionRoleActive, Revision: 8}
+	if _, err := engine.Reconcile(context.Background(), manager); err != nil {
+		t.Fatal(err)
+	}
+	candidate := managedInput("checkout", "candidate-uid", "payments-two")
+	candidate.Project.Spec.Role = sentryv1alpha1.ProjectRoleStandby
+	candidate.Connection.Ownership = manager.Connection.Ownership.DeepCopy()
+	candidate.Connection.Access[1].Owner = "payments"
+	if _, err := engine.Reconcile(context.Background(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	candidate.Project.Spec.Role = sentryv1alpha1.ProjectRoleActive
+	if _, err := engine.Reconcile(context.Background(), candidate); !IsReason(err, ReasonOwnershipConflict) {
+		t.Fatalf("active request stole manager claim: %v", err)
+	}
+	candidate.Project.Spec.Role = sentryv1alpha1.ProjectRoleStandby
+	claim, err := store.GetClaim(context.Background(), "https://sentry.example", "company", "checkout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate.Project.Generation = 2
+	target := projectReference(candidate.Project)
+	if _, err := store.Handoff(context.Background(), claim, "manager-uid", target); err != nil {
+		t.Fatal(err)
+	}
+	candidate.Project.Spec.Role = sentryv1alpha1.ProjectRoleActive
+	result, err := engine.Reconcile(context.Background(), candidate)
+	if err != nil || result.AccessMode != binding.AccessManage || result.Owner != "payments" {
+		t.Fatalf("promotion result=%#v error=%v", result, err)
+	}
+	updated, err := store.GetBinding(context.Background(), "candidate-uid")
+	if err != nil || updated.Binding.AccessMode != binding.AccessManage || updated.Binding.ManagerUID != "candidate-uid" || updated.Binding.Project.Generation != 2 {
+		t.Fatalf("promoted binding=%#v error=%v", updated.Binding, err)
+	}
+	claim, err = store.GetClaim(context.Background(), "https://sentry.example", "company", "checkout")
+	if err != nil || claim.Claim.Manager.UID != "candidate-uid" || claim.Claim.Handoff != nil {
+		t.Fatalf("promoted claim=%#v error=%v", claim.Claim, err)
+	}
+	if adapter.createCalls != 1 || adapter.updateEvidenceCalls != 0 {
+		t.Fatalf("promotion create=%d update=%d", adapter.createCalls, adapter.updateEvidenceCalls)
+	}
+}
+
+func TestUnclaimedManagedProjectPromotesStandbyWithoutStealing(t *testing.T) {
+	t.Parallel()
+	engine, adapter, store := testEngine(t)
+	manager := managedInput("checkout", "manager-uid", "payments")
+	manager.Connection.Ownership = &sentryv1alpha1.ConnectionOwnership{Region: "eu-west-1", Role: sentryv1alpha1.ConnectionRoleActive, Revision: 8}
+	if _, err := engine.Reconcile(context.Background(), manager); err != nil {
+		t.Fatal(err)
+	}
+	candidate := managedInput("checkout", "candidate-uid", "payments-two")
+	candidate.Project.Spec.Role = sentryv1alpha1.ProjectRoleStandby
+	candidate.Connection.Ownership = manager.Connection.Ownership.DeepCopy()
+	candidate.Connection.Access[1].Owner = "payments"
+	if _, err := engine.Reconcile(context.Background(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.GetClaim(context.Background(), "https://sentry.example", "company", "checkout")
+	if err != nil || store.DeleteClaim(context.Background(), claim) != nil {
+		t.Fatalf("release claim=%#v error=%v", claim.Claim, err)
+	}
+	candidate.Project.Spec.Role = sentryv1alpha1.ProjectRoleActive
+	candidate.Project.Generation = 2
+	result, err := engine.Reconcile(context.Background(), candidate)
+	if err != nil || result.AccessMode != binding.AccessManage {
+		t.Fatalf("unclaimed promotion result=%#v error=%v", result, err)
+	}
+	claim, err = store.GetClaim(context.Background(), "https://sentry.example", "company", "checkout")
+	if err != nil || claim.Claim.Manager.UID != "candidate-uid" || claim.Claim.ExternalIdentity == "" {
+		t.Fatalf("acquired claim=%#v error=%v", claim.Claim, err)
+	}
+	if adapter.createCalls != 1 || adapter.updateEvidenceCalls != 0 {
+		t.Fatalf("unclaimed promotion create=%d update=%d", adapter.createCalls, adapter.updateEvidenceCalls)
+	}
+}
+
+func TestExternalStandbyPromotesOnlyThroughExplicitAdoption(t *testing.T) {
+	t.Parallel()
+	engine, adapter, store := testEngine(t)
+	adapter.projects["checkout"] = RemoteProject{Identity: "external-id", Slug: "checkout", URL: "https://sentry.example/projects/checkout"}
+	input := managedInput("checkout", "candidate-uid", "payments")
+	input.Project.Spec.Role = sentryv1alpha1.ProjectRoleStandby
+	input.Connection.ProjectManagement.UnmanagedProjects = sentryv1alpha1.UnmanagedProjectsStandby
+	if _, err := engine.Reconcile(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	input.Project.Spec.Role = sentryv1alpha1.ProjectRoleActive
+	if _, err := engine.Reconcile(context.Background(), input); !IsReason(err, ReasonProjectAlreadyExists) {
+		t.Fatalf("standby policy unexpectedly promoted external project: %v", err)
+	}
+	if _, err := store.GetClaim(context.Background(), "https://sentry.example", "company", "checkout"); !errors.Is(err, binding.ErrNotFound) {
+		t.Fatalf("denied promotion left claim: %v", err)
+	}
+	input.Connection.Ownership = &sentryv1alpha1.ConnectionOwnership{Region: "eu-west-1", Role: sentryv1alpha1.ConnectionRoleActive, Revision: 8}
+	input.Connection.ProjectManagement.UnmanagedProjects = sentryv1alpha1.UnmanagedProjectsAdopt
+	input.Project.Generation = 2
+	result, err := engine.Reconcile(context.Background(), input)
+	if err != nil || result.Origin != binding.OriginManaged || result.AccessMode != binding.AccessManage {
+		t.Fatalf("external promotion result=%#v error=%v", result, err)
+	}
+	record, err := store.GetBinding(context.Background(), "candidate-uid")
+	if err != nil || record.Binding.Origin != binding.OriginManaged || record.Binding.AccessMode != binding.AccessManage || record.Binding.Pending != nil || record.Binding.RegionalOwnership == nil {
+		t.Fatalf("adopted standby binding=%#v error=%v", record.Binding, err)
+	}
+	if adapter.createCalls != 0 || adapter.updateEvidenceCalls != 1 {
+		t.Fatalf("external promotion create=%d update=%d", adapter.createCalls, adapter.updateEvidenceCalls)
+	}
+}
+
+func TestStandbyProjectRejectsUnmanagedProjectByDefault(t *testing.T) {
+	t.Parallel()
+	engine, adapter, store := testEngine(t)
+	adapter.projects["checkout"] = RemoteProject{Identity: "external-id", Slug: "checkout"}
+	input := managedInput("checkout", "uid-one", "payments")
+	input.Project.Spec.Role = sentryv1alpha1.ProjectRoleStandby
+	if _, err := engine.Reconcile(context.Background(), input); !IsReason(err, ReasonProjectAlreadyExists) {
+		t.Fatalf("default standby policy error=%v", err)
+	}
 	if _, err := store.GetBinding(context.Background(), "uid-one"); !errors.Is(err, binding.ErrNotFound) {
-		t.Fatalf("standby project left binding: %v", err)
+		t.Fatalf("rejected standby left binding: %v", err)
 	}
 }
 
@@ -269,6 +432,105 @@ func TestExistingSlugIsNotAdoptedAndDoesNotCreateClaim(t *testing.T) {
 	}
 	if _, err := store.GetClaim(context.Background(), "https://sentry.example", "company", "checkout"); err != binding.ErrNotFound {
 		t.Fatalf("existing external project left manager claim: %v", err)
+	}
+}
+
+func TestExistingUnmarkedProjectIsAdoptedOnlyByActivePolicy(t *testing.T) {
+	t.Parallel()
+
+	engine, adapter, store := testEngine(t)
+	adapter.projects["checkout"] = RemoteProject{Identity: "existing-id", Slug: "checkout", URL: "https://sentry.example/projects/checkout"}
+	input := managedInput("checkout", "uid-one", "payments")
+	input.Connection.Ownership = &sentryv1alpha1.ConnectionOwnership{
+		Region: "eu-west-1", Role: sentryv1alpha1.ConnectionRoleActive, Revision: 8,
+	}
+	input.Connection.ProjectManagement.UnmanagedProjects = sentryv1alpha1.UnmanagedProjectsAdopt
+
+	result, err := engine.Reconcile(context.Background(), input)
+	if err != nil {
+		t.Fatalf("adopt existing project: %v", err)
+	}
+	if result.Origin != binding.OriginManaged || result.AccessMode != binding.AccessManage || result.Owner != "payments" {
+		t.Fatalf("adoption result = %#v", result)
+	}
+	if adapter.createCalls != 0 || adapter.updateEvidenceCalls != 1 {
+		t.Fatalf("adoption create=%d update=%d", adapter.createCalls, adapter.updateEvidenceCalls)
+	}
+	record, err := store.GetBinding(context.Background(), "uid-one")
+	if err != nil || record.Binding.ExternalIdentity != "existing-id" || record.Binding.Pending != nil || record.Binding.RegionalOwnership == nil || record.Binding.RegionalOwnership.Revision != 8 {
+		t.Fatalf("adopted binding=%#v err=%v", record.Binding, err)
+	}
+	claim, err := store.GetClaim(context.Background(), "https://sentry.example", "company", "checkout")
+	if err != nil || claim.Claim.ExternalIdentity != "existing-id" || claim.Claim.Manager.UID != "uid-one" {
+		t.Fatalf("adoption claim=%#v err=%v", claim.Claim, err)
+	}
+	remote := adapter.projects["checkout"]
+	if remote.RegionalEvidence == nil || ownership.ValidateEvidence(ownership.Local{Marker: *record.Binding.RegionalOwnership, Active: true}, *remote.RegionalEvidence) != nil {
+		t.Fatalf("adopted remote=%#v", remote)
+	}
+	if got := engine.Audit.(*fakeAudit).outcomes(); !equalStrings(got, []string{"started/JournalSubmitted", "succeeded/MutationVerified"}) {
+		t.Fatalf("adoption audit = %v", got)
+	}
+}
+
+func TestAdoptionRecoversAppliedMarkerAfterLostUpdateResponse(t *testing.T) {
+	t.Parallel()
+
+	engine, adapter, store := testEngine(t)
+	adapter.projects["checkout"] = RemoteProject{Identity: "existing-id", Slug: "checkout", URL: "https://sentry.example/projects/checkout"}
+	adapter.loseUpdateResponse = true
+	input := managedInput("checkout", "uid-one", "payments")
+	input.Connection.Ownership = &sentryv1alpha1.ConnectionOwnership{
+		Region: "eu-west-1", Role: sentryv1alpha1.ConnectionRoleActive, Revision: 8,
+	}
+	input.Connection.ProjectManagement.UnmanagedProjects = sentryv1alpha1.UnmanagedProjectsAdopt
+
+	if _, err := engine.Reconcile(context.Background(), input); err == nil {
+		t.Fatal("lost adoption response unexpectedly succeeded")
+	}
+	adapter.loseUpdateResponse = false
+	result, err := engine.Reconcile(context.Background(), input)
+	if err != nil || result.Origin != binding.OriginManaged {
+		t.Fatalf("recover adoption: result=%#v err=%v", result, err)
+	}
+	if adapter.updateEvidenceCalls != 1 || adapter.createCalls != 0 {
+		t.Fatalf("recovered adoption create=%d update=%d", adapter.createCalls, adapter.updateEvidenceCalls)
+	}
+	record, err := store.GetBinding(context.Background(), "uid-one")
+	if err != nil || record.Binding.Pending != nil {
+		t.Fatalf("recovered binding=%#v err=%v", record.Binding, err)
+	}
+	if got := engine.Audit.(*fakeAudit).outcomes(); !equalStrings(got, []string{"started/JournalSubmitted", "failed/ApplyFailed", "recovered/ResultRecovered"}) {
+		t.Fatalf("recovered adoption audit = %v", got)
+	}
+}
+
+func TestAdoptionDoesNotTakeRecognizedOrStandbyProject(t *testing.T) {
+	t.Parallel()
+
+	engine, adapter, store := testEngine(t)
+	marker := binding.Marker{Origin: "managed", Owner: "another-owner", ManagedBy: "another-operator"}
+	adapter.projects["checkout"] = RemoteProject{Identity: "existing-id", Slug: "checkout", Marker: &marker}
+	input := managedInput("checkout", "uid-one", "payments")
+	input.Connection.Ownership = &sentryv1alpha1.ConnectionOwnership{
+		Region: "eu-west-1", Role: sentryv1alpha1.ConnectionRoleActive, Revision: 8,
+	}
+	input.Connection.ProjectManagement.UnmanagedProjects = sentryv1alpha1.UnmanagedProjectsAdopt
+
+	if _, err := engine.Reconcile(context.Background(), input); !IsReason(err, ReasonProjectAlreadyExists) {
+		t.Fatalf("recognized project adoption error=%v", err)
+	}
+	delete(adapter.projects, "checkout")
+	adapter.projects["checkout"] = RemoteProject{Identity: "existing-id", Slug: "checkout"}
+	input.Connection.Ownership.Role = sentryv1alpha1.ConnectionRoleStandby
+	if _, err := engine.Reconcile(context.Background(), input); !IsReason(err, ReasonConnectionStandby) {
+		t.Fatalf("standby adoption error=%v", err)
+	}
+	if adapter.updateEvidenceCalls != 0 {
+		t.Fatalf("blocked adoption made %d updates", adapter.updateEvidenceCalls)
+	}
+	if _, err := store.GetClaim(context.Background(), "https://sentry.example", "company", "checkout"); !errors.Is(err, binding.ErrNotFound) {
+		t.Fatalf("blocked adoption left claim: %v", err)
 	}
 }
 
@@ -549,14 +811,23 @@ func TestAuditFailureAfterDeleteResponseRecoversWithoutSecondDelete(t *testing.T
 func TestRetainAndReadOnlyNeverDeleteExternalProject(t *testing.T) {
 	t.Parallel()
 
-	engine, adapter, _ := testEngine(t)
+	engine, adapter, store := testEngine(t)
 	managed := managedInput("checkout", "uid-one", "payments")
 	if _, err := engine.Reconcile(context.Background(), managed); err != nil {
 		t.Fatal(err)
 	}
 	result, err := engine.Delete(context.Background(), managed)
-	if err != nil || !result.Complete || !result.Retained || adapter.deleteCalls != 0 {
-		t.Fatalf("Retain result=%#v calls=%d err=%v", result, adapter.deleteCalls, err)
+	if err != nil || !result.Complete || !result.Retained || adapter.deleteCalls != 0 || adapter.releaseCalls != 1 {
+		t.Fatalf("Retain result=%#v delete=%d release=%d err=%v", result, adapter.deleteCalls, adapter.releaseCalls, err)
+	}
+	if _, err := store.GetBinding(context.Background(), "uid-one"); err != binding.ErrNotFound {
+		t.Fatalf("binding remains after Retain release: %v", err)
+	}
+	if _, err := store.GetClaim(context.Background(), "https://sentry.example", "company", "checkout"); err != binding.ErrNotFound {
+		t.Fatalf("claim remains after Retain release: %v", err)
+	}
+	if remote := adapter.projects["checkout"]; remote.Marker != nil || remote.RegionalEvidence != nil {
+		t.Fatalf("remote ownership evidence remains after Retain release: %#v", remote)
 	}
 
 	adapter.projects["shared"] = RemoteProject{Identity: "shared-id", Slug: "shared"}
@@ -567,6 +838,68 @@ func TestRetainAndReadOnlyNeverDeleteExternalProject(t *testing.T) {
 	}
 	if adapter.deleteCalls != 0 {
 		t.Fatalf("read-only project issued DELETE: %d", adapter.deleteCalls)
+	}
+}
+
+func TestRetainWaitsForOwnedChildCleanup(t *testing.T) {
+	t.Parallel()
+
+	engine, adapter, store := testEngine(t)
+	input := managedInput("checkout", "uid-one", "payments")
+	if _, err := engine.Reconcile(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.GetBinding(context.Background(), "uid-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := record.Binding
+	next.GrantedTeams = map[string]string{"backend": "team-id"}
+	if _, err := store.UpdateBinding(context.Background(), record, next); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Delete(context.Background(), input); !IsReason(err, ReasonReleasePending) {
+		t.Fatalf("Retain with owned children error = %v", err)
+	}
+	if adapter.releaseCalls != 0 {
+		t.Fatalf("Retain released ownership before child cleanup: %d", adapter.releaseCalls)
+	}
+	if _, err := store.GetBinding(context.Background(), "uid-one"); err != nil {
+		t.Fatalf("binding was removed before child cleanup: %v", err)
+	}
+}
+
+func TestRetainCompletesWhenManagedCreateNeverEstablishedProtectedState(t *testing.T) {
+	t.Parallel()
+
+	engine, adapter, _ := testEngine(t)
+	input := managedInput("checkout", "uid-one", "payments")
+	result, err := engine.Delete(context.Background(), input)
+	if err != nil || !result.Complete || !result.Retained {
+		t.Fatalf("unbound Retain result=%#v err=%v", result, err)
+	}
+	if adapter.releaseCalls != 0 || adapter.deleteCalls != 0 {
+		t.Fatalf("unbound Retain mutated Sentry: release=%d delete=%d", adapter.releaseCalls, adapter.deleteCalls)
+	}
+}
+
+func TestRetainRecoversLostReleaseResponseWithoutSecondMutation(t *testing.T) {
+	engine, adapter, store := testEngine(t)
+	input := managedInput("checkout", "uid-one", "payments")
+	if _, err := engine.Reconcile(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	adapter.loseReleaseResponse = true
+	if _, err := engine.Delete(context.Background(), input); !sentryapi.IsKind(err, sentryapi.ErrorTimeout) || adapter.releaseCalls != 1 {
+		t.Fatalf("lost release response error=%v calls=%d", err, adapter.releaseCalls)
+	}
+	adapter.loseReleaseResponse = false
+	result, err := engine.Delete(context.Background(), input)
+	if err != nil || !result.Complete || !result.Retained || adapter.releaseCalls != 1 {
+		t.Fatalf("release recovery result=%#v err=%v calls=%d", result, err, adapter.releaseCalls)
+	}
+	if _, err := store.GetBinding(context.Background(), "uid-one"); err != binding.ErrNotFound {
+		t.Fatalf("binding remains after release recovery: %v", err)
 	}
 }
 
@@ -601,6 +934,9 @@ type fakeAdapter struct {
 	deleteCalls         int
 	deleteLeavesObject  bool
 	updateEvidenceCalls int
+	loseUpdateResponse  bool
+	releaseCalls        int
+	loseReleaseResponse bool
 }
 
 func (a *fakeAdapter) UpdateRegionalEvidence(_ context.Context, _, slug string, evidence ownership.Evidence) error {
@@ -614,6 +950,9 @@ func (a *fakeAdapter) UpdateRegionalEvidence(_ context.Context, _, slug string, 
 	project.Marker = nil
 	project.RegionalEvidence = &evidence
 	a.projects[slug] = project
+	if a.loseUpdateResponse {
+		return &sentryapi.APIError{Kind: sentryapi.ErrorTimeout, Operation: "update-project-regional-evidence"}
+	}
 	return nil
 }
 
@@ -661,6 +1000,23 @@ func (a *fakeAdapter) Delete(_ context.Context, _, slug string) error {
 	a.deleteCalls++
 	if !a.deleteLeavesObject {
 		delete(a.projects, slug)
+	}
+	return nil
+}
+
+func (a *fakeAdapter) ReleaseOwnership(_ context.Context, _, slug string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	project, found := a.projects[slug]
+	if !found {
+		return &sentryapi.APIError{Kind: sentryapi.ErrorNotFound, StatusCode: 404, Operation: "release-project-ownership"}
+	}
+	a.releaseCalls++
+	project.Marker = nil
+	project.RegionalEvidence = nil
+	a.projects[slug] = project
+	if a.loseReleaseResponse {
+		return &sentryapi.APIError{Kind: sentryapi.ErrorTimeout, Operation: "release-project-ownership"}
 	}
 	return nil
 }

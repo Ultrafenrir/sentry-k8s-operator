@@ -57,6 +57,10 @@ rg -q 'DestinationAudit:.*destinationAudit' cmd/main.go
 rg -q 'TestExportFailsClosedOnSemanticallyInvalidStateRecord' internal/statebackup/backup_test.go
 rg -q 'TestRestoreRejectsChecksumValidSemanticCorruptionBeforeWrite' internal/statebackup/backup_test.go
 rg -q 'TestExportFailsClosedOnInvalidChallengeRouteHookSourceAndDeliveryPayloads' internal/statebackup/backup_test.go
+sh -n hack/verify-t09-kind-backup-restore.sh
+rg -q 'refusing to reuse existing namespace' hack/verify-t09-kind-backup-restore.sh
+rg -q 'USE_EXISTING_CLUSTER=true' hack/verify-t09-kind-backup-restore.sh
+rg -q 'statebackup-kind-drill' internal/statebackup/backup_integration_test.go
 rg -q 'sentry_operator_condition_transitions_total' internal/controller/metrics.go
 rg -q 'sentry_operator_sync_resources' internal/controller/metrics.go
 rg -q 'Metrics accepts only closed enum labels' internal/controller/metrics.go
@@ -149,4 +153,4 @@ rg -q 'name: metrics-server-cert' "$tmp_dir/legacy-monitoring.yaml"
 rg -q 'key: ca.crt' "$tmp_dir/legacy-monitoring.yaml"
 ! rg -q 'insecureSkipVerify: true' "$tmp_dir/legacy-monitoring.yaml"
 
-echo 'T09 partial HA, durable audit/export/retention, redacted admin report, attested-build/digest gates, PDB and NetworkPolicy contracts verified (T09 remains In Progress)'
+echo 'T09 bounded HA, recovery, durable audit/export/retention, redacted admin report, attested-build/digest gates, PDB and NetworkPolicy contracts verified; production evidence remains deferred'

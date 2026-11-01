@@ -48,16 +48,15 @@ func TestLoadSecretInputsAndNames(t *testing.T) {
 			CABundleSecretRef: caRef,
 		},
 		Integrations: &sentryv1alpha1.ConnectionIntegrations{Telegram: &sentryv1alpha1.TelegramIntegration{
-			BotTokenSecretRef:    sentryv1alpha1.SecretKeyReference{Name: "telegram", Key: "bot"},
-			ReceiverURL:          "https://receiver.example/events",
-			WebhookAuthSecretRef: sentryv1alpha1.SecretKeyReference{Name: "telegram", Key: "webhook"},
+			BotTokenSecretRef: sentryv1alpha1.SecretKeyReference{Name: "telegram", Key: "bot"},
+			ReceiverURL:       "https://receiver.example/events",
 		}},
 	}
 	inputs, err := LoadSecretInputs(context.Background(), reader, "operator", spec)
 	if err != nil {
 		t.Fatalf("LoadSecretInputs: %v", err)
 	}
-	if string(inputs.Token) != "api-secret" || string(inputs.CABundle) != "ca-pem" || string(inputs.BotToken) != "bot-secret" || string(inputs.WebhookAuth) != "webhook-secret" || !inputs.InsecureSkipTLSVerify || inputs.AllowInsecureHTTP {
+	if string(inputs.Token) != "api-secret" || string(inputs.CABundle) != "ca-pem" || string(inputs.BotToken) != "bot-secret" || !inputs.InsecureSkipTLSVerify || inputs.AllowInsecureHTTP {
 		t.Fatal("one or more secret values were not loaded")
 	}
 	names := SecretNames(spec)
@@ -86,9 +85,8 @@ func TestLoadSecretInputsRejectsUnsafeReceiverAndEmptyKey(t *testing.T) {
 	spec := sentryv1alpha1.SentryConnectionSpec{
 		Credentials: sentryv1alpha1.ConnectionCredentials{TokenSecretRef: sentryv1alpha1.SecretKeyReference{Name: "api", Key: "token"}},
 		Integrations: &sentryv1alpha1.ConnectionIntegrations{Telegram: &sentryv1alpha1.TelegramIntegration{
-			BotTokenSecretRef:    sentryv1alpha1.SecretKeyReference{Name: "telegram", Key: "bot"},
-			ReceiverURL:          "https://user:password@receiver.example/hook",
-			WebhookAuthSecretRef: sentryv1alpha1.SecretKeyReference{Name: "telegram", Key: "webhook"},
+			BotTokenSecretRef: sentryv1alpha1.SecretKeyReference{Name: "telegram", Key: "bot"},
+			ReceiverURL:       "https://user:password@receiver.example/hook",
 		}},
 	}
 	if _, err := LoadSecretInputs(context.Background(), reader, "operator", spec); err == nil {

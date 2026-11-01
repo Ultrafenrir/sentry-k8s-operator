@@ -27,6 +27,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
 )
 
@@ -119,6 +120,29 @@ func TestSelectAllowsHTTPDSNOnlyWithExplicitTransportOptIn(t *testing.T) {
 	selection, err := SelectWithTransport(keys, "", nil, true)
 	if err != nil || selection.Key.ID != "id-one" {
 		t.Fatalf("explicit insecure HTTP selection = %#v, %v", selection, err)
+	}
+}
+
+func TestSelectManagedAllowsOnlyVerifiedIdentityReplacement(t *testing.T) {
+	t.Parallel()
+
+	first := clientKey("managed-one", "ignored-remote-name", true, "https://public-one@sentry.example/1")
+	selection, err := SelectManaged(first, "ingest", nil, false)
+	if err != nil || selection.ReadableName != "ingest" || selection.Binding.KeyIdentity != "managed-one" || selection.Binding.KeyName != "ingest" {
+		t.Fatalf("initial managed selection = %#v, %v", selection, err)
+	}
+	current := selection.Binding
+	current.CurrentSecret = "checkout-sentry"
+	replacement := clientKey("managed-two", "another-remote-name", true, "https://public-two@sentry.example/1")
+	selection, err = SelectManaged(replacement, "ingest", &current, false)
+	if err != nil || selection.Binding.KeyIdentity != "managed-two" || selection.Binding.CurrentSecret != "checkout-sentry" || selection.ReadableName != "ingest" {
+		t.Fatalf("managed replacement = %#v, %v", selection, err)
+	}
+	if _, err := SelectManaged(replacement, "unsafe\nname", &binding.DSNBinding{}, false); !errors.Is(err, ErrInvalidDSN) {
+		t.Fatalf("unsafe managed logical name error = %v", err)
+	}
+	if _, err := SelectManaged(clientKey("managed-two", "remote", false, "https://public@sentry.example/1"), "ingest", &current, false); !errors.Is(err, ErrInvalidDSN) {
+		t.Fatalf("inactive managed key error = %v", err)
 	}
 }
 

@@ -129,6 +129,48 @@ func AuthorizedProjectAccessTeams(namespace string, project sentryv1alpha1.Sentr
 	return result, nil
 }
 
+// AuthorizedIssueOwnershipTeams returns the independently authorized team references used
+// by issue ownership rules. A referenced team must be connection-authorized and already be
+// the primary project team or declared through grantAccess.
+func AuthorizedIssueOwnershipTeams(namespace string, project sentryv1alpha1.SentryProjectSpec, connection sentryv1alpha1.SentryConnectionSpec) ([]string, error) {
+	decision, err := EvaluateProject(namespace, project, connection)
+	if err != nil {
+		return nil, err
+	}
+	if decision.AccessMode != "Manage" || project.Project.Create == nil || project.IssueOwnership == nil {
+		return nil, &Error{Kind: ErrorAccessDenied}
+	}
+	rule, err := ruleForNamespace(namespace, connection.Access)
+	if err != nil {
+		return nil, err
+	}
+	attached := map[string]bool{project.Project.Create.Team: true}
+	if project.GrantAccess != nil {
+		for _, team := range project.GrantAccess.Teams {
+			attached[team] = true
+		}
+	}
+	seen := map[string]bool{}
+	result := []string{}
+	denied := false
+	for _, ownershipRule := range project.IssueOwnership.Rules {
+		for _, team := range ownershipRule.Teams {
+			if !attached[team] || !contains(rule.Teams, team) {
+				denied = true
+				continue
+			}
+			if !seen[team] {
+				seen[team] = true
+				result = append(result, team)
+			}
+		}
+	}
+	if denied {
+		return result, &Error{Kind: ErrorAccessDenied}
+	}
+	return result, nil
+}
+
 // EvaluateDestination evaluates project access plus exactly one destination selector.
 // Callers use this both before lookup and immediately before protected-state CAS.
 func EvaluateDestination(namespace string, project sentryv1alpha1.SentryProjectSpec, connection sentryv1alpha1.SentryConnectionSpec, destination sentryv1alpha1.DestinationSpec) (Decision, error) {

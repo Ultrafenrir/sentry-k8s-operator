@@ -2,21 +2,29 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: sentry-demo-modern
+  labels:
+    sentryconfiguration.io/demo: kind-local
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
   name: sentry-demo-legacy
+  labels:
+    sentryconfiguration.io/demo: kind-local
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
   name: sentry-demo-surface
+  labels:
+    sentryconfiguration.io/demo: kind-local
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
   name: sentry-demo-paused
+  labels:
+    sentryconfiguration.io/demo: kind-local
 ---
 apiVersion: sentryconfiguration.io/v1alpha1
 kind: SentryConnection
@@ -134,6 +142,12 @@ spec:
       threshold: 10
       notify:
         - pagerDuty/Demo On-call
+    affected-users:
+      trigger: user-count
+      windowMinutes: 10
+      threshold: 5
+      notify:
+        - pagerDuty/Demo On-call
     disabled-volume:
       trigger: event-count
       windowMinutes: 15
@@ -183,6 +197,12 @@ spec:
       trigger: event-count
       windowMinutes: 5
       threshold: 20
+      notify:
+        - pagerDuty/Demo On-call
+    affected-users:
+      trigger: user-count
+      windowMinutes: 10
+      threshold: 5
       notify:
         - pagerDuty/Demo On-call
   lifecycle:

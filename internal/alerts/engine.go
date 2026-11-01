@@ -39,6 +39,7 @@ const (
 	TriggerFirstSeen  Trigger = "first-seen"
 	TriggerRegression Trigger = "regression"
 	TriggerEventCount Trigger = "event-count"
+	TriggerUserCount  Trigger = "user-count"
 
 	StateReady   = "Ready"
 	StateDeleted = "Deleted"
@@ -405,7 +406,7 @@ func validateDesired(key string, desired Desired, destinations map[string]bindin
 		if desired.WindowMinutes != 0 || desired.Threshold != 0 {
 			return ErrInvalidInput
 		}
-	case TriggerEventCount:
+	case TriggerEventCount, TriggerUserCount:
 		if desired.WindowMinutes < 1 || desired.WindowMinutes > 1440 || desired.Threshold <= 0 {
 			return ErrInvalidInput
 		}
@@ -424,6 +425,17 @@ func validateDesired(key string, desired Desired, destinations map[string]bindin
 		}
 	}
 	return nil
+}
+
+func metricAggregate(trigger Trigger) (string, bool) {
+	switch trigger {
+	case TriggerEventCount:
+		return "count()", true
+	case TriggerUserCount:
+		return "count_unique(user)", true
+	default:
+		return "", false
+	}
 }
 
 func normalize(desired Desired) Desired {

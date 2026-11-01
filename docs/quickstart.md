@@ -114,9 +114,10 @@ The complete Deployment form is in
 
 ## Add typed alerts
 
-Alerts refer to canonical readable notification target names. Legacy 24.7.1 supports enabled first-seen,
-regression and event-count rules; it deliberately rejects `enabled: false` because its
-DELETE operation is not a pause. The modern 26.10.1 profile currently supports event-count.
+Alerts refer to canonical readable notification target names. Legacy 24.7.1 supports enabled
+first-seen, regression, event-count, and user-count rules; it deliberately rejects
+`enabled: false` because its DELETE operation is not a pause. The modern 26.10.1 profile
+supports event-count and user-count.
 
 ```yaml
 spec:
@@ -133,6 +134,11 @@ spec:
       trigger: event-count
       windowMinutes: 5
       threshold: 200
+      notify: [slack/payments-alerts]
+    affected-users:
+      trigger: user-count
+      windowMinutes: 10
+      threshold: 50
       notify: [slack/payments-alerts]
 ```
 
@@ -163,8 +169,10 @@ from the same redacted conditions, but the current alpha does not claim a comple
 trail, so status remains the source of truth.
 
 Deleting this CR uses the default `Retain` policy: the Sentry project remains, while the
-Kubernetes-owned DSN Secret is removed with the CR. External project deletion requires an
-explicit guarded lifecycle choice and is intentionally not part of this quick start.
+operator removes its owned child configuration, verified remote ownership marker, and
+protected state. The Kubernetes-owned DSN Secret is removed with the CR. External project
+deletion requires an explicit guarded lifecycle choice and is intentionally not part of
+this quick start.
 
 ## Evidence boundary
 

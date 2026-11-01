@@ -86,6 +86,111 @@ var _ = Describe("SentryProject Webhook", func() {
 		Expect(err).To(MatchError(ContainSubstring("must not repeat project.create.team")))
 	})
 
+	It("accepts attached issue ownership teams and rejects unattached teams", func() {
+		obj := managedProject("checkout")
+		obj.Spec.GrantAccess = &sentryconfigurationv1alpha1.ProjectGrantAccess{Teams: []string{"backend"}}
+		obj.Spec.IssueOwnership = &sentryconfigurationv1alpha1.IssueOwnershipSpec{
+			Rules: []sentryconfigurationv1alpha1.IssueOwnershipRule{{
+				Matcher: sentryconfigurationv1alpha1.IssueOwnershipMatcher{Type: sentryconfigurationv1alpha1.IssueOwnershipMatcherPath, Pattern: "src/*"},
+				Teams:   []string{"payments", "backend"},
+			}},
+			Fallthrough:        sentryconfigurationv1alpha1.IssueOwnershipFallthroughNoOne,
+			AutoAssignment:     sentryconfigurationv1alpha1.IssueOwnershipAutoAssignIssueOwner,
+			CodeownersAutoSync: true,
+		}
+		_, err := validator.ValidateCreate(context.Background(), obj)
+		Expect(err).NotTo(HaveOccurred())
+
+		obj.Spec.IssueOwnership.Rules[0].Teams = append(obj.Spec.IssueOwnership.Rules[0].Teams, "security")
+		_, err = validator.ValidateCreate(context.Background(), obj)
+		Expect(err).To(MatchError(ContainSubstring("must be the primary project team or appear in grantAccess")))
+	})
+
+	It("validates code-mapping aliases and CODEOWNERS import branch selection", func() {
+		obj := managedProject("checkout")
+		mappings := map[string]sentryconfigurationv1alpha1.CodeMappingSpec{"checkout": {Integration: "github", Repository: "checkout", ImportCodeowners: true}}
+		obj.Spec.CodeMappings = &mappings
+		_, err := validator.ValidateCreate(context.Background(), obj)
+		Expect(err).To(MatchError(ContainSubstring("required when importCodeowners is true")))
+		entry := mappings["checkout"]
+		entry.DefaultBranch = "main"
+		mappings["checkout"] = entry
+		_, err = validator.ValidateCreate(context.Background(), obj)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("validates managed client-key selection and monotonic rotation", func() {
+		obj := managedProject("checkout")
+		keys := map[string]sentryconfigurationv1alpha1.ManagedClientKeySpec{
+			"ingest": {Active: true, RotationRevision: 2, RateLimit: &sentryconfigurationv1alpha1.ClientKeyRateLimit{Count: 1000, WindowSeconds: 60}},
+		}
+		obj.Spec.ClientKeys = &keys
+		obj.Spec.DSN = &sentryconfigurationv1alpha1.DSNSpec{ManagedClientKey: "ingest"}
+		_, err := validator.ValidateCreate(context.Background(), obj)
+		Expect(err).NotTo(HaveOccurred())
+
+		missing := obj.DeepCopy()
+		missing.Spec.DSN.ManagedClientKey = "missing"
+		_, err = validator.ValidateCreate(context.Background(), missing)
+		Expect(err).To(MatchError(ContainSubstring("Not found")))
+
+		rollback := obj.DeepCopy()
+		rollbackKeys := *rollback.Spec.ClientKeys
+		entry := rollbackKeys["ingest"]
+		entry.RotationRevision = 1
+		rollbackKeys["ingest"] = entry
+		rollback.Spec.ClientKeys = &rollbackKeys
+		_, err = validator.ValidateUpdate(context.Background(), obj, rollback)
+		Expect(err).To(MatchError(ContainSubstring("rotationRevision cannot decrease")))
+	})
+
+	It("blocks client-key changes during a pending rotation cutover", func() {
+		obj := managedProject("checkout")
+		keys := map[string]sentryconfigurationv1alpha1.ManagedClientKeySpec{"ingest": {Active: true, RotationRevision: 2}}
+		obj.Spec.ClientKeys = &keys
+		obj.Status.ClientKeys = map[string]sentryconfigurationv1alpha1.ClientKeyStatus{
+			"ingest": {State: "RotationPending", Reason: "ClientKeyCutoverPending", RotationRevision: 2},
+		}
+		changed := obj.DeepCopy()
+		changedKeys := *changed.Spec.ClientKeys
+		entry := changedKeys["ingest"]
+		entry.Active = false
+		changedKeys["ingest"] = entry
+		changed.Spec.ClientKeys = &changedKeys
+		_, err := validator.ValidateUpdate(context.Background(), obj, changed)
+		Expect(err).To(MatchError(ContainSubstring("rotation cutover is pending")))
+	})
+
+	It("validates custom symbol-source variants and namespace-local Secret references", func() {
+		obj := managedProject("checkout")
+		sources := map[string]sentryconfigurationv1alpha1.CustomSymbolSourceSpec{
+			"native": {
+				Layout: sentryconfigurationv1alpha1.SymbolSourceLayout{Type: "native", Casing: "default"},
+				HTTP: &sentryconfigurationv1alpha1.HTTPSymbolSource{
+					URL:               "https://symbols.example.invalid",
+					PasswordSecretRef: &sentryconfigurationv1alpha1.SecretKeyReference{Name: "symbol-creds", Key: "password"},
+				},
+			},
+		}
+		obj.Spec.SymbolSources = &sources
+		_, err := validator.ValidateCreate(context.Background(), obj)
+		Expect(err).NotTo(HaveOccurred())
+
+		invalid := obj.DeepCopy()
+		entry := (*invalid.Spec.SymbolSources)["native"]
+		entry.S3 = &sentryconfigurationv1alpha1.S3SymbolSource{}
+		(*invalid.Spec.SymbolSources)["native"] = entry
+		_, err = validator.ValidateCreate(context.Background(), invalid)
+		Expect(err).To(MatchError(ContainSubstring("exactly one of http, s3 or gcs")))
+
+		invalid = obj.DeepCopy()
+		entry = (*invalid.Spec.SymbolSources)["native"]
+		entry.HTTP.PasswordSecretRef.Key = ""
+		(*invalid.Spec.SymbolSources)["native"] = entry
+		_, err = validator.ValidateCreate(context.Background(), invalid)
+		Expect(err).To(MatchError(ContainSubstring("key is required")))
+	})
+
 	It("rejects ambiguous names within one provider", func() {
 		obj := managedProject("checkout")
 		obj.Spec.NotificationTargets = &sentryconfigurationv1alpha1.NotificationTargets{Slack: map[string][]string{
@@ -105,6 +210,7 @@ var _ = Describe("SentryProject Webhook", func() {
 		alerts := map[string]sentryconfigurationv1alpha1.AlertSpec{
 			"new-errors": {Trigger: sentryconfigurationv1alpha1.AlertTriggerFirstSeen, Enabled: &enabled, Notify: []string{"slack/incidents"}},
 			"volume":     {Trigger: sentryconfigurationv1alpha1.AlertTriggerEventCount, WindowMinutes: &window, Threshold: &threshold, Enabled: &enabled, Notify: []string{"slack/incidents"}},
+			"users":      {Trigger: sentryconfigurationv1alpha1.AlertTriggerUserCount, WindowMinutes: &window, Threshold: &threshold, Enabled: &enabled, Notify: []string{"slack/incidents"}},
 		}
 		obj.Spec.Alerts = &alerts
 		_, err := validator.ValidateCreate(context.Background(), obj)
@@ -128,7 +234,7 @@ var _ = Describe("SentryProject Webhook", func() {
 		}
 		obj.Spec.Alerts = &alerts
 		_, err := validator.ValidateCreate(context.Background(), obj)
-		Expect(err).To(MatchError(ContainSubstring("event-count requires")))
+		Expect(err).To(MatchError(ContainSubstring("metric triggers require")))
 	})
 
 	It("rejects identity changes", func() {

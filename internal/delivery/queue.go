@@ -34,6 +34,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/audit"
 )
 
 const (
@@ -70,11 +72,12 @@ const (
 )
 
 var (
-	ErrInvalid      = errors.New("delivery record is invalid")
-	ErrConflict     = errors.New("dedupe key is already bound to another message")
-	ErrBackpressure = errors.New("delivery queue capacity is exhausted")
-	ErrNoClaim      = errors.New("delivery record is not claimable")
-	ErrClaimLost    = errors.New("delivery claim is no longer current")
+	ErrInvalid          = errors.New("delivery record is invalid")
+	ErrConflict         = errors.New("dedupe key is already bound to another message")
+	ErrBackpressure     = errors.New("delivery queue capacity is exhausted")
+	ErrNoClaim          = errors.New("delivery record is not claimable")
+	ErrClaimLost        = errors.New("delivery claim is no longer current")
+	ErrAuditUnavailable = errors.New("delivery queue retention audit is unavailable")
 )
 
 type Message struct {
@@ -113,6 +116,7 @@ type Queue struct {
 	DedupeRetention time.Duration
 	DLQRetention    time.Duration
 	Now             func() time.Time
+	Audit           audit.Sink
 }
 
 // Statistics is an identity- and payload-free queue snapshot suitable for
@@ -391,13 +395,32 @@ func (q *Queue) Sweep(ctx context.Context, limit int) (int, error) {
 		if admission.ExpiresAt.After(now) {
 			continue
 		}
+		if err := q.recordRetentionAudit(ctx, admission, audit.OutcomeStarted, audit.ReasonRetentionExpired); err != nil {
+			return removed, err
+		}
 		if err := q.deleteAdmissionExact(ctx, admission); err != nil {
-			if apierrors.IsConflict(err) || apierrors.IsNotFound(err) {
+			if apierrors.IsNotFound(err) {
+				if auditErr := q.recordRetentionAudit(ctx, admission, audit.OutcomeRecovered, audit.ReasonResultRecovered); auditErr != nil {
+					return removed, auditErr
+				}
+				continue
+			}
+			failureReason := audit.ReasonApply
+			if apierrors.IsConflict(err) {
+				failureReason = audit.ReasonVerification
+			}
+			if auditErr := q.recordRetentionAudit(ctx, admission, audit.OutcomeFailed, failureReason); auditErr != nil {
+				return removed, auditErr
+			}
+			if apierrors.IsConflict(err) {
 				continue
 			}
 			return removed, err
 		}
 		removed++
+		if err := q.recordRetentionAudit(ctx, admission, audit.OutcomeSucceeded, audit.ReasonMutationVerified); err != nil {
+			return removed, err
+		}
 	}
 	records, err := q.list(ctx)
 	if err != nil {
@@ -411,15 +434,49 @@ func (q *Queue) Sweep(ctx context.Context, limit int) (int, error) {
 		if !expiredTerminal {
 			continue
 		}
+		if err := q.recordRetentionAudit(ctx, record, audit.OutcomeStarted, audit.ReasonRetentionExpired); err != nil {
+			return removed, err
+		}
 		if err := q.deleteExact(ctx, record); err != nil {
-			if apierrors.IsConflict(err) || apierrors.IsNotFound(err) {
+			if apierrors.IsNotFound(err) {
+				if auditErr := q.recordRetentionAudit(ctx, record, audit.OutcomeRecovered, audit.ReasonResultRecovered); auditErr != nil {
+					return removed, auditErr
+				}
+				continue
+			}
+			failureReason := audit.ReasonApply
+			if apierrors.IsConflict(err) {
+				failureReason = audit.ReasonVerification
+			}
+			if auditErr := q.recordRetentionAudit(ctx, record, audit.OutcomeFailed, failureReason); auditErr != nil {
+				return removed, auditErr
+			}
+			if apierrors.IsConflict(err) {
 				continue
 			}
 			return removed, err
 		}
 		removed++
+		if err := q.recordRetentionAudit(ctx, record, audit.OutcomeSucceeded, audit.ReasonMutationVerified); err != nil {
+			return removed, err
+		}
 	}
 	return removed, nil
+}
+
+func (q *Queue) recordRetentionAudit(ctx context.Context, record Record, outcome audit.Outcome, reason audit.Reason) error {
+	if q.Audit == nil {
+		return ErrAuditUnavailable
+	}
+	event := audit.Event{
+		Timestamp: q.now(), Component: audit.ComponentDelivery, Action: audit.ActionDelete,
+		Outcome: outcome, Reason: reason, LocalResource: "delivery/queue-retention",
+		Revision: record.Revision,
+	}
+	if err := q.Audit.Record(ctx, event); err != nil {
+		return ErrAuditUnavailable
+	}
+	return nil
 }
 
 func (q *Queue) currentClaim(ctx context.Context, claimed Record) (Record, error) {

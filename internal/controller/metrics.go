@@ -33,7 +33,10 @@ const (
 	metricsUnknown        = "unknown"
 	syncProject           = "project"
 	syncDSN               = "dsn"
+	syncClientKeys        = "clientkeys"
+	syncSymbolSources     = "symbolsources"
 	syncSettings          = "settings"
+	syncIssueOwnership    = "issueownership"
 	syncDestinations      = "destinations"
 	syncAlerts            = "alerts"
 	syncReady             = "ready"
@@ -41,7 +44,7 @@ const (
 	syncInactive          = "inactive"
 )
 
-var syncMechanisms = []string{syncProject, syncDSN, syncSettings, syncDestinations, syncAlerts}
+var syncMechanisms = []string{syncProject, syncDSN, syncClientKeys, syncSymbolSources, syncSettings, syncIssueOwnership, syncDestinations, syncAlerts}
 
 var ErrMetrics = errors.New("controller metrics initialization failed")
 
@@ -174,7 +177,7 @@ func safeController(value string) string {
 
 func safeCondition(value string) string {
 	switch value {
-	case "CredentialsReady", "OwnershipReady", "AlertPolicyReady", "DSNReady", "SettingsReady", "GrantAccessReady", "NotificationTargetsReady", "AlertsReady", "ProjectReady", "Ready", "RolloutComplete":
+	case "CredentialsReady", "OwnershipReady", "AlertPolicyReady", "DSNReady", "ClientKeysReady", "SymbolSourcesReady", "SettingsReady", "IssueOwnershipReady", "GrantAccessReady", "NotificationTargetsReady", "AlertsReady", "ProjectReady", "Ready", "RolloutComplete":
 		return value
 	default:
 		return metricsUnknown
@@ -187,8 +190,14 @@ func syncMechanismForCondition(condition string) string {
 		return syncProject
 	case "DSNReady":
 		return syncDSN
+	case "ClientKeysReady":
+		return syncClientKeys
+	case "SymbolSourcesReady":
+		return syncSymbolSources
 	case "SettingsReady":
 		return syncSettings
+	case "IssueOwnershipReady":
+		return syncIssueOwnership
 	case "NotificationTargetsReady":
 		return syncDestinations
 	case "AlertsReady":

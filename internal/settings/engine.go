@@ -19,10 +19,15 @@ package settings
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	sentryv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
 )
@@ -35,34 +40,82 @@ var (
 type Authorization func(context.Context) error
 
 type Filter struct {
-	ID     string `json:"id"`
-	Active bool   `json:"active"`
+	ID                string
+	Active            bool
+	Subfilters        []string
+	SubfiltersPresent bool
+}
+
+func (f *Filter) UnmarshalJSON(payload []byte) error {
+	var wire struct {
+		ID     string          `json:"id"`
+		Active json.RawMessage `json:"active"`
+	}
+	if json.Unmarshal(payload, &wire) != nil || wire.ID == "" || len(wire.Active) == 0 {
+		return ErrUnsupportedFilter
+	}
+	var active *bool
+	if err := json.Unmarshal(wire.Active, &active); err == nil && active != nil {
+		*f = Filter{ID: wire.ID, Active: *active}
+		return nil
+	}
+	var subfilters []string
+	if err := json.Unmarshal(wire.Active, &subfilters); err != nil || subfilters == nil {
+		return ErrUnsupportedFilter
+	}
+	*f = Filter{ID: wire.ID, Subfilters: subfilters, SubfiltersPresent: true}
+	return nil
+}
+
+type FilterPatch struct {
+	Active     *bool     `json:"active,omitempty"`
+	Subfilters *[]string `json:"subfilters,omitempty"`
 }
 
 type ProjectState struct {
-	ScrubData        *bool
-	ScrubDefaults    *bool
-	ScrubIPAddresses *bool
-	SensitiveFields  *[]string
-	SafeFields       *[]string
-	ETag             string
+	ScrubData            *bool
+	ScrubDefaults        *bool
+	ScrubIPAddresses     *bool
+	SensitiveFields      *[]string
+	SafeFields           *[]string
+	ResolveAge           *int64
+	DefaultEnvironment   *string
+	StoreCrashReports    *int32
+	ScrapeJavaScript     *bool
+	AllowedDomains       *[]string
+	RelayPIIConfig       *string
+	GroupingEnhancements *string
+	FingerprintingRules  *string
+	BuiltinSymbolSources *[]string
+	ETag                 string
 }
 
 type ProjectPatch struct {
-	ScrubData        *bool     `json:"dataScrubber,omitempty"`
-	ScrubDefaults    *bool     `json:"dataScrubberDefaults,omitempty"`
-	ScrubIPAddresses *bool     `json:"scrubIPAddresses,omitempty"`
-	SensitiveFields  *[]string `json:"sensitiveFields,omitempty"`
-	SafeFields       *[]string `json:"safeFields,omitempty"`
+	ScrubData            *bool     `json:"dataScrubber,omitempty"`
+	ScrubDefaults        *bool     `json:"dataScrubberDefaults,omitempty"`
+	ScrubIPAddresses     *bool     `json:"scrubIPAddresses,omitempty"`
+	SensitiveFields      *[]string `json:"sensitiveFields,omitempty"`
+	SafeFields           *[]string `json:"safeFields,omitempty"`
+	ResolveAge           *int64    `json:"resolveAge,omitempty"`
+	DefaultEnvironment   *string   `json:"defaultEnvironment,omitempty"`
+	StoreCrashReports    *int32    `json:"storeCrashReports,omitempty"`
+	ScrapeJavaScript     *bool     `json:"scrapeJavaScript,omitempty"`
+	AllowedDomains       *[]string `json:"allowedDomains,omitempty"`
+	RelayPIIConfig       *string   `json:"relayPiiConfig,omitempty"`
+	GroupingEnhancements *string   `json:"groupingEnhancements,omitempty"`
+	FingerprintingRules  *string   `json:"fingerprintingRules,omitempty"`
+	BuiltinSymbolSources *[]string `json:"builtinSymbolSources,omitempty"`
 }
 
 func (p ProjectPatch) Empty() bool {
-	return p.ScrubData == nil && p.ScrubDefaults == nil && p.ScrubIPAddresses == nil && p.SensitiveFields == nil && p.SafeFields == nil
+	return p.ScrubData == nil && p.ScrubDefaults == nil && p.ScrubIPAddresses == nil && p.SensitiveFields == nil && p.SafeFields == nil &&
+		p.ResolveAge == nil && p.DefaultEnvironment == nil && p.StoreCrashReports == nil && p.ScrapeJavaScript == nil && p.AllowedDomains == nil &&
+		p.RelayPIIConfig == nil && p.GroupingEnhancements == nil && p.FingerprintingRules == nil && p.BuiltinSymbolSources == nil
 }
 
 type Adapter interface {
 	ListFilters(context.Context, string, string) ([]Filter, error)
-	UpdateFilter(context.Context, string, string, string, bool) error
+	UpdateFilter(context.Context, string, string, string, FilterPatch) error
 	GetProjectState(context.Context, string, string) (ProjectState, error)
 	UpdateProjectState(context.Context, string, string, ProjectPatch, string) error
 }
@@ -81,12 +134,15 @@ type Component struct {
 }
 
 type Result struct {
-	Filters Component
-	PII     Component
+	Filters       Component
+	PII           Component
+	Behavior      Component
+	Grouping      Component
+	Symbolication Component
 }
 
 func (r Result) Err() error {
-	return errors.Join(r.Filters.Err, r.PII.Err)
+	return errors.Join(r.Filters.Err, r.PII.Err, r.Behavior.Err, r.Grouping.Err, r.Symbolication.Err)
 }
 
 type Engine struct {
@@ -109,6 +165,15 @@ func (e *Engine) Reconcile(ctx context.Context, input Input) Result {
 		if input.Desired.PII != nil {
 			result.PII = Component{Managed: true, Err: err}
 		}
+		if input.Desired.Behavior != nil {
+			result.Behavior = Component{Managed: true, Err: err}
+		}
+		if input.Desired.Grouping != nil {
+			result.Grouping = Component{Managed: true, Err: err}
+		}
+		if input.Desired.Symbolication != nil {
+			result.Symbolication = Component{Managed: true, Err: err}
+		}
 		return result
 	}
 	if input.Desired.Filters != nil {
@@ -119,7 +184,65 @@ func (e *Engine) Reconcile(ctx context.Context, input Input) Result {
 		result.PII.Managed = true
 		result.PII.Changed, result.PII.Err = e.reconcilePII(ctx, input, input.Desired.PII)
 	}
+	if input.Desired.Behavior != nil {
+		result.Behavior.Managed = true
+		result.Behavior.Changed, result.Behavior.Err = e.reconcileBehavior(ctx, input, input.Desired.Behavior)
+	}
+	if input.Desired.Grouping != nil {
+		result.Grouping.Managed = true
+		result.Grouping.Changed, result.Grouping.Err = e.reconcileGrouping(ctx, input, input.Desired.Grouping)
+	}
+	if input.Desired.Symbolication != nil {
+		result.Symbolication.Managed = true
+		result.Symbolication.Changed, result.Symbolication.Err = e.reconcileSymbolication(ctx, input, input.Desired.Symbolication)
+	}
 	return result
+}
+
+func (e *Engine) reconcileBehavior(ctx context.Context, input Input, desired *sentryv1alpha1.BehaviorSettings) (int, error) {
+	if desired.AutoResolveHours == nil && desired.DefaultEnvironment == nil && desired.CrashReportLimit == nil && desired.ScrapeJavaScript == nil && desired.AllowedDomains == nil {
+		return 0, nil
+	}
+	current, err := e.Adapter.GetProjectState(ctx, input.Organization, input.ProjectSlug)
+	if err != nil {
+		return 0, err
+	}
+	patch := ProjectPatch{}
+	changed := 0
+	if desired.AutoResolveHours != nil && !equalInt64(current.ResolveAge, desired.AutoResolveHours) {
+		patch.ResolveAge = desired.AutoResolveHours
+		changed++
+	}
+	if desired.DefaultEnvironment != nil && !equalDefaultEnvironment(current.DefaultEnvironment, desired.DefaultEnvironment) {
+		patch.DefaultEnvironment = desired.DefaultEnvironment
+		changed++
+	}
+	if desired.CrashReportLimit != nil && !equalInt32(current.StoreCrashReports, desired.CrashReportLimit) {
+		patch.StoreCrashReports = desired.CrashReportLimit
+		changed++
+	}
+	if desired.ScrapeJavaScript != nil && !equalBool(current.ScrapeJavaScript, desired.ScrapeJavaScript) {
+		patch.ScrapeJavaScript = desired.ScrapeJavaScript
+		changed++
+	}
+	if desired.AllowedDomains != nil {
+		wanted := append([]string(nil), (*desired.AllowedDomains)...)
+		sort.Strings(wanted)
+		if current.AllowedDomains == nil || !equalStringSets(*current.AllowedDomains, wanted) {
+			patch.AllowedDomains = &wanted
+			changed++
+		}
+	}
+	if patch.Empty() {
+		return 0, nil
+	}
+	if err := input.Authorize(ctx); err != nil {
+		return 0, err
+	}
+	if err := e.Adapter.UpdateProjectState(ctx, input.Organization, input.ProjectSlug, patch, current.ETag); err != nil {
+		return 0, err
+	}
+	return changed, nil
 }
 
 func (e *Engine) reconcileFilters(ctx context.Context, input Input, desired *sentryv1alpha1.FilterSettings) (int, error) {
@@ -144,6 +267,7 @@ func (e *Engine) reconcileFilters(ctx context.Context, input Input, desired *sen
 		{id: "browser-extensions", value: desired.BrowserExtensions},
 		{id: "localhost", value: desired.Localhost},
 		{id: "web-crawlers", value: desired.WebCrawlers},
+		{id: "filtered-transaction", value: desired.FilteredTransactions},
 	}
 	changed := 0
 	for _, item := range wanted {
@@ -160,12 +284,84 @@ func (e *Engine) reconcileFilters(ctx context.Context, input Input, desired *sen
 		if err := input.Authorize(ctx); err != nil {
 			return changed, err
 		}
-		if err := e.Adapter.UpdateFilter(ctx, input.Organization, input.ProjectSlug, item.id, *item.value); err != nil {
+		value := *item.value
+		if err := e.Adapter.UpdateFilter(ctx, input.Organization, input.ProjectSlug, item.id, FilterPatch{Active: &value}); err != nil {
 			return changed, err
 		}
 		changed++
 	}
+	if desired.LegacyBrowsers != nil {
+		observed, found := findFilter(filters, "legacy-browsers")
+		if !found {
+			return changed, fmt.Errorf("%w: legacy-browsers", ErrUnsupportedFilter)
+		}
+		desiredSubfilters := canonicalLegacyBrowserFilters(*desired.LegacyBrowsers)
+		if !legacyBrowserStateEqual(observed, desiredSubfilters) {
+			if err := input.Authorize(ctx); err != nil {
+				return changed, err
+			}
+			if err := e.Adapter.UpdateFilter(ctx, input.Organization, input.ProjectSlug, "legacy-browsers", FilterPatch{Subfilters: &desiredSubfilters}); err != nil {
+				return changed, err
+			}
+			changed++
+		}
+	}
 	return changed, nil
+}
+
+func findFilter(filters []Filter, id string) (Filter, bool) {
+	for _, filter := range filters {
+		if filter.ID == id {
+			return filter, true
+		}
+	}
+	return Filter{}, false
+}
+
+func canonicalLegacyBrowserFilters(values []sentryv1alpha1.LegacyBrowserFilter) []string {
+	order := []sentryv1alpha1.LegacyBrowserFilter{
+		sentryv1alpha1.LegacyBrowserIE, sentryv1alpha1.LegacyBrowserEdge,
+		sentryv1alpha1.LegacyBrowserSafari, sentryv1alpha1.LegacyBrowserFirefox,
+		sentryv1alpha1.LegacyBrowserChrome, sentryv1alpha1.LegacyBrowserOpera,
+		sentryv1alpha1.LegacyBrowserAndroid, sentryv1alpha1.LegacyBrowserOperaMini,
+	}
+	wanted := make(map[sentryv1alpha1.LegacyBrowserFilter]bool, len(values))
+	for _, value := range values {
+		wanted[value] = true
+	}
+	result := make([]string, 0, len(wanted))
+	for _, value := range order {
+		if wanted[value] {
+			result = append(result, string(value))
+		}
+	}
+	return result
+}
+
+func legacyBrowserStateEqual(current Filter, desired []string) bool {
+	if current.SubfiltersPresent {
+		return equalStringSets(current.Subfilters, desired)
+	}
+	return !current.Active && len(desired) == 0
+}
+
+func equalStringSets(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	values := make(map[string]bool, len(left))
+	for _, value := range left {
+		if values[value] {
+			return false
+		}
+		values[value] = true
+	}
+	for _, value := range right {
+		if !values[value] {
+			return false
+		}
+	}
+	return true
 }
 
 func (e *Engine) reconcilePII(ctx context.Context, input Input, desired *sentryv1alpha1.PIISettings) (int, error) {
@@ -195,6 +391,16 @@ func (e *Engine) reconcilePII(ctx context.Context, input Input, desired *sentryv
 		patch.SafeFields = desired.SafeFields
 		changed++
 	}
+	if desired.AdvancedRules != nil {
+		serialized, err := serializeAdvancedPIIRules(*desired.AdvancedRules)
+		if err != nil {
+			return 0, err
+		}
+		if !equalJSONString(current.RelayPIIConfig, serialized) {
+			patch.RelayPIIConfig = &serialized
+			changed++
+		}
+	}
 	if patch.Empty() {
 		return 0, nil
 	}
@@ -207,29 +413,256 @@ func (e *Engine) reconcilePII(ctx context.Context, input Input, desired *sentryv
 	return changed, nil
 }
 
-func validate(desired *sentryv1alpha1.ProjectSettings) error {
-	if desired.PII == nil {
-		return nil
+func (e *Engine) reconcileGrouping(ctx context.Context, input Input, desired *sentryv1alpha1.GroupingSettings) (int, error) {
+	if desired.Enhancements == nil && desired.Fingerprints == nil {
+		return 0, nil
 	}
-	for _, list := range []*[]string{desired.PII.SensitiveFields, desired.PII.SafeFields} {
-		if list == nil {
-			continue
+	current, err := e.Adapter.GetProjectState(ctx, input.Organization, input.ProjectSlug)
+	if err != nil {
+		return 0, err
+	}
+	patch := ProjectPatch{}
+	changed := 0
+	if desired.Enhancements != nil {
+		serialized, serializeErr := serializeGroupingEnhancements(*desired.Enhancements)
+		if serializeErr != nil {
+			return 0, serializeErr
 		}
-		seen := make(map[string]struct{}, len(*list))
-		for _, value := range *list {
-			if strings.TrimSpace(value) == "" || strings.ContainsAny(value, "\r\n\x00") {
+		if !equalString(current.GroupingEnhancements, &serialized) {
+			patch.GroupingEnhancements = &serialized
+			changed++
+		}
+	}
+	if desired.Fingerprints != nil {
+		serialized, serializeErr := serializeFingerprintRules(*desired.Fingerprints)
+		if serializeErr != nil {
+			return 0, serializeErr
+		}
+		if !equalString(current.FingerprintingRules, &serialized) {
+			patch.FingerprintingRules = &serialized
+			changed++
+		}
+	}
+	if patch.Empty() {
+		return 0, nil
+	}
+	if err := input.Authorize(ctx); err != nil {
+		return 0, err
+	}
+	if err := e.Adapter.UpdateProjectState(ctx, input.Organization, input.ProjectSlug, patch, current.ETag); err != nil {
+		return 0, err
+	}
+	return changed, nil
+}
+
+func (e *Engine) reconcileSymbolication(ctx context.Context, input Input, desired *sentryv1alpha1.SymbolicationSettings) (int, error) {
+	if desired.BuiltinSources == nil {
+		return 0, nil
+	}
+	current, err := e.Adapter.GetProjectState(ctx, input.Organization, input.ProjectSlug)
+	if err != nil {
+		return 0, err
+	}
+	wanted := canonicalBuiltinSymbolSources(*desired.BuiltinSources)
+	if current.BuiltinSymbolSources != nil && equalStringSets(*current.BuiltinSymbolSources, wanted) {
+		return 0, nil
+	}
+	if err := input.Authorize(ctx); err != nil {
+		return 0, err
+	}
+	if err := e.Adapter.UpdateProjectState(ctx, input.Organization, input.ProjectSlug, ProjectPatch{BuiltinSymbolSources: &wanted}, current.ETag); err != nil {
+		return 0, err
+	}
+	return 1, nil
+}
+
+func validate(desired *sentryv1alpha1.ProjectSettings) error {
+	if desired.Behavior != nil {
+		behavior := desired.Behavior
+		if behavior.AutoResolveHours != nil && (*behavior.AutoResolveHours < 0 || *behavior.AutoResolveHours > 2147483647) {
+			return ErrInvalidDesiredState
+		}
+		if behavior.DefaultEnvironment != nil && (utf8.RuneCountInString(*behavior.DefaultEnvironment) > 64 || strings.ContainsAny(*behavior.DefaultEnvironment, "\r\n\f/")) {
+			return ErrInvalidDesiredState
+		}
+		if behavior.CrashReportLimit != nil && (*behavior.CrashReportLimit < -1 || *behavior.CrashReportLimit > 100) {
+			return ErrInvalidDesiredState
+		}
+		if behavior.AllowedDomains != nil && !validAllowedDomains(*behavior.AllowedDomains) {
+			return ErrInvalidDesiredState
+		}
+	}
+	if desired.Filters != nil && desired.Filters.LegacyBrowsers != nil {
+		allowed := map[sentryv1alpha1.LegacyBrowserFilter]bool{
+			sentryv1alpha1.LegacyBrowserIE: true, sentryv1alpha1.LegacyBrowserEdge: true,
+			sentryv1alpha1.LegacyBrowserSafari: true, sentryv1alpha1.LegacyBrowserFirefox: true,
+			sentryv1alpha1.LegacyBrowserChrome: true, sentryv1alpha1.LegacyBrowserOpera: true,
+			sentryv1alpha1.LegacyBrowserAndroid: true, sentryv1alpha1.LegacyBrowserOperaMini: true,
+		}
+		seen := make(map[sentryv1alpha1.LegacyBrowserFilter]bool, len(*desired.Filters.LegacyBrowsers))
+		for _, value := range *desired.Filters.LegacyBrowsers {
+			if !allowed[value] || seen[value] {
 				return ErrInvalidDesiredState
 			}
-			if _, duplicate := seen[value]; duplicate {
+			seen[value] = true
+		}
+	}
+	if desired.PII != nil {
+		for _, list := range []*[]string{desired.PII.SensitiveFields, desired.PII.SafeFields} {
+			if list == nil {
+				continue
+			}
+			seen := make(map[string]struct{}, len(*list))
+			for _, value := range *list {
+				if strings.TrimSpace(value) == "" || strings.ContainsAny(value, "\r\n\x00") {
+					return ErrInvalidDesiredState
+				}
+				if _, duplicate := seen[value]; duplicate {
+					return ErrInvalidDesiredState
+				}
+				seen[value] = struct{}{}
+			}
+		}
+		if desired.PII.AdvancedRules != nil {
+			if _, err := serializeAdvancedPIIRules(*desired.PII.AdvancedRules); err != nil {
 				return ErrInvalidDesiredState
 			}
-			seen[value] = struct{}{}
 		}
+	}
+	if desired.Grouping != nil {
+		if desired.Grouping.Enhancements != nil {
+			if _, err := serializeGroupingEnhancements(*desired.Grouping.Enhancements); err != nil {
+				return ErrInvalidDesiredState
+			}
+		}
+		if desired.Grouping.Fingerprints != nil {
+			if _, err := serializeFingerprintRules(*desired.Grouping.Fingerprints); err != nil {
+				return ErrInvalidDesiredState
+			}
+		}
+	}
+	if desired.Symbolication != nil && desired.Symbolication.BuiltinSources != nil && !validBuiltinSymbolSources(*desired.Symbolication.BuiltinSources) {
+		return ErrInvalidDesiredState
 	}
 	return nil
 }
 
+func validAllowedDomains(values []string) bool {
+	if len(values) == 0 || len(values) > 100 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value == "*" {
+			if len(values) != 1 {
+				return false
+			}
+			continue
+		}
+		if len(value) == 0 || len(value) > 253 || strings.ContainsAny(value, "\r\n\t ?#@") {
+			return false
+		}
+		candidate := value
+		if !strings.Contains(candidate, "://") {
+			candidate = "https://" + candidate
+		}
+		parsed, err := url.Parse(candidate)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return false
+		}
+		hostname := strings.TrimPrefix(parsed.Hostname(), "*.")
+		if hostname == "" || !validDNSHostname(hostname) {
+			return false
+		}
+		if port := parsed.Port(); port != "" {
+			number, err := strconv.Atoi(port)
+			if err != nil || number < 1 || number > 65535 {
+				return false
+			}
+		}
+		if _, duplicate := seen[value]; duplicate {
+			return false
+		}
+		seen[value] = struct{}{}
+	}
+	return true
+}
+
+func validDNSHostname(value string) bool {
+	if len(value) > 253 || strings.HasPrefix(value, ".") || strings.HasSuffix(value, ".") {
+		return false
+	}
+	for _, label := range strings.Split(value, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, character := range label {
+			if character != '-' && (character < 'A' || character > 'Z') && (character < 'a' || character > 'z') && (character < '0' || character > '9') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func canonicalBuiltinSymbolSources(values []sentryv1alpha1.BuiltinSymbolSource) []string {
+	order := []sentryv1alpha1.BuiltinSymbolSource{
+		"amd", "autodesk", "chromium", "citrix", "electron", "intel", "microsoft", "mozilla", "nuget", "nvidia", "ubuntu", "unity",
+	}
+	wanted := make(map[sentryv1alpha1.BuiltinSymbolSource]bool, len(values))
+	for _, value := range values {
+		wanted[value] = true
+	}
+	result := make([]string, 0, len(values))
+	for _, value := range order {
+		if wanted[value] {
+			result = append(result, string(value))
+		}
+	}
+	return result
+}
+
+func validBuiltinSymbolSources(values []sentryv1alpha1.BuiltinSymbolSource) bool {
+	if len(values) > 12 {
+		return false
+	}
+	allowed := map[sentryv1alpha1.BuiltinSymbolSource]bool{
+		"amd": true, "autodesk": true, "chromium": true, "citrix": true, "electron": true, "intel": true,
+		"microsoft": true, "mozilla": true, "nuget": true, "nvidia": true, "ubuntu": true, "unity": true,
+	}
+	seen := make(map[sentryv1alpha1.BuiltinSymbolSource]bool, len(values))
+	for _, value := range values {
+		if !allowed[value] || seen[value] {
+			return false
+		}
+		seen[value] = true
+	}
+	return true
+}
+
 func equalBool(current, desired *bool) bool {
+	return current != nil && desired != nil && *current == *desired
+}
+
+func equalInt64(current, desired *int64) bool {
+	return current != nil && desired != nil && *current == *desired
+}
+
+func equalInt32(current, desired *int32) bool {
+	return current != nil && desired != nil && *current == *desired
+}
+
+func equalDefaultEnvironment(current, desired *string) bool {
+	if desired == nil {
+		return current == nil
+	}
+	if *desired == "" {
+		return current == nil || *current == ""
+	}
+	return current != nil && *current == *desired
+}
+
+func equalString(current, desired *string) bool {
 	return current != nil && desired != nil && *current == *desired
 }
 

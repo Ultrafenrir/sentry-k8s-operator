@@ -114,6 +114,18 @@ func TestProjectsAcceptAccessUpdateAction(t *testing.T) {
 	}
 }
 
+func TestDeliveryAcceptsRetentionDelete(t *testing.T) {
+	t.Parallel()
+	event := Event{
+		Timestamp: time.Now(), Component: ComponentDelivery, Action: ActionDelete,
+		Outcome: OutcomeStarted, Reason: ReasonRetentionExpired,
+		LocalResource: "delivery/queue-retention", Revision: 3,
+	}
+	if err := Validate(event); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDestinationsAcceptOnlyCleanupDelete(t *testing.T) {
 	t.Parallel()
 	event := Event{

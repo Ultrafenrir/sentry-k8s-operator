@@ -63,8 +63,10 @@ investigation; do not infer that a missing response means a missing external obj
 ## Ownership and interrupted mutations
 
 - `ProjectAlreadyExists`: the requested managed slug existed before this create intent and
-  is not adopted. Choose a different readable slug or use an explicitly granted read-only
-  `project.use` resource.
+  the connection policy does not authorize adoption of that exact unmarked project. The
+  default is `Reject`; choose a different readable slug or use an explicitly granted
+  read-only `project.use` resource. `Adopt` is a platform policy for an explicitly Active
+  owned connection, not a per-project force-takeover switch.
 - `OwnershipConflict`: another SentryProject manager claim owns this project. Do not delete
   protected state or create a second writer.
 - `RevisionUnverified`: the requested Active connection revision has not been verified
@@ -72,6 +74,10 @@ investigation; do not infer that a missing response means a missing external obj
   Standby and blocks Sentry mutations; do not patch status to bypass the fence.
 - `ConnectionStandby`: the selected connection is explicitly Standby. Increase the revision
   only as part of the authorized regional promotion workflow.
+- `EffectiveRole=Standby`: the project requested a non-owning candidate role. A matching
+  existing project is observed without a manager claim. Unmarked projects additionally require
+  `projectManagement.unmanagedProjects: Standby`; only a candidate backed by protected
+  managed-project evidence may contribute separately owned alerts.
 - `OwnershipLost`, `ExternalObjectReplaced`, or `ExternalDeleted`: pinned identity/marker
   evidence no longer matches. Stop mutations and capture an administrator report.
 - `ExternalNameChanged`: identity remains pinned but its readable name changed externally.

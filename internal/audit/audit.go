@@ -63,6 +63,7 @@ const (
 	ReasonDeliveryClaimed        Reason = "DeliveryClaimed"
 	ReasonDeliveryAccepted       Reason = "DeliveryAccepted"
 	ReasonDeliveryFailed         Reason = "DeliveryFailed"
+	ReasonRetentionExpired       Reason = "RetentionExpired"
 	ReasonRouteUnavailable       Reason = "RouteUnavailable"
 	ReasonRegistrationAuthorized Reason = "RegistrationAuthorized"
 	ReasonCleanupAuthorized      Reason = "CleanupAuthorized"
@@ -128,7 +129,7 @@ func validComponentAction(component Component, action Action) bool {
 	case ComponentAlerts:
 		return action == ActionEnsure || action == ActionUpdate || action == ActionToggle || action == ActionDelete
 	case ComponentDelivery:
-		return action == ActionDeliver
+		return action == ActionDeliver || action == ActionDelete
 	case ComponentDestinations:
 		return action == ActionDelete
 	case ComponentProjects:
@@ -165,7 +166,7 @@ func validOutcome(value Outcome) bool {
 func validReason(value Reason) bool {
 	switch value {
 	case ReasonJournalSubmitted, ReasonResumeRetry, ReasonResultRecovered, ReasonMutationVerified, ReasonAuthorization, ReasonApply, ReasonVerification,
-		ReasonDeliveryClaimed, ReasonDeliveryAccepted, ReasonDeliveryFailed, ReasonRouteUnavailable, ReasonRegistrationAuthorized, ReasonCleanupAuthorized:
+		ReasonDeliveryClaimed, ReasonDeliveryAccepted, ReasonDeliveryFailed, ReasonRetentionExpired, ReasonRouteUnavailable, ReasonRegistrationAuthorized, ReasonCleanupAuthorized:
 		return true
 	default:
 		return false

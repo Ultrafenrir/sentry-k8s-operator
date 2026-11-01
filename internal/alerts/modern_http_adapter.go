@@ -306,7 +306,8 @@ func (a *ModernHTTPAdapter) requirePair(ctx context.Context, organization, proje
 }
 
 func (a *ModernHTTPAdapter) validate(adapter, projectSlug, key string, desired Desired) error {
-	if a.Client == nil || adapter != ModernMetricIssueAdapter || desired.Trigger != TriggerEventCount || desired.WindowMinutes < 1 || desired.Threshold <= 0 || !dnsLabel(projectSlug) || !dnsLabel(key) {
+	_, metricTrigger := metricAggregate(desired.Trigger)
+	if a.Client == nil || adapter != ModernMetricIssueAdapter || !metricTrigger || desired.WindowMinutes < 1 || desired.WindowMinutes > 1440 || desired.Threshold <= 0 || !dnsLabel(projectSlug) || !dnsLabel(key) {
 		return ErrModernInvalidState
 	}
 	_, err := a.actions(desired.Notify)
@@ -317,7 +318,16 @@ func (a *ModernHTTPAdapter) actions(names []string) ([]modernActionFilter, error
 	actions := make([]modernAction, 0, len(names))
 	for _, name := range names {
 		destination, ok := a.Destinations[name]
-		if !ok || destination.State != "Active" || destination.IntegrationIdentity == "" || destination.ResourceIdentity == "" || destination.ResourceName == "" {
+		if !ok || destination.State != "Active" {
+			return nil, ErrModernDestinationUnsupported
+		}
+		if destination.Kind == "telegram" {
+			if destination.Telegram == nil || destination.Telegram.RouteKey == "" || destination.Telegram.Target == nil || destination.Telegram.RouteRevoked {
+				return nil, ErrModernDestinationUnsupported
+			}
+			continue
+		}
+		if destination.IntegrationIdentity == "" || destination.ResourceIdentity == "" || destination.ResourceName == "" {
 			return nil, ErrModernDestinationUnsupported
 		}
 		integrationID, err := strconv.ParseInt(destination.IntegrationIdentity, 10, 64)
@@ -333,7 +343,7 @@ func (a *ModernHTTPAdapter) actions(names []string) ([]modernActionFilter, error
 		})
 	}
 	if len(actions) == 0 {
-		return nil, ErrModernDestinationUnsupported
+		return []modernActionFilter{}, nil
 	}
 	return []modernActionFilter{{LogicType: "all", Conditions: []modernCondition{}, Actions: actions}}, nil
 }
@@ -350,9 +360,10 @@ func (a *ModernHTTPAdapter) workflowPayload(name string, desired Desired) (moder
 }
 
 func detectorPayload(name, workflowID string, desired Desired) modernDetectorPayload {
+	aggregate, _ := metricAggregate(desired.Trigger)
 	return modernDetectorPayload{
 		Name: name, Type: "metric_issue", Enabled: desired.Enabled,
-		DataSources: []modernDataSource{{QueryType: 0, Dataset: "events", Query: "", Aggregate: "count()", TimeWindow: desired.WindowMinutes * 60, Environment: nil, EventTypes: []string{"error"}}},
+		DataSources: []modernDataSource{{QueryType: 0, Dataset: "events", Query: "", Aggregate: aggregate, TimeWindow: desired.WindowMinutes * 60, Environment: nil, EventTypes: []string{"error"}}},
 		ConditionGroup: modernConditionGroup{LogicType: "any", Conditions: []modernCondition{
 			{Type: "gt", Comparison: desired.Threshold, ConditionResult: 75},
 			{Type: "lte", Comparison: 0, ConditionResult: 0},

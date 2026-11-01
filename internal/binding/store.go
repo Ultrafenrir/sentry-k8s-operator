@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -31,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/ownership"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
 )
 
@@ -245,6 +247,33 @@ func (s *Store) FindManaged(ctx context.Context, installation, organization, slu
 	return found, matches >= 1, nil
 }
 
+// FindRegionalManaged proves compact remote regional evidence from one exact protected
+// manager binding. A candidate binding cannot prove itself because only AccessManage
+// records participate in this lookup.
+func (s *Store) FindRegionalManaged(ctx context.Context, installation, organization, slug, externalIdentity string, observed ownership.Evidence) (BindingRecord, bool, error) {
+	secrets := &corev1.SecretList{}
+	if err := s.Client.List(ctx, secrets, client.InNamespace(s.Namespace), client.MatchingLabels{recordTypeLabel: recordBinding}); err != nil {
+		return BindingRecord{}, false, err
+	}
+	var found BindingRecord
+	matches := 0
+	for i := range secrets.Items {
+		var project ProjectBinding
+		if err := decodeSecret(&secrets.Items[i], recordBinding, &project); err != nil || validateBinding(project) != nil {
+			continue
+		}
+		if project.Origin != OriginManaged || project.AccessMode != AccessManage || project.Installation != installation || project.Organization != organization || project.Slug != slug || project.ExternalIdentity != externalIdentity || project.RegionalOwnership == nil {
+			continue
+		}
+		if ownership.ValidateEvidence(ownership.Local{Marker: *project.RegionalOwnership, Active: true}, observed) != nil {
+			continue
+		}
+		found = BindingRecord{Name: secrets.Items[i].Name, ResourceVersion: secrets.Items[i].ResourceVersion, Binding: project}
+		matches++
+	}
+	return found, matches >= 1, nil
+}
+
 // AcquireClaim uses Kubernetes Create as the global serialization point before external mutation.
 func (s *Store) AcquireClaim(ctx context.Context, claim ManagerClaim) (ClaimRecord, bool, error) {
 	if err := validateClaim(claim); err != nil {
@@ -396,6 +425,18 @@ func validateBinding(binding ProjectBinding) error {
 	if err := validateAlertBindings(binding); err != nil {
 		return err
 	}
+	if err := validateServiceHookBinding(binding); err != nil {
+		return err
+	}
+	if err := validateClientKeyBindings(binding); err != nil {
+		return err
+	}
+	if err := validateSymbolSourceBindings(binding); err != nil {
+		return err
+	}
+	if err := validateCodeMappingBindings(binding); err != nil {
+		return err
+	}
 	for key, target := range binding.Destinations {
 		if !ValidNotificationTargetKey(key) || !target.Owner.Valid() {
 			return ErrInvalidRecord
@@ -412,6 +453,136 @@ func validateBinding(binding ProjectBinding) error {
 	return nil
 }
 
+func validateCodeMappingBindings(project ProjectBinding) error {
+	if len(project.CodeMappings) == 0 {
+		return nil
+	}
+	if len(project.CodeMappings) > 50 || project.Origin != OriginManaged || project.AccessMode != AccessManage {
+		return ErrInvalidRecord
+	}
+	for key, value := range project.CodeMappings {
+		if len(key) > 32 || len(validation.IsDNS1123Label(key)) != 0 || value.ExternalIdentity == "" || value.IntegrationIdentity == "" || value.RepositoryIdentity == "" || len(validation.IsDNS1123Label(value.IntegrationAlias)) != 0 || len(validation.IsDNS1123Label(value.RepositoryAlias)) != 0 || strings.ContainsAny(value.ExternalIdentity+value.IntegrationIdentity+value.RepositoryIdentity, "\r\n\x00") {
+			return ErrInvalidRecord
+		}
+		if digest, err := hex.DecodeString(value.DesiredHash); err != nil || len(digest) != 32 {
+			return ErrInvalidRecord
+		}
+		if value.CodeownersIdentity != "" {
+			if strings.ContainsAny(value.CodeownersIdentity, "\r\n\x00") {
+				return ErrInvalidRecord
+			}
+			if digest, err := hex.DecodeString(value.CodeownersContentHash); err != nil || len(digest) != 32 {
+				return ErrInvalidRecord
+			}
+		} else if value.CodeownersContentHash != "" {
+			return ErrInvalidRecord
+		}
+	}
+	return nil
+}
+
+func validateSymbolSourceBindings(project ProjectBinding) error {
+	if len(project.SymbolSources) == 0 {
+		return nil
+	}
+	if len(project.SymbolSources) > 20 || project.Origin != OriginManaged || project.AccessMode != AccessManage {
+		return ErrInvalidRecord
+	}
+	for key, value := range project.SymbolSources {
+		if len(key) > 32 || len(validation.IsDNS1123Label(key)) != 0 || value.ExternalIdentity == "" || len(value.ExternalIdentity) > 128 || value.RemoteName == "" || len(value.RemoteName) > 128 || (value.Type != "http" && value.Type != "s3" && value.Type != "gcs") || strings.ContainsAny(value.ExternalIdentity+value.RemoteName, "\r\n\x00") {
+			return ErrInvalidRecord
+		}
+		if digest, err := hex.DecodeString(value.DesiredHash); err != nil || len(digest) != 32 {
+			return ErrInvalidRecord
+		}
+	}
+	return nil
+}
+
+func validateClientKeyBindings(project ProjectBinding) error {
+	if len(project.ClientKeys) == 0 {
+		return nil
+	}
+	if len(project.ClientKeys) > 20 || project.Origin != OriginManaged || project.AccessMode != AccessManage {
+		return ErrInvalidRecord
+	}
+	for key, value := range project.ClientKeys {
+		if len(key) > 32 || len(validation.IsDNS1123Label(key)) != 0 || value.ExternalIdentity == "" || len(value.ExternalIdentity) > 512 || value.RemoteName == "" || len(value.RemoteName) > 64 || value.RotationRevision < 1 || strings.ContainsAny(value.ExternalIdentity+value.RemoteName, "\r\n\x00") {
+			return ErrInvalidRecord
+		}
+		if digest, err := hex.DecodeString(value.DesiredHash); err != nil || len(digest) != 32 {
+			return ErrInvalidRecord
+		}
+		if value.RateLimit != nil && (value.RateLimit.Count < 1 || value.RateLimit.Count > 2147483647 || value.RateLimit.WindowSeconds < 1 || value.RateLimit.WindowSeconds > 86400) {
+			return ErrInvalidRecord
+		}
+		hasReplacement := value.ReplacementIdentity != "" || value.ReplacementRemoteName != "" || value.ReplacementRevision != 0 || value.ReplacementDesiredHash != ""
+		if !hasReplacement {
+			continue
+		}
+		if value.ReplacementIdentity == "" || len(value.ReplacementIdentity) > 512 || value.ReplacementRemoteName == "" || len(value.ReplacementRemoteName) > 64 || value.ReplacementRevision <= value.RotationRevision || strings.ContainsAny(value.ReplacementIdentity+value.ReplacementRemoteName, "\r\n\x00") {
+			return ErrInvalidRecord
+		}
+		if digest, err := hex.DecodeString(value.ReplacementDesiredHash); err != nil || len(digest) != 32 {
+			return ErrInvalidRecord
+		}
+	}
+	return nil
+}
+
+func validateServiceHookBinding(project ProjectBinding) error {
+	value := project.ServiceHook
+	if value == nil {
+		return nil
+	}
+	if project.Origin != OriginManaged || value.SourceBindingKey == "" || value.EndpointURL == "" || value.Revision < 1 {
+		return ErrInvalidRecord
+	}
+	if digest, err := hex.DecodeString(value.SourceBindingKey); err != nil || len(digest) != 32 {
+		return ErrInvalidRecord
+	}
+	parsed, err := url.Parse(value.EndpointURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Path != "/events/"+value.SourceBindingKey || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return ErrInvalidRecord
+	}
+	if value.ExternalIdentity == "" {
+		if value.SecretHash != "" || value.Pending == nil || value.Pending.Kind != "CreateServiceHook" || value.ReplacementIdentity != "" || value.TargetEndpointURL != "" || value.TargetRevision != 0 {
+			return ErrInvalidRecord
+		}
+		return nil
+	}
+	if len(value.ExternalIdentity) > 512 || strings.ContainsAny(value.ExternalIdentity, "\r\n\x00") {
+		return ErrInvalidRecord
+	}
+	if value.Pending == nil {
+		if value.ReplacementIdentity != "" || value.TargetEndpointURL != "" || value.TargetRevision != 0 {
+			return ErrInvalidRecord
+		}
+	} else {
+		switch value.Pending.Kind {
+		case "DeleteServiceHook":
+			if value.ReplacementIdentity != "" || value.TargetEndpointURL != "" || value.TargetRevision != 0 {
+				return ErrInvalidRecord
+			}
+		case "RotateServiceHook":
+			if value.TargetRevision <= value.Revision || value.TargetEndpointURL == "" || !validServiceHookBindingEndpoint(value.TargetEndpointURL, value.SourceBindingKey) || len(value.ReplacementIdentity) > 512 || strings.ContainsAny(value.ReplacementIdentity, "\r\n\x00") {
+				return ErrInvalidRecord
+			}
+		default:
+			return ErrInvalidRecord
+		}
+	}
+	if digest, err := hex.DecodeString(value.SecretHash); err != nil || len(digest) != 32 {
+		return ErrInvalidRecord
+	}
+	return nil
+}
+
+func validServiceHookBindingEndpoint(value, sourceBindingKey string) bool {
+	parsed, err := url.Parse(value)
+	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.Path == "/events/"+sourceBindingKey && parsed.RawPath == "" && parsed.RawQuery == "" && parsed.Fragment == ""
+}
+
 // ValidateProjectBinding validates decoded protected state without performing a Kubernetes
 // read or write. Backup and recovery tooling uses it to reject checksum-valid corruption.
 func ValidateProjectBinding(value ProjectBinding) error {
@@ -422,7 +593,7 @@ func validateAlertBindings(project ProjectBinding) error {
 	if len(project.Alerts) == 0 {
 		return nil
 	}
-	if len(project.Alerts) > 100 || project.Origin != OriginManaged || project.AccessMode != AccessManage || project.Marker == nil {
+	if len(project.Alerts) > 100 || project.Origin != OriginManaged || project.Marker == nil {
 		return ErrInvalidRecord
 	}
 	pinned := project.PinnedAdapters["alerts"]

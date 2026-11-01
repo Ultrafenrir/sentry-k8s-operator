@@ -73,9 +73,11 @@ verify-english: ## Reject Cyrillic text in repository documentation, comments, a
 
 ##@ Development
 
-.PHONY: verify-sentry-self-hosted verify-sentry-compose sentry-up sentry-bootstrap sentry-live-api sentry-live-config-api sentry-controller-live sentry-smoke sentry-status sentry-logs sentry-down sentry-reset sentry-clean sentry-matrix
+.PHONY: verify-sentry-self-hosted verify-sentry-compose sentry-up sentry-bootstrap sentry-live-api sentry-live-config-api sentry-controller-live sentry-api-report sentry-smoke sentry-status sentry-logs sentry-down sentry-reset sentry-clean sentry-matrix verify-kind-local-demo verify-sentry-api-report kind-local-demo kind-local-demo-status kind-local-demo-clean
 verify-sentry-self-hosted: ## Verify pinned versions and safe fresh-volume lifecycle without starting Sentry.
 	sh hack/verify-sentry-self-hosted.sh
+	sh hack/verify-kind-local-demo.sh
+	sh hack/verify-sentry-api-report.sh
 
 verify-sentry-compose: ## Fetch one official pinned Sentry tree and verify its isolated Compose render.
 	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PROFILE="$(SENTRY_PROFILE)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_WAIT_TIMEOUT="$(SENTRY_WAIT_TIMEOUT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" sh hack/manage-sentry-self-hosted.sh verify
@@ -92,8 +94,11 @@ sentry-live-api: ## Run destructive live API acceptance against the selected dis
 sentry-live-config-api: ## Verify Sentry configuration object lifecycles without event ingestion/delivery.
 	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" SENTRY_LIVE_CONFIG_ONLY=true sh hack/verify-sentry-live-api.sh
 
-sentry-controller-live: ## Verify controller recovery and settings drift repair against the disposable local stack.
+sentry-controller-live: ## Verify controller recovery and project-configuration drift repair against the disposable local stack.
 	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" sh hack/verify-sentry-controller-live.sh
+
+sentry-api-report: ## Print a read-only redacted inventory from the disposable local Sentry API.
+	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" sh hack/report-sentry-live-api.sh
 
 sentry-smoke: ## Check the selected local Sentry health endpoint.
 	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PROFILE="$(SENTRY_PROFILE)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_WAIT_TIMEOUT="$(SENTRY_WAIT_TIMEOUT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" sh hack/manage-sentry-self-hosted.sh smoke
@@ -115,6 +120,21 @@ sentry-clean: ## Remove the selected Sentry runtime, volumes and managed upstrea
 
 sentry-matrix: ## Sequentially recreate, smoke-test and fully remove both pinned Sentry versions.
 	SENTRY_VERSIONS="$(SENTRY_VERSIONS)" SENTRY_PROFILE="$(SENTRY_PROFILE)" SENTRY_WAIT_TIMEOUT="$(SENTRY_WAIT_TIMEOUT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" SENTRY_BASH_BIN="$(SENTRY_BASH_BIN)" sh hack/verify-sentry-self-hosted-matrix.sh
+
+verify-kind-local-demo: ## Source-test the bounded local demo lifecycle.
+	sh hack/verify-kind-local-demo.sh
+
+verify-sentry-api-report: ## Source-test the redacted local Sentry API inventory.
+	sh hack/verify-sentry-api-report.sh
+
+kind-local-demo: ## Apply and wait for the bounded demo on the exact kind context.
+	KIND_CONTEXT="$(KIND_CONTEXT)" SENTRY_VERSION="26.10.1" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" KUBECTL="$(KUBECTL)" sh hack/manage-kind-local-demo.sh apply
+
+kind-local-demo-status: ## Show bounded demo component status without changing it.
+	KIND_CONTEXT="$(KIND_CONTEXT)" SENTRY_VERSION="26.10.1" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" KUBECTL="$(KUBECTL)" sh hack/manage-kind-local-demo.sh status
+
+kind-local-demo-clean: ## Remove only exact bounded demo resources and labeled namespaces.
+	KIND_CONTEXT="$(KIND_CONTEXT)" SENTRY_VERSION="26.10.1" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" KUBECTL="$(KUBECTL)" sh hack/manage-kind-local-demo.sh clean
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
@@ -218,12 +238,21 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 # Development builds may override BASE_IMAGE or RUNTIME_IMAGE explicitly. Release builds
 # require both overrides to remain immutable repository@sha256 references.
-.PHONY: docker-build
-docker-build: ## Build docker image with the manager.
+.PHONY: docker-credential-preflight docker-credential-diagnostics verify-docker-credentials docker-build
+docker-credential-preflight: ## Validate configured Docker credential-helper availability without reading credentials.
+	CONTAINER_TOOL="$(CONTAINER_TOOL)" sh hack/check-docker-credentials.sh check
+
+docker-credential-diagnostics: ## Probe configured Docker credential helpers with a bounded timeout and redacted output.
+	CONTAINER_TOOL="$(CONTAINER_TOOL)" sh hack/check-docker-credentials.sh probe
+
+verify-docker-credentials: ## Source-test fail-closed Docker credential diagnostics.
+	sh hack/verify-docker-credentials.sh
+
+docker-build: docker-credential-preflight ## Build docker image with the manager.
 	$(CONTAINER_TOOL) build --build-arg BASE_IMAGE="$(BASE_IMAGE)" --build-arg RUNTIME_IMAGE="$(RUNTIME_IMAGE)" -t ${IMG} .
 
 .PHONY: docker-push
-docker-push: ## Push docker image with the manager.
+docker-push: docker-credential-preflight ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
@@ -245,7 +274,7 @@ verify-base-image-digests: ## Require immutable builder and runtime images for a
 	@[[ "$(BASE_IMAGE)" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$$ ]] || { echo 'BASE_IMAGE must be repository@sha256:<64 lowercase hex>' >&2; exit 1; }
 	@[[ "$(RUNTIME_IMAGE)" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$$ ]] || { echo 'RUNTIME_IMAGE must be repository@sha256:<64 lowercase hex>' >&2; exit 1; }
 
-docker-buildx: verify-release-tag verify-base-image-digests ## Build/push multi-platform image with SBOM and max provenance attestations.
+docker-buildx: verify-release-tag verify-base-image-digests docker-credential-preflight ## Build/push multi-platform image with SBOM and max provenance attestations.
 	@$(CONTAINER_TOOL) buildx inspect "$(BUILDX_BUILDER)" >/dev/null 2>&1 || $(CONTAINER_TOOL) buildx create --name "$(BUILDX_BUILDER)" >/dev/null
 	mkdir -p "$(dir $(RELEASE_METADATA))"
 	BUILDX_METADATA_PROVENANCE=max $(CONTAINER_TOOL) buildx build --builder "$(BUILDX_BUILDER)" --push --platform=$(PLATFORMS) --sbom=true --provenance=mode=max --metadata-file "$(RELEASE_METADATA)" --build-arg BASE_IMAGE="$(BASE_IMAGE)" --build-arg RUNTIME_IMAGE="$(RUNTIME_IMAGE)" --tag "$(IMG)" .
@@ -454,7 +483,7 @@ endef
 
 ##@ T00 compatibility evidence
 
-.PHONY: install-t00-tools verify-t00-tools verify-envtest verify-t00 verify-webhook-contract verify-name-resolution build-t00-kind-image verify-kind prepare-kind-probes verify-kubernetes-probes verify-kind-admission verify-leader-election verify-t01-generated verify-t01-crd verify-t01-webhook-kind verify-t02 verify-t03 verify-t04 verify-t04-kind verify-t05 verify-t06-core verify-t06-kind-rbac verify-t07-core verify-t08-core verify-t08-kind-ca-rotation verify-t08-kind-queue-soak verify-t08-kind-gateway-api verify-t08-kind-gateway-dataplane verify-t08-kind-monitoring verify-t09-core verify-t09-kind-multinode-failover verify-t09-kind-monitoring-access verify-t09-kind-controller-monitoring verify-t10-failure-injection
+.PHONY: install-t00-tools verify-t00-tools verify-envtest verify-t00 verify-webhook-contract verify-name-resolution build-t00-kind-image verify-kind prepare-kind-probes verify-kubernetes-probes verify-kind-admission verify-leader-election verify-t01-generated verify-t01-crd verify-t01-webhook-kind verify-t02 verify-t03 verify-t04 verify-t04-kind verify-t05 verify-t06-core verify-t06-kind-rbac verify-t07-core verify-t08-core verify-t08-kind-ca-rotation verify-t08-kind-queue-soak verify-t08-kind-gateway-api verify-t08-kind-gateway-dataplane verify-t08-kind-monitoring verify-t09-core verify-t09-kind-backup-restore verify-t09-kind-multinode-failover verify-t09-kind-monitoring-access verify-t09-kind-controller-monitoring verify-t10-failure-injection
 
 install-t00-tools:
 	sh hack/install-t00-tools.sh
@@ -545,6 +574,9 @@ verify-t08-kind-monitoring:
 
 verify-t09-core: manifests generate
 	sh hack/verify-t09-core.sh
+
+verify-t09-kind-backup-restore: ## Exercise protected-state in-memory export/delete/restore against an explicit kind context.
+	sh hack/verify-t09-kind-backup-restore.sh $(KIND_CONTEXT)
 
 verify-t09-kind-multinode-failover:
 	sh hack/verify-t09-kind-multinode-failover.sh

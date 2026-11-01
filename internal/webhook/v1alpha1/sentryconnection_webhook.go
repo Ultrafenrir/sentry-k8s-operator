@@ -91,7 +91,9 @@ func (v *SentryConnectionValidator) ValidateUpdate(_ context.Context, oldObj, ne
 			field.ErrorList{field.Forbidden(field.NewPath("spec"), "policy update is blocked while registrationCommit is active")},
 		)
 	}
-	if transitionErrs := validateOwnershipTransition(oldObj.Spec.Ownership, newObj.Spec.Ownership); len(transitionErrs) != 0 {
+	transitionErrs := validateOwnershipTransition(oldObj.Spec.Ownership, newObj.Spec.Ownership)
+	transitionErrs = append(transitionErrs, validateServiceHookTransition(oldObj.Spec.Integrations, newObj.Spec.Integrations)...)
+	if len(transitionErrs) != 0 {
 		return nil, apierrors.NewInvalid(
 			schema.GroupKind{Group: sentryconfigurationv1alpha1.GroupVersion.Group, Kind: "SentryConnection"},
 			newObj.Name,
@@ -166,9 +168,9 @@ func validateSentryConnection(obj *sentryconfigurationv1alpha1.SentryConnection)
 		if obj.Spec.Ownership.Revision < 1 {
 			allErrs = append(allErrs, field.Invalid(ownershipPath.Child("revision"), obj.Spec.Ownership.Revision, "must be positive"))
 		}
-		if obj.Spec.ProjectManagement.UnmanagedProjects == sentryconfigurationv1alpha1.UnmanagedProjectsAdopt && obj.Spec.Ownership.Role != sentryconfigurationv1alpha1.ConnectionRoleActive {
-			allErrs = append(allErrs, field.Forbidden(specPath.Child("projectManagement", "unmanagedProjects"), "Adopt requires ownership.role Active"))
-		}
+	}
+	if obj.Spec.ProjectManagement.UnmanagedProjects == sentryconfigurationv1alpha1.UnmanagedProjectsAdopt && (obj.Spec.Ownership == nil || obj.Spec.Ownership.Role != sentryconfigurationv1alpha1.ConnectionRoleActive) {
+		allErrs = append(allErrs, field.Forbidden(specPath.Child("projectManagement", "unmanagedProjects"), "Adopt requires ownership.role Active"))
 	}
 	if obj.Spec.ProjectManagement.UnmanagedProjects != "" && obj.Spec.ProjectManagement.UnmanagedProjects != sentryconfigurationv1alpha1.UnmanagedProjectsReject && obj.Spec.ProjectManagement.UnmanagedProjects != sentryconfigurationv1alpha1.UnmanagedProjectsStandby && obj.Spec.ProjectManagement.UnmanagedProjects != sentryconfigurationv1alpha1.UnmanagedProjectsAdopt {
 		allErrs = append(allErrs, field.NotSupported(specPath.Child("projectManagement", "unmanagedProjects"), obj.Spec.ProjectManagement.UnmanagedProjects, []string{"Reject", "Standby", "Adopt"}))
@@ -179,7 +181,6 @@ func validateSentryConnection(obj *sentryconfigurationv1alpha1.SentryConnection)
 		telegramPath := specPath.Child("integrations", "telegram")
 		telegram := obj.Spec.Integrations.Telegram
 		allErrs = append(allErrs, validateSecretKeyReference(telegram.BotTokenSecretRef, telegramPath.Child("botTokenSecretRef"))...)
-		allErrs = append(allErrs, validateSecretKeyReference(telegram.WebhookAuthSecretRef, telegramPath.Child("webhookAuthSecretRef"))...)
 		allErrs = append(allErrs, validateSentryReceiverURL(telegram.ReceiverURL, telegramPath.Child("receiverURL"))...)
 	}
 
@@ -191,6 +192,32 @@ func validateSentryConnection(obj *sentryconfigurationv1alpha1.SentryConnection)
 		obj.Name,
 		allErrs,
 	)
+}
+
+func validateServiceHookTransition(oldIntegrations, newIntegrations *sentryconfigurationv1alpha1.ConnectionIntegrations) field.ErrorList {
+	if oldIntegrations == nil || oldIntegrations.Telegram == nil || newIntegrations == nil || newIntegrations.Telegram == nil {
+		return nil
+	}
+	path := field.NewPath("spec", "integrations", "telegram", "serviceHookRevision")
+	oldTelegram := oldIntegrations.Telegram
+	newTelegram := newIntegrations.Telegram
+	oldRevision := effectiveServiceHookRevision(oldTelegram.ServiceHookRevision)
+	newRevision := effectiveServiceHookRevision(newTelegram.ServiceHookRevision)
+	allErrs := field.ErrorList{}
+	if newRevision < oldRevision {
+		allErrs = append(allErrs, field.Invalid(path, newTelegram.ServiceHookRevision, "must not decrease"))
+	}
+	if newTelegram.ReceiverURL != oldTelegram.ReceiverURL && newRevision <= oldRevision {
+		allErrs = append(allErrs, field.Invalid(path, newTelegram.ServiceHookRevision, "must increase when receiverURL changes"))
+	}
+	return allErrs
+}
+
+func effectiveServiceHookRevision(revision int64) int64 {
+	if revision < 1 {
+		return 1
+	}
+	return revision
 }
 
 func validateOwnershipTransition(oldOwnership, newOwnership *sentryconfigurationv1alpha1.ConnectionOwnership) field.ErrorList {
@@ -241,6 +268,40 @@ func validateIntegrationCatalog(integrations *sentryconfigurationv1alpha1.Connec
 	}
 	if integrations.PagerDuty != nil {
 		validate(integrations.PagerDuty.Accounts, path.Child("pagerDuty", "accounts"))
+	}
+	if integrations.SourceCode != nil {
+		installationsPath := path.Child("sourceCode", "installations")
+		seenNames := map[string]bool{}
+		seenRemote := map[string]bool{}
+		for index, installation := range integrations.SourceCode.Installations {
+			installationPath := installationsPath.Index(index)
+			if len(validation.IsDNS1123Label(installation.Name)) != 0 {
+				allErrs = append(allErrs, field.Invalid(installationPath.Child("name"), installation.Name, "must be a lowercase DNS label"))
+			}
+			remoteKey := string(installation.Provider) + "/" + installation.SentryName
+			if seenNames[installation.Name] {
+				allErrs = append(allErrs, field.Duplicate(installationPath.Child("name"), installation.Name))
+			}
+			if seenRemote[remoteKey] {
+				allErrs = append(allErrs, field.Duplicate(installationPath.Child("sentryName"), installation.SentryName))
+			}
+			seenNames[installation.Name], seenRemote[remoteKey] = true, true
+			seenRepositories := map[string]bool{}
+			seenRemoteRepositories := map[string]bool{}
+			for repositoryIndex, repository := range installation.Repositories {
+				repositoryPath := installationPath.Child("repositories").Index(repositoryIndex)
+				if len(validation.IsDNS1123Label(repository.Name)) != 0 {
+					allErrs = append(allErrs, field.Invalid(repositoryPath.Child("name"), repository.Name, "must be a lowercase DNS label"))
+				}
+				if seenRepositories[repository.Name] {
+					allErrs = append(allErrs, field.Duplicate(repositoryPath.Child("name"), repository.Name))
+				}
+				if seenRemoteRepositories[repository.SentryName] {
+					allErrs = append(allErrs, field.Duplicate(repositoryPath.Child("sentryName"), repository.SentryName))
+				}
+				seenRepositories[repository.Name], seenRemoteRepositories[repository.SentryName] = true, true
+			}
+		}
 	}
 	return allErrs
 }

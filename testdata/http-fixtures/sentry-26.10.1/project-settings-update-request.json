@@ -8,5 +8,9 @@
   ],
   "safeFields": [
     "request.headers.x-request-id"
+  ],
+  "allowedDomains": [
+    "*.checkout.example.com",
+    "https://checkout.example.com:443"
   ]
 }

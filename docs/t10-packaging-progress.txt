@@ -1,5 +1,5 @@
 T10 — PACKAGING (PARTIAL / SOURCE-TESTED)
-Date: 2026-10-30
+Date: 2026-11-01
 
 The alpha Helm chart in `charts/sentry-kubernetes-operator` is generated from the canonical
 Kustomize outputs. It contains CRDs in `crds/`, the default controller/admission resources,
@@ -120,18 +120,28 @@ Kustomize state. Helm drift verification caught this defect as intended.
 `make verify-helm` now also renders both image overlays with a synthetic tag, checks the
 expected image counts, and byte-compares the source kustomizations before and after.
 
-A seventh e2e spec performs a real two-replica Deployment image rollout from local tag
-v0.0.1 to v0.0.2 and back to v0.0.1 while a SentryConnection exists. The first run exposed
-a brief admission connection-refused window after Kubernetes declared the rollout complete.
-The controller Deployment now requires maxUnavailable=0, maxSurge=1 and minReadySeconds=5;
-the spec also waits for its own initial rollout instead of relying on an earlier test. A
-full 8/8 rerun preserved the CR UID and condition, accepted a server-side SentryProject
-dry-run after upgrade and rollback, and preserved UID, labels, immutable flag and payload
-bytes for a pending project binding, Submitted operation journal, immutable route,
-immutable admission candidate, and InFlight/Retry/DeadLetter delivery records. Both tags
-contain the same source commit, so
-this is Kubernetes rollout/rollback and local-state persistence evidence only, not a
-semantic version migration or a pending external-operation test.
+A seventh e2e spec performs a real two-replica Deployment image rollout from exact baseline
+commit `ba5143fa704a923e251a31c71d8f32342ba81344` to the current worktree. The baseline image
+is exported from that full commit SHA into a temporary source tree; the build fails closed
+when the exact commit is unavailable. The current image is built independently from the
+working tree. The first rollout run had previously exposed a brief admission
+connection-refused window after Kubernetes declared the rollout complete. The controller
+Deployment therefore requires maxUnavailable=0, maxSurge=1 and minReadySeconds=5, and the
+spec waits for its own initial rollout instead of relying on an earlier test.
+
+Before the distinct-version rollout, an isolated fake Sentry HTTP boundary commits one real
+project-create POST and then closes the connection without returning a response. The
+baseline controller persists a protected `CreateProject`/`Submitted` operation and reports
+`CreationOutcomeUnknown` while the committed project remains hidden. Only after the current
+controller rollout is ready does the boundary expose the project. The current controller
+then recovers the exact ownership marker, clears the pending operation, pins the external
+identity, reaches `ProjectReady=True`, and completes Retain cleanup. The server asserts that
+the create POST count remains exactly one. The same spec preserves exact bytes, labels, UID,
+and immutability for the independent pending binding/journal, route, admission candidate,
+and InFlight/Retry/DeadLetter fixtures, and accepts a server-side SentryProject dry-run after
+the upgrade. A clean kind Kubernetes 1.35.5 run passed all 8/8 specs and deleted its exact
+temporary cluster. This is local upgrade and external-operation recovery evidence against a
+purpose-built fake Sentry boundary, not target Sentry, hosted release, or rollback evidence.
 
 The eighth spec removes and reissues the cert-manager metrics Secret, waits for both
 controller-runtime certificate watchers to observe the projected update, and scrapes with
@@ -148,6 +158,13 @@ existing cross-node follower while a redacted missing-Secret SentryConnection an
 server-side admission remain stable. It refuses to reuse an existing cluster name and
 deletes only its own cluster through a trap. This is not part of the default source matrix
 and does not claim live Sentry mutation or physical node-loss acceptance.
+
+`make verify-t09-kind-backup-restore KIND_CONTEXT=<kind-context>` is a separate bounded
+recovery gate against an existing kind API server. It refuses namespace collisions, keeps
+the protected bundle in memory, exercises exact deletion plus create-only/resumable restore,
+and removes only four exact ownership-labeled drill namespaces. It does not publish a
+plaintext backup command or claim persisted encryption, key management, audit restoration,
+CR/input-Secret restoration, or a complete installation restart.
 
 Persistent kind v1.35.5 accepted both the default chart including CRDs and the chart with
 registration enabled through real server-side validation (`kubectl apply --dry-run=server`).
@@ -181,5 +198,5 @@ verify-release-workflow` locks that source contract. No hosted
 workflow run occurred and no image was pushed, signed or verified against a real registry.
 
 This does not make T10 complete. There is no published registry/chart repository, signed
-release, live Sentry alert-action acceptance, human usability test, or upgrade test
-between distinct code/schema versions with an externally submitted pending operation.
+release, live Sentry alert-action acceptance, human usability test, or hosted upgrade and
+rollback evidence.

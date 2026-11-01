@@ -115,7 +115,7 @@ func legacyChildForTrigger(trigger Trigger) string {
 	switch trigger {
 	case TriggerFirstSeen, TriggerRegression:
 		return LegacyIssueAdapter
-	case TriggerEventCount:
+	case TriggerEventCount, TriggerUserCount:
 		return LegacyMetricAdapter
 	default:
 		return ""

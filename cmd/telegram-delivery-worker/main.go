@@ -123,10 +123,14 @@ func run(opts options) error {
 			MaxIdleConns: 10, MaxIdleConnsPerHost: 2, IdleConnTimeout: 30 * time.Second,
 		},
 	}
+	auditStore := &audit.KubernetesStore{Client: directClient, Namespace: opts.auditNamespace, Logger: funcr.New(func(prefix, arguments string) {
+		log.Printf("%s%s", prefix, arguments)
+	}, funcr.Options{})}
 	queue := &delivery.Queue{
 		Client: directClient, Namespace: opts.deliveryNamespace,
 		MaxOutstanding: opts.maxOutstanding, MaxAttempts: opts.maxAttempts,
 		DedupeRetention: opts.dedupeRetention, DLQRetention: opts.dlqRetention,
+		Audit: auditStore,
 	}
 	owner, err := newOwner()
 	if err != nil {
@@ -136,9 +140,7 @@ func run(opts options) error {
 		Queue: queue, Routes: &registration.RouteStore{Client: directClient, Namespace: opts.routingNamespace},
 		Sender: &telegramdelivery.Client{HTTPClient: httpClient, BaseURL: opts.apiURL, Token: token},
 		Owner:  owner, Lease: opts.lease, RetryBase: opts.retryBase, RetryMax: opts.retryMax,
-		Audit: &audit.KubernetesStore{Client: directClient, Namespace: opts.auditNamespace, Logger: funcr.New(func(prefix, arguments string) {
-			log.Printf("%s%s", prefix, arguments)
-		}, funcr.Options{})},
+		Audit: auditStore,
 	}
 	metricsRegistry := prometheus.NewRegistry()
 	deliveryMetrics, err := telegramdelivery.NewMetrics(metricsRegistry)

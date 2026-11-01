@@ -21,8 +21,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// SecretKeyReference identifies one key in a Secret from the fixed operator namespace.
-// Namespace is intentionally not user-configurable.
+// SecretKeyReference identifies one key in a Secret. The containing resource determines
+// the lookup namespace: connection credentials use the fixed operator namespace, while
+// namespaced project children use their SentryProject namespace. Namespace is never
+// user-configurable.
 type SecretKeyReference struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
@@ -163,6 +165,55 @@ type PagerDutyIntegration struct {
 	Accounts []IntegrationCatalogEntry `json:"accounts,omitempty"`
 }
 
+// SourceCodeRepositoryCatalogEntry maps one stable local alias to one repository already
+// imported by a declared source-code integration. Numeric Sentry repository identities stay
+// in protected state.
+type SourceCodeRepositoryCatalogEntry struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z](?:[a-z0-9-]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=200
+	SentryName string `json:"sentryName"`
+}
+
+// SourceCodeProvider is a portable Sentry source-code integration provider.
+// +kubebuilder:validation:Enum=github;github_enterprise;gitlab;bitbucket;vsts
+type SourceCodeProvider string
+
+// SourceCodeIntegrationCatalogEntry declares one installed source-code integration and its
+// readable repository aliases. Declaring an entry never installs an integration or imports a
+// repository.
+type SourceCodeIntegrationCatalogEntry struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z](?:[a-z0-9-]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	Provider SourceCodeProvider `json:"provider"`
+
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=200
+	SentryName string `json:"sentryName"`
+
+	// +kubebuilder:validation:MaxItems=200
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	Repositories []SourceCodeRepositoryCatalogEntry `json:"repositories,omitempty"`
+}
+
+// SourceCodeIntegrations declares stable aliases for installed integrations and repositories.
+type SourceCodeIntegrations struct {
+	// +kubebuilder:validation:MaxItems=100
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	Installations []SourceCodeIntegrationCatalogEntry `json:"installations,omitempty"`
+}
+
 // ConnectionRole is the platform-controlled regional mutation role.
 // +kubebuilder:validation:Enum=Active;Standby
 type ConnectionRole string
@@ -209,7 +260,11 @@ type TelegramIntegration struct {
 	// +kubebuilder:validation:Pattern=`^https://[^[:space:]]+$`
 	ReceiverURL string `json:"receiverURL"`
 
-	WebhookAuthSecretRef SecretKeyReference `json:"webhookAuthSecretRef"`
+	// ServiceHookRevision is a platform-controlled monotonic trigger for replacing the
+	// Sentry-generated hook secret without placing that secret in the public API.
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=1
+	ServiceHookRevision int64 `json:"serviceHookRevision,omitempty"`
 }
 
 // ConnectionIntegrations contains optional platform integration defaults.
@@ -219,6 +274,9 @@ type ConnectionIntegrations struct {
 
 	// +optional
 	PagerDuty *PagerDutyIntegration `json:"pagerDuty,omitempty"`
+
+	// +optional
+	SourceCode *SourceCodeIntegrations `json:"sourceCode,omitempty"`
 
 	// +optional
 	Telegram *TelegramIntegration `json:"telegram,omitempty"`
@@ -245,6 +303,7 @@ type ConnectionCompatibility struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.transport) || !self.transport.insecureSkipTLSVerify || self.url.startsWith('https://')",message="transport.insecureSkipTLSVerify requires an HTTPS URL"
 // +kubebuilder:validation:XValidation:rule="!has(self.transport) || !self.transport.insecureSkipTLSVerify || !has(self.credentials.caBundleSecretRef)",message="transport.insecureSkipTLSVerify and credentials.caBundleSecretRef are mutually exclusive"
 // +kubebuilder:validation:XValidation:rule="self.url.startsWith('https://') || !has(self.credentials.caBundleSecretRef)",message="credentials.caBundleSecretRef requires an HTTPS URL"
+// +kubebuilder:validation:XValidation:rule="self.projectManagement.unmanagedProjects != 'Adopt' || (has(self.ownership) && self.ownership.role == 'Active')",message="projectManagement.unmanagedProjects Adopt requires ownership.role Active"
 // SentryConnectionSpec defines the desired state of SentryConnection.
 type SentryConnectionSpec struct {
 	// +kubebuilder:validation:MinLength=9

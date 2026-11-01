@@ -15,12 +15,14 @@ trap cleanup EXIT INT TERM
 
 cd "$root_dir"
 GOMODCACHE="$product_gomodcache" GOCACHE="$product_gocache" KUBEBUILDER_ASSETS="$product_envtest_assets" \
-  "$go_bin" test -race ./internal/audit ./internal/delivery ./internal/telegramdelivery ./internal/httphealth ./internal/sentryhook ./internal/statebackup ./cmd/sentry-hook-producer ./cmd/sentry-hook-receiver
+  "$go_bin" test -race ./internal/audit ./internal/delivery ./internal/telegramdelivery ./internal/httphealth ./internal/sentryhook ./internal/statebackup ./cmd/telegram-delivery-worker ./cmd/sentry-hook-producer ./cmd/sentry-hook-receiver
 GOMODCACHE="$product_gomodcache" GOCACHE="$product_gocache" \
   "$go_bin" vet ./internal/audit ./internal/delivery ./internal/telegramdelivery ./internal/sentryhook ./internal/statebackup ./cmd/telegram-delivery-worker ./cmd/sentry-hook-producer ./cmd/sentry-hook-receiver
 
 rg -q 'StateDeadLetter' internal/delivery/queue.go
 rg -q 'ResourceVersion' internal/delivery/queue.go
+rg -q 'ReasonRetentionExpired' internal/delivery/queue.go
+rg -q 'Audit: auditStore' cmd/telegram-delivery-worker/main.go
 rg -q 'io.LimitReader' internal/telegramdelivery/client.go
 rg -q 'FailureRateLimited' internal/telegramdelivery/client.go
 rg -q 'FileToken' cmd/telegram-delivery-worker/main.go
@@ -46,6 +48,15 @@ rg -q 'PlanVerifierRotation' internal/sentryhook/verifier_store.go
 rg -q 'third concurrent key' internal/sentryhook/verifier_store_test.go
 rg -q 'type VerifierRotator struct' internal/sentryhook/verifier_rotation.go
 rg -q 'SwitchAndVerify' internal/sentryhook/verifier_rotation.go
+rg -F -q 'type LifecycleEngine struct' internal/sentryhook/lifecycle.go
+rg -F -q 'create-project-service-hook' internal/sentryhook/http_adapter.go
+rg -F -q 'Create(ctx, organization, project, stagingEndpoint, false)' internal/sentryhook/lifecycle.go
+rg -F -q 'staging-service-hook\x00' internal/sentryhook/lifecycle.go
+rg -F -q 'ServiceHookRevision int64' api/v1alpha1/sentryconnection_types.go
+rg -F -q 'RotateServiceHook' internal/sentryhook/lifecycle.go
+rg -q 'TestLifecycleRotatesThroughUnpublishedStagingEndpointBeforeDeletingOldHook' internal/sentryhook/lifecycle_test.go
+rg -q 'TestLifecycleRecoversLostReplacementCreateResponse' internal/sentryhook/lifecycle_test.go
+rg -F -q 'reconcileServiceHook' internal/controller/sentryproject_controller.go
 rg -q 'TestVerifierRotatorResumesSafePartialStates' internal/sentryhook/verifier_rotation_test.go
 rg -q 'overlap old secret' internal/sentryhook/file_source_test.go
 rg -q 'type Publisher struct' internal/sentryhook/publication.go
@@ -137,4 +148,4 @@ rg -q 'sentry_operator_telegram_delivery_oldest_outstanding_seconds' "$tmp_dir/r
 rg -q 'outcome="dead_letter"' "$tmp_dir/registration-monitoring.yaml"
 rg -q 'sentry_operator_telegram_delivery_metrics_refresh_errors_total' "$tmp_dir/registration-monitoring.yaml"
 
-echo 'T08 signed-hook verifier, signed mTLS internal handoff, protected source resolver, PII-minimal renderer, durable queue, safe Telegram client, isolated worker RBAC and HA workload contracts verified (T08 remains In Progress)'
+echo 'T08 bounded dataplane contracts verified; real external Telegram delivery remains deferred'

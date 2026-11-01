@@ -96,6 +96,17 @@ func (v *SentryProjectValidator) ValidateUpdate(_ context.Context, oldObj, newOb
 	if !reflect.DeepEqual(oldObj.Spec.Project, newObj.Spec.Project) {
 		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "project"), "project identity is immutable"))
 	}
+	oldClientKeys := clientKeySpecs(oldObj.Spec.ClientKeys)
+	newClientKeys := clientKeySpecs(newObj.Spec.ClientKeys)
+	for name, oldKey := range oldClientKeys {
+		newKey, newFound := newClientKeys[name]
+		if newFound && normalizedRotationRevision(newKey.RotationRevision) < normalizedRotationRevision(oldKey.RotationRevision) {
+			allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "clientKeys").Key(name).Child("rotationRevision"), "rotationRevision cannot decrease"))
+		}
+		if status, statusFound := oldObj.Status.ClientKeys[name]; statusFound && status.State == "RotationPending" && (!newFound || !reflect.DeepEqual(oldKey, newKey)) {
+			allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "clientKeys").Key(name), "client key update is blocked while rotation cutover is pending"))
+		}
+	}
 	for name, status := range oldObj.Status.NotificationTargets {
 		if status.RegistrationCommit == nil {
 			continue
@@ -153,6 +164,18 @@ func validateSentryProject(obj *sentryconfigurationv1alpha1.SentryProject) error
 		if obj.Spec.GrantAccess != nil {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("grantAccess"), "Standby cannot manage project access"))
 		}
+		if obj.Spec.IssueOwnership != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("issueOwnership"), "Standby cannot manage issue ownership"))
+		}
+		if obj.Spec.ClientKeys != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("clientKeys"), "Standby cannot manage client keys"))
+		}
+		if obj.Spec.SymbolSources != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("symbolSources"), "Standby cannot manage custom symbol sources"))
+		}
+		if obj.Spec.CodeMappings != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("codeMappings"), "Standby cannot manage code mappings"))
+		}
 	}
 	create := obj.Spec.Project.Create != nil
 	use := obj.Spec.Project.Use != nil
@@ -173,6 +196,18 @@ func validateSentryProject(obj *sentryconfigurationv1alpha1.SentryProject) error
 		}
 		if obj.Spec.Settings != nil {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("settings"), "project.use is read-only"))
+		}
+		if obj.Spec.IssueOwnership != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("issueOwnership"), "project.use is read-only"))
+		}
+		if obj.Spec.ClientKeys != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("clientKeys"), "project.use is read-only"))
+		}
+		if obj.Spec.SymbolSources != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("symbolSources"), "project.use is read-only"))
+		}
+		if obj.Spec.CodeMappings != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("codeMappings"), "project.use is read-only"))
 		}
 		if obj.Spec.GrantAccess != nil {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("grantAccess"), "project.use is read-only"))
@@ -206,9 +241,106 @@ func validateSentryProject(obj *sentryconfigurationv1alpha1.SentryProject) error
 			}
 		}
 	}
+	if obj.Spec.IssueOwnership != nil {
+		attached := map[string]bool{}
+		if create {
+			attached[obj.Spec.Project.Create.Team] = true
+		}
+		if obj.Spec.GrantAccess != nil {
+			for _, team := range obj.Spec.GrantAccess.Teams {
+				attached[team] = true
+			}
+		}
+		for ruleIndex, rule := range obj.Spec.IssueOwnership.Rules {
+			seenTeams := map[string]bool{}
+			for teamIndex, team := range rule.Teams {
+				teamPath := specPath.Child("issueOwnership", "rules").Index(ruleIndex).Child("teams").Index(teamIndex)
+				for _, message := range validation.IsDNS1123Label(team) {
+					allErrs = append(allErrs, field.Invalid(teamPath, team, message))
+				}
+				if seenTeams[team] {
+					allErrs = append(allErrs, field.Duplicate(teamPath, team))
+				}
+				seenTeams[team] = true
+				if !attached[team] {
+					allErrs = append(allErrs, field.Forbidden(teamPath, "issue ownership teams must be the primary project team or appear in grantAccess"))
+				}
+			}
+		}
+	}
 	if obj.Spec.DSN != nil && obj.Spec.DSN.Secret != "" {
 		for _, message := range validation.IsDNS1123Subdomain(obj.Spec.DSN.Secret) {
 			allErrs = append(allErrs, field.Invalid(specPath.Child("dsn", "secret"), obj.Spec.DSN.Secret, message))
+		}
+	}
+	if obj.Spec.ClientKeys != nil {
+		for name, clientKey := range *obj.Spec.ClientKeys {
+			keyPath := specPath.Child("clientKeys").Key(name)
+			if len(name) > 32 {
+				allErrs = append(allErrs, field.TooLong(keyPath, name, 32))
+			}
+			for _, message := range validation.IsDNS1123Label(name) {
+				allErrs = append(allErrs, field.Invalid(keyPath, name, message))
+			}
+			if clientKey.RotationRevision < 0 {
+				allErrs = append(allErrs, field.Invalid(keyPath.Child("rotationRevision"), clientKey.RotationRevision, "must not be negative"))
+			}
+			if clientKey.RateLimit != nil && (clientKey.RateLimit.Count < 1 || clientKey.RateLimit.WindowSeconds < 1 || clientKey.RateLimit.WindowSeconds > 86400) {
+				allErrs = append(allErrs, field.Invalid(keyPath.Child("rateLimit"), clientKey.RateLimit, "count must be positive and windowSeconds must be 1..86400"))
+			}
+		}
+	}
+	if obj.Spec.SymbolSources != nil {
+		for name, source := range *obj.Spec.SymbolSources {
+			sourcePath := specPath.Child("symbolSources").Key(name)
+			if len(name) > 32 {
+				allErrs = append(allErrs, field.TooLong(sourcePath, name, 32))
+			}
+			for _, message := range validation.IsDNS1123Label(name) {
+				allErrs = append(allErrs, field.Invalid(sourcePath, name, message))
+			}
+			types := 0
+			if source.HTTP != nil {
+				types++
+				if source.HTTP.PasswordSecretRef != nil {
+					allErrs = append(allErrs, validateSecretKeyReference(*source.HTTP.PasswordSecretRef, sourcePath.Child("http", "passwordSecretRef"))...)
+				}
+			}
+			if source.S3 != nil {
+				types++
+				allErrs = append(allErrs, validateSecretKeyReference(source.S3.AccessKeySecretRef, sourcePath.Child("s3", "accessKeySecretRef"))...)
+				allErrs = append(allErrs, validateSecretKeyReference(source.S3.SecretKeySecretRef, sourcePath.Child("s3", "secretKeySecretRef"))...)
+			}
+			if source.GCS != nil {
+				types++
+				allErrs = append(allErrs, validateSecretKeyReference(source.GCS.PrivateKeySecretRef, sourcePath.Child("gcs", "privateKeySecretRef"))...)
+			}
+			if types != 1 {
+				allErrs = append(allErrs, field.Invalid(sourcePath, source, "exactly one of http, s3 or gcs is required"))
+			}
+		}
+	}
+	if obj.Spec.CodeMappings != nil {
+		for name, mapping := range *obj.Spec.CodeMappings {
+			mappingPath := specPath.Child("codeMappings").Key(name)
+			if len(name) > 32 {
+				allErrs = append(allErrs, field.TooLong(mappingPath, name, 32))
+			}
+			for _, message := range validation.IsDNS1123Label(name) {
+				allErrs = append(allErrs, field.Invalid(mappingPath, name, message))
+			}
+			if mapping.ImportCodeowners && mapping.DefaultBranch == "" {
+				allErrs = append(allErrs, field.Required(mappingPath.Child("defaultBranch"), "required when importCodeowners is true"))
+			}
+		}
+	}
+	if obj.Spec.DSN != nil && obj.Spec.DSN.ManagedClientKey != "" {
+		keys := clientKeySpecs(obj.Spec.ClientKeys)
+		clientKey, found := keys[obj.Spec.DSN.ManagedClientKey]
+		if !found {
+			allErrs = append(allErrs, field.NotFound(specPath.Child("dsn", "managedClientKey"), obj.Spec.DSN.ManagedClientKey))
+		} else if !clientKey.Active {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("dsn", "managedClientKey"), obj.Spec.DSN.ManagedClientKey, "must reference an active managed key"))
 		}
 	}
 	targets, targetErr := obj.Spec.NotificationTargets.Flatten()
@@ -242,12 +374,12 @@ func validateSentryProject(obj *sentryconfigurationv1alpha1.SentryProject) error
 				if alert.WindowMinutes != nil || alert.Threshold != nil {
 					allErrs = append(allErrs, field.Invalid(alertPath, alert, "issue triggers forbid windowMinutes and threshold"))
 				}
-			case sentryconfigurationv1alpha1.AlertTriggerEventCount:
+			case sentryconfigurationv1alpha1.AlertTriggerEventCount, sentryconfigurationv1alpha1.AlertTriggerUserCount:
 				if alert.WindowMinutes == nil || *alert.WindowMinutes < 1 || *alert.WindowMinutes > 1440 || alert.Threshold == nil || *alert.Threshold < 1 {
-					allErrs = append(allErrs, field.Invalid(alertPath, alert, "event-count requires windowMinutes 1..1440 and a positive threshold"))
+					allErrs = append(allErrs, field.Invalid(alertPath, alert, "metric triggers require windowMinutes 1..1440 and a positive threshold"))
 				}
 			default:
-				allErrs = append(allErrs, field.NotSupported(alertPath.Child("trigger"), alert.Trigger, []string{"first-seen", "regression", "event-count"}))
+				allErrs = append(allErrs, field.NotSupported(alertPath.Child("trigger"), alert.Trigger, []string{"first-seen", "regression", "event-count", "user-count"}))
 			}
 			if len(alert.Notify) == 0 || len(alert.Notify) > 20 {
 				allErrs = append(allErrs, field.Invalid(alertPath.Child("notify"), alert.Notify, "must contain 1..20 destination keys"))
@@ -280,4 +412,18 @@ func validateSentryProject(obj *sentryconfigurationv1alpha1.SentryProject) error
 		obj.Name,
 		allErrs,
 	)
+}
+
+func clientKeySpecs(source *map[string]sentryconfigurationv1alpha1.ManagedClientKeySpec) map[string]sentryconfigurationv1alpha1.ManagedClientKeySpec {
+	if source == nil {
+		return nil
+	}
+	return *source
+}
+
+func normalizedRotationRevision(value int64) int64 {
+	if value == 0 {
+		return 1
+	}
+	return value
 }

@@ -123,8 +123,10 @@ name marker must not be silently presented as arbitrary project metadata.
 
 5. Settings and alerts
 
-The alpha settings surface is typed inbound filters plus typed PII controls. Arbitrary raw
-Sentry settings and grouping profiles are excluded until portable semantics are proven.
+The alpha settings surface is typed inbound filters, bounded PII controls, built-in advanced
+Relay PII rules, and the portable grouping enhancement/fingerprinting subset. Arbitrary raw
+Sentry settings, raw rule grammar, grouping profiles, and secondary-grouping migration are
+excluded.
 
 The common alert catalog is adapter-neutral. Legacy 24.7.1 maps first-seen, regression, and
 event-count to legacy issue/metric rules. Modern 26.10.1 maps event-count to a metric
@@ -160,7 +162,8 @@ Controller credentials, registration state, hook sources, routes, delivery queue
 records use separate namespaces and RBAC boundaries. Receivers and workers receive only the
 minimum data and permissions required for their role.
 
-Retain removes Kubernetes ownership without deleting the Sentry project. DeleteProject
+Retain removes operator-owned children and the verified remote ownership marker before it
+removes protected Kubernetes ownership, without deleting the Sentry project. DeleteProject
 requires live policy authorization and ownership proof. Pause prevents ordinary mutation
 but does not bypass safe deletion or protected recovery work.
 

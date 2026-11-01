@@ -29,9 +29,12 @@ certification.
 | Additional project team access | Verified | Verified | Public project-team endpoints; live grant/revoke acceptance passed. |
 | Typed inbound filters | Verified | Verified | Browser extensions, localhost, web crawlers. |
 | Typed PII settings | Verified | Verified | Scrub flags plus safe/sensitive fields. |
+| Typed behavior settings | Verified | Verified | Includes bounded allowed browser origins; configuration lifecycle only. |
+| Built-in symbol sources | Verified | Verified | Twelve-source portable set; configuration lifecycle only. |
+| Custom HTTP/S3/GCS symbol sources | Verified | Verified | Secret-backed owned children; configuration lifecycle only. |
 | Legacy issue rules | Verified | Unsupported | 26.10.1 collection route returns 404. |
-| Legacy metric rules | Verified | Unsupported | 26.10.1 collection route returns 404. |
-| Modern metric detector/workflow | Unsupported | Verified | events/count() detector family only. |
+| Legacy metric rules | Verified | Unsupported | events/count() and events/count_unique(user); 26.10.1 collection route returns 404. |
+| Modern metric detector/workflow | Unsupported | Verified | events/count() and events/count_unique(user) detector mappings. |
 | PagerDuty account/service catalog | ContractTested | ContractTested | Local fixture proves resolution, not delivery. |
 | Slack channel catalog | Unknown | Unknown | Runtime adapter fails closed. |
 | Telegram service-hook HMAC contract | ContractTested | ContractTested | Public endpoint availability remains deployment-specific. |
@@ -57,9 +60,29 @@ versions.
 5. Settings
 
 Both supported versions expose compatible public filter endpoints and project settings for
-the alpha PII fields. Reconciliation writes only managed fields, reads them back, and becomes
-quiet after drift is repaired. Grouping profiles and arbitrary raw settings remain outside
-the public contract.
+the alpha PII fields, behavior fields including allowed browser origins, built-in Relay PII
+rules, grouping enhancements, and fingerprinting rules.
+Reconciliation writes only managed fields, reads them back, and becomes quiet after drift is
+repaired. The advanced fields are rendered from bounded typed input; raw JSON and rule grammar
+remain outside the public contract. Grouping profiles and secondary-grouping migration are also
+excluded because 26.10.1 rejects their manual public-API mutation while 24.7.1 accepts it.
+Both versions also accept the same twelve built-in symbol-source identifiers through the
+project settings endpoint. Sentry 26.10.1 has an additional `proton` source and a native
+source-server mapping toggle that 24.7.1 does not expose, so neither is portable. Custom
+symbol sources remain outside the settings contract because their public endpoint carries
+credentials and generated source identities. The separate owned-child contract supports
+HTTP, S3, and GCS on both targets. It loads credentials from project-namespace Secret keys,
+stores only protected exact identities and desired-state digests, repairs visible drift,
+rotates credentials through a full update, and performs exact cleanup. Azure remains
+excluded because 24.7.1 does not expose it.
+
+Project quota protection has no portable public mutation contract. Sentry 24.7.1 accepts
+feature-gated project `dynamicSamplingBiases`, while 26.10.1 only serializes that legacy
+field and moves manual target rates to a private, organization-scoped, feature- and
+sampling-mode-gated bulk endpoint that requires numeric project IDs. Both versions expose
+the raw internal `quotas:spike-protection-disabled` option in detailed serialization without
+a bounded typed public update contract. These controls remain unavailable. Managed client
+keys already expose the separate portable count/window rate limit.
 
 6. Alerts
 

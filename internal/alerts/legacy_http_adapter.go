@@ -308,8 +308,10 @@ func (a *LegacyHTTPAdapter) validate(adapter, projectSlug, key string, desired D
 	if adapter == LegacyIssueAdapter && desired.Trigger != TriggerFirstSeen && desired.Trigger != TriggerRegression {
 		return ErrLegacyInvalidState
 	}
-	if adapter == LegacyMetricAdapter && (desired.Trigger != TriggerEventCount || desired.WindowMinutes < 1 || desired.WindowMinutes > 1440 || desired.Threshold <= 0) {
-		return ErrLegacyInvalidState
+	if adapter == LegacyMetricAdapter {
+		if _, ok := metricAggregate(desired.Trigger); !ok || desired.WindowMinutes < 1 || desired.WindowMinutes > 1440 || desired.Threshold <= 0 {
+			return ErrLegacyInvalidState
+		}
 	}
 	_, err := a.destinationActions(adapter, desired.Notify)
 	return err
@@ -327,8 +329,12 @@ func (a *LegacyHTTPAdapter) payload(adapter, projectSlug, name string, desired D
 		}
 		return legacyIssuePayload{Name: name, ActionMatch: "all", FilterMatch: "all", Conditions: []map[string]string{{"id": condition}}, Filters: []any{}, Actions: actions.([]legacyIssueAction), Frequency: 30}, nil
 	}
+	aggregate, ok := metricAggregate(desired.Trigger)
+	if !ok {
+		return nil, ErrLegacyInvalidState
+	}
 	return legacyMetricPayload{
-		Name: name, QueryType: 0, Dataset: "events", Aggregate: "count()", Query: "",
+		Name: name, QueryType: 0, Dataset: "events", Aggregate: aggregate, Query: "",
 		TimeWindow: desired.WindowMinutes, ResolveThreshold: 0, ThresholdType: 0,
 		ThresholdPeriod: 1, Projects: []string{projectSlug}, EventTypes: []string{"error"},
 		Triggers: []legacyMetricTrigger{{Label: "critical", AlertThreshold: float64(desired.Threshold), Actions: actions.([]legacyMetricAction)}},
@@ -340,7 +346,16 @@ func (a *LegacyHTTPAdapter) destinationActions(adapter string, names []string) (
 	metric := make([]legacyMetricAction, 0, len(names))
 	for _, name := range names {
 		destination, ok := a.Destinations[name]
-		if !ok || destination.State != "Active" || !numericIdentityPattern.MatchString(destination.IntegrationIdentity) || destination.ResourceIdentity == "" {
+		if !ok || destination.State != "Active" {
+			return nil, ErrLegacyDestinationUnsupported
+		}
+		if destination.Kind == "telegram" {
+			if destination.Telegram == nil || destination.Telegram.RouteKey == "" || destination.Telegram.Target == nil || destination.Telegram.RouteRevoked {
+				return nil, ErrLegacyDestinationUnsupported
+			}
+			continue
+		}
+		if !numericIdentityPattern.MatchString(destination.IntegrationIdentity) || destination.ResourceIdentity == "" {
 			return nil, ErrLegacyDestinationUnsupported
 		}
 		integrationID, err := strconv.ParseInt(destination.IntegrationIdentity, 10, 64)

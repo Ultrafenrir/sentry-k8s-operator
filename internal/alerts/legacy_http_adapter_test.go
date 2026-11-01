@@ -22,6 +22,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
@@ -145,14 +146,33 @@ func TestLegacyHTTPAdapterAcceptsDecimalMetricThresholds(t *testing.T) {
 	}
 }
 
-func TestLegacyHTTPAdapterRejectsUnsupportedState(t *testing.T) {
+func TestLegacyHTTPAdapterRendersUserCountAggregate(t *testing.T) {
 	t.Parallel()
 	adapter := &LegacyHTTPAdapter{Client: &sentryapi.Client{}, Destinations: map[string]binding.DestinationBinding{
-		"telegram": {Kind: "telegram", State: "Active", ResourceIdentity: "1"},
+		"page": {Kind: "pagerduty", State: "Active", IntegrationIdentity: "34", ResourceIdentity: "567", ResourceName: "checkout"},
+	}}
+	desired := Desired{Trigger: TriggerUserCount, WindowMinutes: 10, Threshold: 50, Enabled: true, Notify: []string{"page"}}
+	if err := adapter.validate(LegacyMetricAdapter, "checkout", "affected-users", desired); err != nil {
+		t.Fatalf("user-count desired state rejected: %v", err)
+	}
+	payload, err := adapter.payload(LegacyMetricAdapter, "checkout", "affected-users", desired)
+	if err != nil || payload.(legacyMetricPayload).Aggregate != "count_unique(user)" {
+		t.Fatalf("payload=%#v err=%v", payload, err)
+	}
+}
+
+func TestLegacyHTTPAdapterRoutesTelegramThroughOwnedServiceHook(t *testing.T) {
+	t.Parallel()
+	adapter := &LegacyHTTPAdapter{Client: &sentryapi.Client{}, Destinations: map[string]binding.DestinationBinding{
+		"telegram": {Kind: "telegram", State: "Active", Telegram: &binding.TelegramBinding{RouteKey: strings.Repeat("a", 64), Target: &binding.TelegramTarget{ChatIdentity: "-1001"}}},
 	}}
 	desired := Desired{Trigger: TriggerFirstSeen, Enabled: true, Notify: []string{"telegram"}}
-	if !errors.Is(adapter.validate(LegacyIssueAdapter, "checkout", "rule", desired), ErrLegacyDestinationUnsupported) {
-		t.Fatal("unsupported Telegram destination was accepted")
+	if err := adapter.validate(LegacyIssueAdapter, "checkout", "rule", desired); err != nil {
+		t.Fatalf("service-hook Telegram destination rejected: %v", err)
+	}
+	payload, err := adapter.payload(LegacyIssueAdapter, "checkout", "rule", desired)
+	if err != nil || len(payload.(legacyIssuePayload).Actions) != 0 {
+		t.Fatalf("payload=%#v err=%v", payload, err)
 	}
 	desired.Enabled = false
 	if !errors.Is(adapter.validate(LegacyIssueAdapter, "checkout", "rule", desired), ErrLegacyInvalidState) {

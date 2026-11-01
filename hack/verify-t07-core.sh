@@ -32,6 +32,7 @@ rg -q 'LegacyMetricAdapter' internal/alerts/legacy_http_adapter.go
 rg -q 'ErrLegacyToggleUnsupported' internal/alerts/legacy_http_adapter.go
 rg -q 'TestLegacyHTTPAdapterIssueLifecycleAndLostResponseRecovery' internal/alerts/legacy_http_adapter_test.go
 rg -q 'TestLegacyHTTPAdapterMetricLifecycleAndPayload' internal/alerts/legacy_http_adapter_test.go
+rg -q 'TestLegacyHTTPAdapterRendersUserCountAggregate' internal/alerts/legacy_http_adapter_test.go
 rg -q 'LegacyCombinedAdapter' internal/alerts/router.go
 rg -q 'TestLegacyRouterSupportsMixedIssueAndMetricIdentities' internal/alerts/legacy_http_adapter_test.go
 rg -q 'reconcileAlerts' internal/controller/sentryproject_controller.go
@@ -55,5 +56,8 @@ rg -q 'TestOperationJournalRejectsUnsafeTransitions' internal/binding/store_test
 rg -q 'json:"alerts,omitempty"' api/v1alpha1/sentryproject_types.go
 rg -q 'legacy-24.7.1' config/crd/bases/sentryconfiguration.io_sentryconnections.yaml
 rg -q 'event-count' config/crd/bases/sentryconfiguration.io_sentryprojects.yaml
+rg -q 'user-count' config/crd/bases/sentryconfiguration.io_sentryprojects.yaml
+rg -Fq 'count_unique(user)' internal/alerts/legacy_http_adapter_test.go
+rg -Fq 'count_unique(user)' internal/alerts/modern_http_adapter_test.go
 
 echo 'T07 typed API, protected controller lifecycle and modern/legacy HTTP adapters verified; live action delivery remains gated'

@@ -68,11 +68,19 @@ make sentry-down SENTRY_VERSION=24.7.1
 
 `make sentry-bootstrap` creates or updates the fixed local acceptance user and its
 version-scoped organization/team fixture through Sentry's internal provisioning service,
-replaces only its managed user token, verifies Bearer authentication against
+creates a deliberately invalid GitHub integration plus one attached repository for portable
+source-code catalog and code-mapping tests, and creates a deliberately invalid PagerDuty
+integration/service catalog entry whose routing key is the literal
+`invalid-routing-key-not-for-delivery`; its synthetic numeric service ID exists only to
+satisfy the Sentry workflow form's integer contract. Bootstrap replaces only its managed
+user token, verifies Bearer authentication against
 `/api/0/organizations/`, and stores the token at
 `.cache/sentry-self-hosted/tokens/<version>.token` with mode `0600`. The token directory
-is ignored by Git. `sentry-down`, `sentry-reset`, and `sentry-clean` remove the managed
-token file together with the selected runtime.
+is ignored by Git. A successful `sentry-live-config-api` or `sentry-live-api` run also writes
+a mode-0600 evidence record containing only the exact version, organization, successful
+gate, and proven safe-create capabilities. The bounded kind demo validates this record before
+applying connection status. `sentry-down`, `sentry-reset`, and `sentry-clean` remove both the
+managed token and capability evidence together with the selected runtime.
 
 `make sentry-live-api` is destructive and is intended only for the disposable local stack.
 It verifies the bootstrapped organization/team and creates a marker-bearing project through
@@ -81,7 +89,11 @@ round-trip and the single active Default client key, confirms on 24.7.1 that no 
 default rule was created, deletes the project, and requires it to become unreadable. On
 26.10.1 that alert effect remains source/contract-tested because only POST, not GET, is
 published on the project-detectors endpoint. On both versions it also updates and reads
-back the three published inbound filters and all five typed PII settings fields. On 24.7.1
+back all five published inbound filters, all five typed PII fields, all four typed behavior
+fields, the team-only issue-ownership contract, aliased source-code catalog resolution,
+code-mapping create/update/delete, and Sentry CODEOWNERS child storage create/delete. The
+invalid local integration cannot fetch a real provider file, so this is not external
+CODEOWNERS import evidence. On 24.7.1
 it verifies legacy issue and metric alert create/read/update/delete lifecycles; on 26.10.1
 it verifies workflow create/read/update/disable/enable/delete plus an attached events/count()
 metric detector create/read/disable/enable/delete lifecycle without external actions.
@@ -102,13 +114,37 @@ stores the Submitted operation in a protected Secret; a newly constructed store,
 and engine then recover the exact marker by GET without a second POST, clear the journal, and
 complete guarded deletion of the Sentry project and binding. A second full-controller case
 creates a managed project and Kubernetes binding/claim/DSN Secret, introduces external drift
-into all three filters and five PII fields, and requires one reconcile to restore them with
-exactly three filter PUTs and one narrow project PUT. A following reconcile must perform no
-settings mutation, both SettingsReady and Ready must remain true, and guarded deletion must
-complete. The same case creates an additional authorized team, grants it project access,
+into all five filters, five PII fields, five behavior fields, and issue ownership, and
+requires one reconcile to restore them with exactly five filter PUTs, two independently
+narrow project PUTs, and one ownership PUT. A following reconcile must perform no settings
+or ownership mutation, SettingsReady, IssueOwnershipReady, and Ready must remain true, and
+guarded deletion must complete. The same case creates an additional
+authorized team, grants it project access,
 verifies `GrantAccessReady`, removes the desired grant, and requires the additional team to
 be revoked while the primary project team remains attached. The matrix runs both acceptance
 layers after bootstrap and before removing the stack.
+
+The same full-controller case resolves the stable connection integration/repository aliases,
+creates one protected code mapping, introduces visible path drift, requires the next
+reconcile to restore it, confirms mutation-free convergence, and deletes only the exact
+pinned mapping during explicit-empty cleanup. Public status is checked for safe local state
+only, while external integration, repository, mapping, and CODEOWNERS identities remain in
+the protected binding.
+
+One live ownership case creates an unmarked project through the public API, observes it as an
+External/ReadOnly standby candidate without a claim, proves a plain Active request remains
+blocked, then adopts it under an explicitly Active connection and `unmanagedProjects: Adopt`.
+It verifies the exact identity and regional evidence before applying Retain. A second case
+creates a managed project, observes the same remote identity through a managed standby
+candidate, proves promotion is blocked without authorization, consumes an exact handoff,
+and promotes without replacing the remote project. Its Retain cleanup removes the marker and
+protected claim/binding while leaving the same external project readable. These are
+configuration-only ownership lifecycle checks, not failover or external delivery evidence.
+An independent full-controller case creates a user-count alert owned by a managed standby
+candidate. Candidate Retain must remove the exact legacy rule or modern detector/workflow
+before deleting the read-only binding, while the manager claim, project identity, and regional
+evidence remain unchanged. The disposable PagerDuty catalog supplies configuration identities
+only; this case does not send a notification.
 
 `make sentry-live-config-api` runs the same public API project, key, settings, filter and
 alert object lifecycle checks, but intentionally skips event ingestion and filter-behavior
@@ -116,6 +152,13 @@ events. This is the correct gate when validating configuration creation without 
 delivery or when Relay rejects envelopes because a resource-constrained Docker VM is above
 its memory health threshold. It must not be reported as ingestion, PII/filter behavior, or
 notification-delivery evidence.
+
+`make sentry-api-report SENTRY_VERSION=<version>` is a read-only local inventory. It lists
+project names/slugs/platforms, client-key names/active state/rate limits, filter state,
+PII booleans and field counts, and the selected legacy-rule or modern detector/workflow
+summary. Its fixed projections omit external object IDs, DSNs, keys, tokens, routing keys,
+raw Relay configuration, and sensitive/safe field names. The report requires the managed
+mode-0600 local token and is not a general SaaS inventory command.
 
 `make sentry-clean` additionally removes the selected managed upstream checkout.
 `make sentry-matrix` performs the clean start/smoke/removal cycle for both versions in
@@ -183,6 +226,45 @@ On 2026-10-31 the clean 26.10.1 `errors-only` run was repeated after the project
 change. The configuration-only API and controller gates passed, including additional-team
 grant, read-back, revoke, and primary-team preservation. The version-scoped runtime, token,
 and managed volumes were removed afterwards.
+
+Later on 2026-10-31 clean configuration-only runs on 24.7.1 `feature-complete` and 26.10.1
+`errors-only` accepted the expanded settings contract. Both public API runs updated and read
+back filtered-transaction, the selected legacy-browser subfilters, auto-resolve hours,
+default environment, crash-report retention, JavaScript/source-map scraping, and allowed
+browser origins. Both live controller runs repaired drift across all five filters, all five
+PII fields, and all five
+behavior fields with five filter PUTs plus two independent project PUTs, then converged to a
+mutation-free reconcile. Both version-scoped runtimes, tokens, and managed volumes were
+removed afterwards. These runs add configuration reconciliation evidence only.
+
+The next clean configuration-only runs on both targets accepted the team-only
+`issueOwnership` contract through the public project ownership endpoint. Direct API checks
+updated and read back structured path and tag rules, fallthrough, auto-assignment, and
+CODEOWNERS synchronization. Each live controller run then repaired external ownership drift
+with exactly one ownership PUT and converged to a mutation-free reconcile with
+`IssueOwnershipReady=True`. Both version-scoped runtimes, tokens, and managed volumes were
+removed afterwards. These runs do not prove event-driven assignment or CODEOWNERS import.
+
+The following clean configuration-only runs on 24.7.1 `feature-complete` and 26.10.1
+`errors-only` accepted the managed client-key lifecycle through both the direct public API
+gate and the full controller. Each target created a server-generated key, updated active
+state and count/window rate limits, created a rotation replacement, cut the owned output
+Secret over to the replacement public DSN, guarded deletion by exact identity and ownership
+label, and removed the remaining managed key. Secret key material and private DSNs were not
+printed or persisted by the acceptance code. Both version-scoped runtimes and managed
+volumes were removed afterwards. These runs prove configuration lifecycle only; event
+ingestion and notification delivery were intentionally skipped.
+
+The next clean configuration-only runs on the same two targets accepted the custom
+symbol-source lifecycle through both the direct public API gate and the full controller.
+Each target created HTTP, S3, and GCS sources with fake credentials, returned redacted secret
+fields, rotated the HTTP password, and removed the exact three identities. The controller
+loaded credentials from a namespace-local Secret, persisted no credential material in status
+or protected bindings, repaired deliberate visible HTTP drift and a Secret rotation with
+exactly one source update, converged without another mutation, and cleaned up every exact
+owned source. Both version-scoped runtimes, tokens, and managed volumes were removed
+afterwards. These runs prove configuration lifecycle only; symbol download, native
+symbolication, event ingestion, and notification delivery were intentionally skipped.
 
 Legacy issue and metric alert routes are evidenced only by the 24.7.1 run above. A live
 26.10.1 stack returns `404` for the legacy `/rules/` and `/alert-rules/` collection routes;

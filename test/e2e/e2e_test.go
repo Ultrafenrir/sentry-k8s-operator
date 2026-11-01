@@ -20,11 +20,17 @@ limitations under the License.
 package e2e
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -412,27 +418,50 @@ spec:
 			}).Should(Succeed())
 		})
 
-		It("should preserve a live connection across a manager image rollout", func() {
+		It("should recover an externally submitted create across a distinct-version upgrade", func() {
 			const connectionName = "e2e-upgrade-connection"
+			const projectName = "e2e-upgrade-pending"
 			By("waiting for the initial controller rollout before using admission")
 			cmd := exec.Command("kubectl", "rollout", "status",
 				"deployment/sentry-kubernetes-operator-controller-manager", "-n", namespace, "--timeout=3m")
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			manifest := `apiVersion: sentryconfiguration.io/v1alpha1
+			fakeSentry, fakeSentryURL, err := startUpgradeSentryServer()
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { fakeSentry.Close() })
+
+			manifest := fmt.Sprintf(`apiVersion: v1
+kind: Secret
+metadata:
+  name: e2e-upgrade-token
+  namespace: sentry-kubernetes-operator-system
+stringData:
+  token: e2e-upgrade-token
+---
+apiVersion: sentryconfiguration.io/v1alpha1
 kind: SentryConnection
 metadata:
   name: e2e-upgrade-connection
 spec:
-  url: https://sentry.example.invalid
-  organization: example
+  url: %s
+  organization: e2e
   credentials:
     tokenSecretRef:
-      name: missing-upgrade-token
+      name: e2e-upgrade-token
       key: token
-`
-			By("creating the live connection through the ready admission service")
+  transport:
+    allowInsecureHTTP: true
+  access:
+    - owner: e2e
+      namespaces:
+        matchNames:
+          - default
+      teams:
+        - e2e-team
+      allowCreate: true
+`, fakeSentryURL)
+			By("creating the live connection to the isolated fake Sentry boundary")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "apply", "-f", "-")
 				cmd.Stdin = strings.NewReader(manifest)
@@ -441,21 +470,21 @@ spec:
 			}, 30*time.Second, time.Second).Should(Succeed())
 			DeferCleanup(func() {
 				_, _ = utils.Run(exec.Command("kubectl", "delete", "sentryconnection", connectionName, "--ignore-not-found"))
+				_, _ = utils.Run(exec.Command("kubectl", "delete", "secret", "e2e-upgrade-token", "-n", namespace, "--ignore-not-found"))
 			})
 
-			var connectionUID string
-			By("waiting for the live connection condition before the rollout")
+			By("waiting for credentials and publishing explicit capability evidence")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "sentryconnection", connectionName,
-					"-o", "jsonpath={.metadata.uid}{'|'}{.status.conditions[?(@.type=='CredentialsReady')].reason}")
+					"-o", "jsonpath={.status.conditions[?(@.type=='CredentialsReady')].reason}")
 				output, getErr := utils.Run(cmd)
 				g.Expect(getErr).NotTo(HaveOccurred())
-				parts := strings.Split(output, "|")
-				g.Expect(parts).To(HaveLen(2))
-				g.Expect(parts[0]).NotTo(BeEmpty())
-				g.Expect(parts[1]).To(Equal("SecretInputInvalid"))
-				connectionUID = parts[0]
+				g.Expect(output).To(Equal("SecretInputsLoaded"))
 			}).Should(Succeed())
+			cmd = exec.Command("kubectl", "patch", "sentryconnection", connectionName, "--subresource=status", "--type=merge", "-p",
+				`{"status":{"capabilities":["project.create.atomic-default-rules","project.create.automatic-active-key"]}}`)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("creating protected pending-operation fixtures before the rollout")
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
@@ -466,7 +495,42 @@ spec:
 			protectedBefore, err := protectedFixtureSnapshots()
 			Expect(err).NotTo(HaveOccurred())
 
-			By("rolling the controller Deployment to the second image tag")
+			project := `apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryProject
+metadata:
+  name: e2e-upgrade-pending
+  namespace: default
+spec:
+  sentry: e2e-upgrade-connection
+  project:
+    create:
+      team: e2e-team
+`
+			By("submitting a create whose external commit response is lost")
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(project)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			var projectUID string
+			Eventually(func(g Gomega) {
+				uid, getErr := utils.Run(exec.Command("kubectl", "get", "sentryproject", projectName, "-n", "default", "-o", "jsonpath={.metadata.uid}"))
+				g.Expect(getErr).NotTo(HaveOccurred())
+				g.Expect(uid).NotTo(BeEmpty())
+				projectUID = uid
+				state, stateErr := protectedUpgradeBindingState(uid)
+				g.Expect(stateErr).NotTo(HaveOccurred())
+				g.Expect(state.PendingKind).To(Equal("CreateProject"))
+				g.Expect(state.PendingPhase).To(Equal("Submitted"))
+				g.Expect(state.ExternalIdentity).To(BeEmpty())
+				g.Expect(fakeSentry.CreateCount()).To(Equal(int64(1)))
+				reason, conditionErr := utils.Run(exec.Command("kubectl", "get", "sentryproject", projectName, "-n", "default",
+					"-o", "jsonpath={.status.conditions[?(@.type=='ProjectReady')].reason}"))
+				g.Expect(conditionErr).NotTo(HaveOccurred())
+				g.Expect(reason).To(Equal("CreationOutcomeUnknown"))
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("rolling from the exact baseline commit to the current worktree")
 			cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", upgradeManagerImage))
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
@@ -475,71 +539,54 @@ spec:
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("verifying the desired image and preserved connection identity")
+			By("making the committed external project visible only after the new manager is ready")
 			cmd = exec.Command("kubectl", "get", "deployment", "sentry-kubernetes-operator-controller-manager",
 				"-n", namespace, "-o", `jsonpath={.spec.template.spec.containers[?(@.name=="manager")].image}`)
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(output).To(Equal(upgradeManagerImage))
+			fakeSentry.SetVisible()
+
+			By("verifying recovery without a duplicate create")
 			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "sentryconnection", connectionName,
-					"-o", "jsonpath={.metadata.uid}{'|'}{.status.conditions[?(@.type=='CredentialsReady')].reason}")
-				current, getErr := utils.Run(cmd)
+				state, stateErr := protectedUpgradeBindingState(projectUID)
+				g.Expect(stateErr).NotTo(HaveOccurred())
+				g.Expect(state.PendingKind).To(BeEmpty())
+				g.Expect(state.PendingPhase).To(BeEmpty())
+				g.Expect(state.ExternalIdentity).To(Equal("e2e-project-id"))
+				g.Expect(fakeSentry.CreateCount()).To(Equal(int64(1)))
+				current, getErr := utils.Run(exec.Command("kubectl", "get", "sentryproject", projectName, "-n", "default",
+					"-o", "jsonpath={.status.conditions[?(@.type=='ProjectReady')].status}{'|'}{.status.conditions[?(@.type=='ProjectReady')].reason}"))
 				g.Expect(getErr).NotTo(HaveOccurred())
-				g.Expect(current).To(Equal(connectionUID + "|SecretInputInvalid"))
-			}).Should(Succeed())
+				g.Expect(current).To(Equal("True|ProjectVerified"))
+			}, 2*time.Minute, time.Second).Should(Succeed())
 			protectedAfterUpgrade, err := protectedFixtureSnapshots()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(protectedAfterUpgrade).To(Equal(protectedBefore), "upgrade must preserve protected record UID, immutable flag, labels and payload bytes")
 
 			By("verifying admission after the rollout")
-			project := `apiVersion: sentryconfiguration.io/v1alpha1
+			admissionProject := `apiVersion: sentryconfiguration.io/v1alpha1
 kind: SentryProject
 metadata:
   name: e2e-post-upgrade-admission
   namespace: default
 spec:
-  connection: e2e-upgrade-connection
+  sentry: e2e-upgrade-connection
   project:
     create:
-      team: example
+      team: e2e-team
 `
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "create", "--dry-run=server", "-f", "-")
-				cmd.Stdin = strings.NewReader(project)
+				cmd.Stdin = strings.NewReader(admissionProject)
 				_, createErr := utils.Run(cmd)
 				g.Expect(createErr).NotTo(HaveOccurred())
 			}, 30*time.Second, time.Second).Should(Succeed())
 
-			By("rolling the controller Deployment back to the first image tag")
-			cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
+			By("deleting the recovered project while the upgraded controller and fake Sentry remain available")
+			cmd = exec.Command("kubectl", "delete", "sentryproject", projectName, "-n", "default", "--timeout=2m")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			cmd = exec.Command("kubectl", "rollout", "status",
-				"deployment/sentry-kubernetes-operator-controller-manager", "-n", namespace, "--timeout=3m")
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			cmd = exec.Command("kubectl", "get", "deployment", "sentry-kubernetes-operator-controller-manager",
-				"-n", namespace, "-o", `jsonpath={.spec.template.spec.containers[?(@.name=="manager")].image}`)
-			output, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(Equal(managerImage))
-			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "sentryconnection", connectionName,
-					"-o", "jsonpath={.metadata.uid}{'|'}{.status.conditions[?(@.type=='CredentialsReady')].reason}")
-				current, getErr := utils.Run(cmd)
-				g.Expect(getErr).NotTo(HaveOccurred())
-				g.Expect(current).To(Equal(connectionUID + "|SecretInputInvalid"))
-			}).Should(Succeed())
-			protectedAfterRollback, err := protectedFixtureSnapshots()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(protectedAfterRollback).To(Equal(protectedBefore), "rollback must preserve protected record UID, immutable flag, labels and payload bytes")
-			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "create", "--dry-run=server", "-f", "-")
-				cmd.Stdin = strings.NewReader(project)
-				_, createErr := utils.Run(cmd)
-				g.Expect(createErr).NotTo(HaveOccurred())
-			}, 30*time.Second, time.Second).Should(Succeed())
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
@@ -555,6 +602,201 @@ spec:
 		// ))
 	})
 })
+
+type upgradeSentryServer struct {
+	server      *http.Server
+	listener    net.Listener
+	visible     atomic.Bool
+	createCount atomic.Int64
+	mu          sync.Mutex
+	projectName string
+	projectSlug string
+}
+
+func startUpgradeSentryServer() (*upgradeSentryServer, string, error) {
+	listener, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		return nil, "", err
+	}
+	host, err := kindHostAddress()
+	if err != nil {
+		_ = listener.Close()
+		return nil, "", err
+	}
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		_ = listener.Close()
+		return nil, "", err
+	}
+	fake := &upgradeSentryServer{listener: listener}
+	fake.server = &http.Server{Handler: http.HandlerFunc(fake.handle)}
+	go func() {
+		_ = fake.server.Serve(listener)
+	}()
+	return fake, "http://" + net.JoinHostPort(host, port), nil
+}
+
+func kindHostAddress() (string, error) {
+	cluster := os.Getenv("KIND_CLUSTER")
+	if cluster == "" {
+		cluster = "sentry-kubernetes-operator-test-e2e"
+	}
+	containerTool := os.Getenv("CONTAINER_TOOL")
+	if containerTool == "" {
+		containerTool = "docker"
+	}
+	node := cluster + "-control-plane"
+	if _, err := utils.Run(exec.Command(containerTool, "exec", node, "getent", "hosts", "host.docker.internal")); err == nil {
+		return "host.docker.internal", nil
+	}
+	output, err := utils.Run(exec.Command(containerTool, "exec", node, "sh", "-c", "ip route show default | awk '{print $3; exit}'"))
+	if err != nil || net.ParseIP(strings.TrimSpace(output)) == nil {
+		return "", fmt.Errorf("resolve kind host gateway")
+	}
+	return strings.TrimSpace(output), nil
+}
+
+func (s *upgradeSentryServer) Close() {
+	_ = s.server.Close()
+}
+
+func (s *upgradeSentryServer) CreateCount() int64 {
+	return s.createCount.Load()
+}
+
+func (s *upgradeSentryServer) SetVisible() {
+	s.visible.Store(true)
+}
+
+func (s *upgradeSentryServer) handle(response http.ResponseWriter, request *http.Request) {
+	if request.Header.Get("Authorization") != "Bearer e2e-upgrade-token" {
+		response.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if request.Method == http.MethodPost && request.URL.Path == "/api/0/teams/e2e/e2e-team/projects/" {
+		var payload struct {
+			Name string `json:"name"`
+			Slug string `json:"slug"`
+		}
+		if json.NewDecoder(request.Body).Decode(&payload) != nil || payload.Name == "" || payload.Slug != "e2e-upgrade-pending" {
+			response.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		s.mu.Lock()
+		s.projectName = payload.Name
+		s.projectSlug = payload.Slug
+		s.mu.Unlock()
+		s.createCount.Add(1)
+		hijacker, ok := response.(http.Hijacker)
+		if !ok {
+			response.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		connection, _, err := hijacker.Hijack()
+		if err == nil {
+			_ = connection.Close()
+		}
+		return
+	}
+	if request.URL.Path == "/api/0/projects/e2e/e2e-upgrade-pending/keys/" && request.Method == http.MethodGet {
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = response.Write([]byte(`[{"id":"e2e-key-id","name":"Default","label":"Default","isActive":true,"dsn":{"public":"http://public@example.invalid/1"}}]`))
+		return
+	}
+	if request.URL.Path == "/api/0/projects/e2e/e2e-upgrade-pending/teams/" && request.Method == http.MethodGet {
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = response.Write([]byte(`[{"id":"e2e-team-id","slug":"e2e-team"}]`))
+		return
+	}
+	if request.URL.Path != "/api/0/projects/e2e/e2e-upgrade-pending/" {
+		response.WriteHeader(http.StatusNotFound)
+		return
+	}
+	s.mu.Lock()
+	name := s.projectName
+	slug := s.projectSlug
+	s.mu.Unlock()
+	switch request.Method {
+	case http.MethodGet:
+		if !s.visible.Load() || slug == "" {
+			response.WriteHeader(http.StatusNotFound)
+			return
+		}
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(map[string]string{
+			"id": "e2e-project-id", "slug": slug, "name": name, "absoluteUrl": "http://example.invalid/e2e/" + slug,
+		})
+	case http.MethodPut:
+		var payload struct {
+			Name string `json:"name"`
+		}
+		if json.NewDecoder(request.Body).Decode(&payload) != nil || payload.Name == "" {
+			response.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		s.mu.Lock()
+		s.projectName = payload.Name
+		s.mu.Unlock()
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = response.Write([]byte(`{}`))
+	case http.MethodDelete:
+		response.WriteHeader(http.StatusNoContent)
+	default:
+		response.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+type upgradeBindingState struct {
+	PendingKind      string
+	PendingPhase     string
+	ExternalIdentity string
+}
+
+func protectedUpgradeBindingState(projectUID string) (upgradeBindingState, error) {
+	output, err := utils.Run(exec.Command("kubectl", "get", "secrets", "-n", "sentry-kubernetes-operator-state",
+		"-l", "sentryconfiguration.io/record-type=project-binding", "-o", "json"))
+	if err != nil {
+		return upgradeBindingState{}, err
+	}
+	var list struct {
+		Items []struct {
+			Data map[string]string `json:"data"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(output), &list); err != nil {
+		return upgradeBindingState{}, err
+	}
+	for _, item := range list.Items {
+		encoded := item.Data["state.json"]
+		payload, decodeErr := base64.StdEncoding.DecodeString(encoded)
+		if decodeErr != nil {
+			return upgradeBindingState{}, decodeErr
+		}
+		var binding struct {
+			Project struct {
+				UID string `json:"uid"`
+			} `json:"project"`
+			Pending *struct {
+				Kind  string `json:"kind"`
+				Phase string `json:"phase"`
+			} `json:"pending"`
+			ExternalIdentity string `json:"externalIdentity"`
+		}
+		if err := json.Unmarshal(payload, &binding); err != nil {
+			return upgradeBindingState{}, err
+		}
+		if binding.Project.UID != projectUID {
+			continue
+		}
+		state := upgradeBindingState{ExternalIdentity: binding.ExternalIdentity}
+		if binding.Pending != nil {
+			state.PendingKind = binding.Pending.Kind
+			state.PendingPhase = binding.Pending.Phase
+		}
+		return state, nil
+	}
+	return upgradeBindingState{}, fmt.Errorf("protected project binding is unavailable")
+}
 
 type protectedFixtureReference struct {
 	namespace string

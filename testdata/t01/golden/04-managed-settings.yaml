@@ -12,11 +12,85 @@ spec:
   grantAccess:
     teams:
       - platform-observability
+  issueOwnership:
+    rules:
+      - matcher:
+          type: path
+          pattern: src/checkout/*
+        teams:
+          - payments
+          - platform-observability
+      - matcher:
+          type: tag
+          tagKey: environment
+          pattern: production
+        teams:
+          - payments
+    fallthrough: NoOne
+    autoAssignment: IssueOwner
+    codeownersAutoSync: true
+  codeMappings:
+    checkout:
+      integration: company-github
+      repository: checkout
+      stackRoot: /
+      sourceRoot: src
+      defaultBranch: main
+      importCodeowners: true
+  clientKeys:
+    ingest:
+      active: true
+      rateLimit:
+        count: 1000
+        windowSeconds: 60
+      rotationRevision: 1
+  symbolSources:
+    http-symbols:
+      layout:
+        type: native
+        casing: default
+      http:
+        url: https://symbols.example.invalid
+        username: reader
+        passwordSecretRef:
+          name: symbol-credentials
+          key: http-password
+    s3-symbols:
+      layout:
+        type: symstore
+        casing: lowercase
+      s3:
+        bucket: checkout-symbols
+        region: eu-west-1
+        prefix: native/
+        accessKeySecretRef:
+          name: symbol-credentials
+          key: s3-access-key
+        secretKeySecretRef:
+          name: symbol-credentials
+          key: s3-secret-key
+    gcs-symbols:
+      layout:
+        type: unified
+        casing: uppercase
+      gcs:
+        bucket: checkout-symbols
+        clientEmail: symbols@example.invalid
+        prefix: debug/
+        privateKeySecretRef:
+          name: symbol-credentials
+          key: gcs-private-key
+  dsn:
+    managedClientKey: ingest
   settings:
     filters:
       browserExtensions: true
       localhost: false
       webCrawlers: true
+      filteredTransactions: true
+      legacyBrowsers:
+        - ie
+        - chrome
     pii:
       scrubData: true
       scrubDefaults: true
@@ -25,3 +99,52 @@ spec:
         - authorization
         - password
       safeFields: []
+      advancedRules:
+        - type: email
+          redaction: remove
+          applications:
+            - root: message
+            - root: extra
+              path:
+                - customer
+                - email
+        - type: anything
+          redaction: replace
+          replacement: "[Filtered]"
+          applications:
+            - root: request
+              path:
+                - headers
+                - Authorization
+    behavior:
+      autoResolveHours: 72
+      defaultEnvironment: production
+      crashReportLimit: 10
+      scrapeJavaScript: true
+      allowedDomains:
+        - "*.checkout.example.com"
+        - https://checkout.example.com:443
+    grouping:
+      enhancements:
+        - matcher: path
+          pattern: "*/node_modules/*"
+          action: MarkOutOfApp
+        - matcher: function
+          pattern: "vendor_*"
+          negate: true
+          action: Include
+      fingerprints:
+        - matcher: error.type
+          pattern: DatabaseUnavailable
+          values:
+            - database-unavailable
+        - matcher: stack.function
+          pattern: "query_*"
+          values:
+            - database
+          includeDefault: true
+    symbolication:
+      builtinSources:
+        - electron
+        - microsoft
+        - nuget

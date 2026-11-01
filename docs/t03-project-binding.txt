@@ -38,9 +38,14 @@ preserved. Direct user membership remains outside the alpha contract.
 Lifecycle
 
 The finalizer handles protected cleanup before removing Kubernetes ownership. `Retain`
-leaves the Sentry project in place. `DeleteProject` requires current policy authorization,
-the exact manager claim, and live ownership evidence. Deletion is processed even when the
-resource is paused.
+removes operator-owned child resources, verifies the exact project identity and manager
+claim, removes the remote ownership marker, verifies the release by readback, and then
+deletes the protected claim and binding while leaving the Sentry project in place.
+For a managed Standby candidate, `Retain` first removes only that candidate's separately
+owned alerts and destinations, then releases its read-only binding without changing the
+manager claim or the remote project ownership marker.
+`DeleteProject` requires current policy authorization, the exact manager claim, and live
+ownership evidence. Deletion is processed even when the resource is paused.
 
 Capability honesty
 

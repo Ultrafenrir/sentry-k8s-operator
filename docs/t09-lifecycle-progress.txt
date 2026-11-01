@@ -1,6 +1,7 @@
 T09 — LIFECYCLE, SECURITY, HA, AND RECOVERY
 Updated: 2026-10-31
-Status: Partial implementation with source, envtest, and kind evidence
+Status: Bounded alpha lifecycle implemented with source, envtest, and kind evidence;
+production recovery evidence remains deferred
 
 High availability and scheduling
 
@@ -24,9 +25,11 @@ retries use bounded jitter. Leader-only janitors process bounded batches with ex
 deletion. Legacy route migration publishes the new record before deleting the old one and
 fails closed on conflicts.
 
-`Retain` removes the finalizer without a Sentry API mutation. `DeleteProject` requires live
-authorization and ownership evidence. Deletion work is processed before pause. Protected
-registration recovery can run before ordinary Sentry dependencies are ready.
+`Retain` removes operator-owned children, journals and verifies removal of the remote
+ownership marker, and deletes the protected manager claim and binding without deleting the
+Sentry project. `DeleteProject` requires live authorization and ownership evidence.
+Deletion work is processed before pause. Protected registration recovery can run before
+ordinary Sentry dependencies are ready.
 
 Observability
 
@@ -49,15 +52,27 @@ Recovery tooling and audit
 `kubectl sentry admin-report` is read-only and prints local names, fixed phases, and
 aggregates without protected identities or payloads. `kubectl sentry audit-export` validates
 and exports an identity-free immutable mutation trail. Admission denies updates to existing
-audit records; a bounded leader-only janitor enforces retention.
+audit records; a bounded leader-only janitor enforces retention. Delivery-queue retention
+also requires a durable audit start before exact deletion and records a closed verified,
+recovered, or failed outcome without queue identity or payload data.
 
 Evidence
 
 Envtest covers load, concurrent status transitions, protected-state failure windows, backup
 semantic validation, and controller recovery. Kind probes cover leader failover, RBAC,
 NetworkPolicy, certificate rotation, authenticated metrics, Prometheus discovery/rules, and
-selected upgrades. The latest local operator image exposed product metrics and reconciled
-the disposable Sentry demo.
+selected upgrades. A protected-state kind drill exported representative records only in
+memory, exact-deleted and create-only restored them, verified resumable restore and stable
+digest, rejected tampering and live conflicts, and removed all four ownership-labeled drill
+namespaces. A clean bounded demo run with the latest local operator image reconciled
+the modern and read-only Sentry 26.10.1 projects to Ready, preserved the documented legacy,
+unresolved-destination, and paused partial states, and removed all ownership-labeled demo
+namespaces during exact cleanup. This is configuration-only evidence and does not prove event
+ingestion or notification delivery. Clean configuration-only controller acceptance against Sentry
+24.7.1 and 26.10.1 changed live remote regional evidence at a larger revision, observed the
+real five-second fencing interval and exact readback, and proved stale and equal-revision
+conflicting writers could not change the remote marker. This is not physical multi-cluster
+or network-partition failover evidence.
 
 Known local diagnostic limitation
 
@@ -68,7 +83,7 @@ workaround.
 
 Remaining work
 
-Long-running production soak, distribution-specific Kubernetes acceptance, complete backup
-restore drills, hosted upgrade paths, external notification delivery, and hosted release
-evidence remain outside the current proof boundary. See `docs/project-status.md` for the
-owner-approved backlog.
+Long-running production soak, distribution-specific Kubernetes acceptance, persisted
+encrypted full-installation backup/restore, hosted upgrade paths, external notification
+delivery, and hosted release evidence remain outside the current proof boundary. See
+`docs/project-status.md` for the owner-approved backlog.

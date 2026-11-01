@@ -23,6 +23,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	sentryv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
+	projectruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/project"
 )
 
 func TestConnectionOwnershipStatusDoesNotEchoUnverifiedActiveRevision(t *testing.T) {
@@ -41,6 +43,23 @@ func TestConnectionOwnershipStatusDoesNotEchoUnverifiedActiveRevision(t *testing
 	}
 	if connection.Status.EffectiveRole != string(sentryv1alpha1.ConnectionRoleStandby) || connection.Status.ObservedRevision != 0 || connection.Status.Region != "eu-west-1" {
 		t.Fatalf("ownership status = %#v", connection.Status)
+	}
+}
+
+func TestOnlyProtectedManagedStandbyCanContributeChildren(t *testing.T) {
+	t.Parallel()
+	project := &sentryv1alpha1.SentryProject{Spec: sentryv1alpha1.SentryProjectSpec{Role: sentryv1alpha1.ProjectRoleStandby}}
+	managed := projectruntime.Result{Origin: binding.OriginManaged, AccessMode: binding.AccessReadOnly}
+	if !canManageChildren(project, managed) {
+		t.Fatal("protected managed standby was denied child ownership")
+	}
+	external := projectruntime.Result{Origin: binding.OriginExternal, AccessMode: binding.AccessReadOnly}
+	if canManageChildren(project, external) {
+		t.Fatal("unmanaged standby was allowed child ownership")
+	}
+	project.Spec.Role = sentryv1alpha1.ProjectRoleActive
+	if canManageChildren(project, managed) {
+		t.Fatal("active acquisition request without manager claim was allowed child ownership")
 	}
 }
 

@@ -22,9 +22,11 @@ rule; the alpha contract rejects unsupported disable semantics.
 
 3. Legacy metric alerts — Sentry 24.7.1
 
-Supported common trigger:
+Supported common triggers:
 
-- `event-count` with `windowMinutes` and `threshold`.
+- `event-count` with `windowMinutes` and `threshold`;
+- `user-count` with `windowMinutes` and `threshold`, rendered as
+  `count_unique(user)`.
 
 The adapter uses the legacy alert-rule and trigger/action collections. Identity and mutation
 state are kept in protected bindings so interrupted creates and cleanup can be retried
@@ -32,9 +34,11 @@ without duplicating rules.
 
 4. Modern detector/workflow — Sentry 26.10.1
 
-Supported common trigger:
+Supported common triggers:
 
-- `event-count`, represented by an events/count() metric detector attached to a workflow.
+- `event-count`, represented by an events/count() metric detector attached to a workflow;
+- `user-count`, represented by an events/count_unique(user) metric detector attached to a
+  workflow.
 
 The adapter supports create, read, update, enable/disable, and guarded delete. The detector
 and workflow are treated as one owned logical alert in Kubernetes status. Detector families

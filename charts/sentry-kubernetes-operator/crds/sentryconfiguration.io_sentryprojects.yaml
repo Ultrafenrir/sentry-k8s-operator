@@ -85,6 +85,7 @@ spec:
                       - first-seen
                       - regression
                       - event-count
+                      - user-count
                       type: string
                     windowMinutes:
                       format: int32
@@ -96,14 +97,108 @@ spec:
                   - trigger
                   type: object
                   x-kubernetes-validations:
-                  - message: event-count requires windowMinutes and threshold; issue
-                      triggers forbid them
-                    rule: 'self.trigger == ''event-count'' ? (has(self.windowMinutes)
+                  - message: metric triggers require windowMinutes and threshold;
+                      issue triggers forbid them
+                    rule: 'self.trigger in [''event-count'', ''user-count''] ? (has(self.windowMinutes)
                       && has(self.threshold)) : (!has(self.windowMinutes) && !has(self.threshold))'
                 description: |-
                   An absent alerts field leaves existing alert children unmanaged. An explicit empty map
                   deletes all protected operator-owned alerts.
                 maxProperties: 100
+                type: object
+              clientKeys:
+                additionalProperties:
+                  description: |-
+                    ManagedClientKeySpec owns one Sentry project client key without accepting public or
+                    secret key material. Increasing rotationRevision creates a server-generated replacement.
+                  properties:
+                    active:
+                      default: true
+                      type: boolean
+                    rateLimit:
+                      description: |-
+                        ClientKeyRateLimit caps accepted errors for one managed client key. A missing rateLimit
+                        explicitly disables the per-key limit because the complete managed child is owned.
+                      properties:
+                        count:
+                          format: int64
+                          maximum: 2147483647
+                          minimum: 1
+                          type: integer
+                        windowSeconds:
+                          description: |-
+                            WindowSeconds is bounded by the portable limit shared by both supported Sentry
+                            versions.
+                          format: int32
+                          maximum: 86400
+                          minimum: 1
+                          type: integer
+                      required:
+                      - count
+                      - windowSeconds
+                      type: object
+                    rotationRevision:
+                      default: 1
+                      format: int64
+                      maximum: 2147483647
+                      minimum: 1
+                      type: integer
+                  type: object
+                description: |-
+                  ClientKeys owns bounded server-generated client-key children. An absent field leaves
+                  all client keys unmanaged; an explicit empty map removes protected operator-owned keys.
+                maxProperties: 20
+                type: object
+                x-kubernetes-validations:
+                - message: client key names must be lowercase DNS labels no longer
+                    than 32 characters
+                  rule: self.all(k, k.matches('^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$'))
+              codeMappings:
+                additionalProperties:
+                  description: |-
+                    CodeMappingSpec maps stack-trace paths to one connection-owned repository alias. Sentry,
+                    integration, repository, and mapping identities never enter the public resource.
+                  properties:
+                    defaultBranch:
+                      maxLength: 255
+                      type: string
+                    importCodeowners:
+                      description: |-
+                        ImportCodeowners fetches the repository CODEOWNERS file through Sentry and owns the
+                        corresponding Sentry ProjectCodeOwners child for this mapping.
+                      type: boolean
+                    integration:
+                      description: Integration selects a sourceCode installation alias
+                        on the SentryConnection.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z](?:[a-z0-9-]*[a-z0-9])?$
+                      type: string
+                    repository:
+                      description: Repository selects a repository alias nested under
+                        the integration.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z](?:[a-z0-9-]*[a-z0-9])?$
+                      type: string
+                    sourceRoot:
+                      maxLength: 512
+                      type: string
+                    stackRoot:
+                      maxLength: 512
+                      type: string
+                  required:
+                  - integration
+                  - repository
+                  type: object
+                  x-kubernetes-validations:
+                  - message: CODEOWNERS import requires defaultBranch
+                    rule: '!self.importCodeowners || size(self.defaultBranch) > 0'
+                description: |-
+                  CodeMappings owns repository path mappings keyed by stable local aliases. An absent
+                  field leaves mappings unmanaged; an explicit empty map removes owned mappings and their
+                  imported CODEOWNERS children.
+                maxProperties: 50
                 type: object
               dsn:
                 description: DSNSpec customizes the public DSN output without exposing
@@ -113,11 +208,22 @@ spec:
                     maxLength: 100
                     minLength: 1
                     type: string
+                  managedClientKey:
+                    description: |-
+                      ManagedClientKey selects one operator-managed client key by its local map key. This
+                      avoids exposing the ownership-bearing remote Sentry label.
+                    maxLength: 32
+                    minLength: 1
+                    pattern: ^[a-z](?:[a-z0-9-]*[a-z0-9])?$
+                    type: string
                   secret:
                     maxLength: 253
                     minLength: 1
                     type: string
                 type: object
+                x-kubernetes-validations:
+                - message: clientKey and managedClientKey are mutually exclusive
+                  rule: '!(has(self.clientKey) && has(self.managedClientKey))'
               grantAccess:
                 description: |-
                   GrantAccess manages additional team access for a managed project. The connection access
@@ -132,6 +238,92 @@ spec:
                     maxItems: 50
                     type: array
                     x-kubernetes-list-type: set
+                type: object
+              issueOwnership:
+                description: |-
+                  IssueOwnership manages team-only issue ownership rules and assignment behavior.
+                  Every referenced team must be the primary project team or appear in grantAccess.
+                properties:
+                  autoAssignment:
+                    description: IssueOwnershipAutoAssignment controls automatic issue
+                      assignment.
+                    enum:
+                    - IssueOwner
+                    - SuspectCommits
+                    - Disabled
+                    type: string
+                  codeownersAutoSync:
+                    description: |-
+                      CodeownersAutoSync controls synchronization of already imported CODEOWNERS data. It
+                      does not import a repository or create code mappings.
+                    type: boolean
+                  fallthrough:
+                    description: IssueOwnershipFallthrough controls unmatched issues.
+                    enum:
+                    - AllMembers
+                    - NoOne
+                    type: string
+                  rules:
+                    description: Rules are evaluated in order. An explicit empty list
+                      clears custom ownership rules.
+                    items:
+                      description: |-
+                        IssueOwnershipRule maps one ordered matcher to readable Sentry team slugs. Direct users,
+                        email addresses, and raw external identities are deliberately excluded.
+                      properties:
+                        matcher:
+                          description: |-
+                            IssueOwnershipMatcher is a bounded, structured ownership-rule matcher. Whitespace,
+                            comments, quoted identifiers, and raw Sentry grammar stay outside the alpha API.
+                          properties:
+                            pattern:
+                              maxLength: 256
+                              minLength: 1
+                              pattern: ^[^[:space:]#\"]+$
+                              type: string
+                            tagKey:
+                              description: TagKey is the event tag name without Sentry's
+                                tags. prefix.
+                              maxLength: 64
+                              minLength: 1
+                              pattern: ^[A-Za-z0-9_.-]+$
+                              type: string
+                            type:
+                              description: IssueOwnershipMatcherType selects one portable
+                                Sentry ownership-rule matcher.
+                              enum:
+                              - path
+                              - module
+                              - url
+                              - tag
+                              type: string
+                          required:
+                          - pattern
+                          - type
+                          type: object
+                          x-kubernetes-validations:
+                          - message: tagKey is required only for tag matchers
+                            rule: 'self.type == ''tag'' ? has(self.tagKey) : !has(self.tagKey)'
+                        teams:
+                          items:
+                            maxLength: 63
+                            minLength: 1
+                            pattern: ^[a-z](?:[a-z0-9-]*[a-z0-9])?$
+                            type: string
+                          maxItems: 10
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                      required:
+                      - matcher
+                      - teams
+                      type: object
+                    maxItems: 100
+                    type: array
+                required:
+                - autoAssignment
+                - codeownersAutoSync
+                - fallthrough
                 type: object
               lifecycle:
                 default: {}
@@ -225,21 +417,278 @@ spec:
                 description: ProjectSettings is deliberately limited to the T00 source-confirmed
                   alpha surface.
                 properties:
+                  behavior:
+                    description: |-
+                      BehaviorSettings contains bounded project behavior shared by both supported Sentry
+                      compatibility versions.
+                    properties:
+                      allowedDomains:
+                        description: |-
+                          AllowedDomains owns the non-empty set of browser origins allowed to submit events.
+                          Each entry is one DNS hostname or HTTP(S) origin with an optional leading wildcard
+                          subdomain and fixed numeric port. A sole `*` entry allows every origin.
+                        items:
+                          maxLength: 253
+                          pattern: ^(\*|((https?://)?(\*\.)?[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?)(:[0-9]{1,5})?)$
+                          type: string
+                        maxItems: 100
+                        minItems: 1
+                        type: array
+                        x-kubernetes-list-type: set
+                      autoResolveHours:
+                        description: |-
+                          AutoResolveHours automatically resolves an issue after this many unseen hours. Zero
+                          disables automatic resolution.
+                        format: int64
+                        maximum: 2147483647
+                        minimum: 0
+                        type: integer
+                      crashReportLimit:
+                        description: |-
+                          CrashReportLimit controls stored native crash-report attachments per issue. Minus one
+                          is unlimited, zero disables storage, and positive values set an explicit limit.
+                        format: int32
+                        maximum: 100
+                        minimum: -1
+                        type: integer
+                      defaultEnvironment:
+                        description: |-
+                          DefaultEnvironment selects the environment shown by default. An empty value clears the
+                          selection without deleting any Sentry environment.
+                        maxLength: 64
+                        pattern: ^[^\n\r\f/]*$
+                        type: string
+                      scrapeJavaScript:
+                        description: ScrapeJavaScript permits Sentry to fetch JavaScript
+                          source files and source maps.
+                        type: boolean
+                    type: object
+                    x-kubernetes-validations:
+                    - message: allowedDomains wildcard must be the only entry
+                      rule: '!has(self.allowedDomains) || !(self.allowedDomains.exists(d,
+                        d == ''*'') && size(self.allowedDomains) > 1)'
                   filters:
-                    description: FilterSettings contains the source-confirmed inbound
-                      filters.
+                    description: |-
+                      FilterSettings contains the source-confirmed inbound filters. A nil field is unmanaged;
+                      an explicitly empty legacyBrowsers set disables every managed browser subfilter.
                     properties:
                       browserExtensions:
                         type: boolean
+                      filteredTransactions:
+                        type: boolean
+                      legacyBrowsers:
+                        items:
+                          description: LegacyBrowserFilter selects one standard Sentry
+                            legacy-browser family.
+                          enum:
+                          - ie
+                          - edge
+                          - safari
+                          - firefox
+                          - chrome
+                          - opera
+                          - android
+                          - opera_mini
+                          type: string
+                        maxItems: 8
+                        type: array
+                        x-kubernetes-list-type: set
                       localhost:
                         type: boolean
                       webCrawlers:
                         type: boolean
                     type: object
+                  grouping:
+                    description: |-
+                      GroupingSettings owns the portable ordered grouping enhancement and fingerprinting rule
+                      lists. Explicit empty lists clear the respective rule text.
+                    properties:
+                      enhancements:
+                        items:
+                          description: GroupingEnhancementRule is serialized into
+                            one canonical Sentry stack-trace rule.
+                          properties:
+                            action:
+                              description: |-
+                                GroupingEnhancementAction selects one portable frame classification or contribution
+                                action.
+                              enum:
+                              - MarkInApp
+                              - MarkOutOfApp
+                              - Include
+                              - Exclude
+                              type: string
+                            matcher:
+                              description: GroupingEnhancementMatcher selects one
+                                portable stack-frame field.
+                              enum:
+                              - path
+                              - module
+                              - function
+                              - package
+                              type: string
+                            negate:
+                              type: boolean
+                            pattern:
+                              maxLength: 256
+                              minLength: 1
+                              pattern: ^[^\n\r\f\"]+$
+                              type: string
+                          required:
+                          - action
+                          - matcher
+                          - pattern
+                          type: object
+                        maxItems: 100
+                        type: array
+                      fingerprints:
+                        items:
+                          description: FingerprintRule is serialized into one canonical
+                            ordered Sentry fingerprinting rule.
+                          properties:
+                            includeDefault:
+                              description: IncludeDefault appends Sentry's original
+                                fingerprint to the custom values.
+                              type: boolean
+                            matcher:
+                              description: FingerprintMatcher selects one event field
+                                supported by both grouping engines.
+                              enum:
+                              - error.type
+                              - error.value
+                              - message
+                              - logger
+                              - level
+                              - stack.module
+                              - stack.abs_path
+                              - stack.package
+                              - stack.function
+                              type: string
+                            negate:
+                              type: boolean
+                            pattern:
+                              maxLength: 256
+                              minLength: 1
+                              pattern: ^[^\n\r\f\"]+$
+                              type: string
+                            values:
+                              items:
+                                maxLength: 64
+                                minLength: 1
+                                pattern: ^[A-Za-z0-9_.:/-]+$
+                                type: string
+                              maxItems: 8
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - matcher
+                          - pattern
+                          type: object
+                          x-kubernetes-validations:
+                          - message: at least one custom value or includeDefault is
+                              required
+                            rule: (has(self.includeDefault) && self.includeDefault)
+                              || (has(self.values) && size(self.values) > 0)
+                        maxItems: 100
+                        type: array
+                    type: object
                   pii:
                     description: PIISettings contains the source-confirmed, adapter-neutral
                       data scrubbing fields.
                     properties:
+                      advancedRules:
+                        description: |-
+                          AdvancedRules owns the complete ordered Relay PII rule set. An explicit empty list
+                          clears project-level advanced rules. Raw Relay JSON, regular expressions, and selector
+                          grammar are deliberately not exposed.
+                        items:
+                          description: AdvancedPIIRule applies one built-in detector
+                            and redaction to one or more exact fields.
+                          properties:
+                            applications:
+                              items:
+                                description: |-
+                                  AdvancedPIISelector identifies one exact event field. Path segments are serialized into a
+                                  canonical Relay selector by the settings adapter.
+                                properties:
+                                  path:
+                                    items:
+                                      maxLength: 64
+                                      minLength: 1
+                                      pattern: ^[A-Za-z0-9_-]+$
+                                      type: string
+                                    maxItems: 8
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                  root:
+                                    description: |-
+                                      AdvancedPIISelectorRoot selects a bounded event subtree without exposing Relay selector
+                                      grammar.
+                                    enum:
+                                    - message
+                                    - extra
+                                    - request
+                                    - user
+                                    - contexts
+                                    - tags
+                                    - breadcrumbs
+                                    type: string
+                                required:
+                                - root
+                                type: object
+                                x-kubernetes-validations:
+                                - message: message selectors cannot have a path; all
+                                    other selector roots require one
+                                  rule: 'self.root == ''message'' ? !has(self.path)
+                                    || size(self.path) == 0 : has(self.path) && size(self.path)
+                                    > 0'
+                              maxItems: 16
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            redaction:
+                              description: AdvancedPIIRedaction selects the bounded
+                                redaction applied after a detector matches.
+                              enum:
+                              - mask
+                              - remove
+                              - hash
+                              - replace
+                              type: string
+                            replacement:
+                              maxLength: 64
+                              minLength: 1
+                              pattern: ^[^\n\r\f]*$
+                              type: string
+                            type:
+                              description: |-
+                                AdvancedPIIRuleType selects one Relay built-in PII detector shared by both supported
+                                Sentry compatibility versions.
+                              enum:
+                              - anything
+                              - creditcard
+                              - password
+                              - ip
+                              - imei
+                              - email
+                              - uuid
+                              - pemkey
+                              - url_auth
+                              - us_ssn
+                              - userpath
+                              - mac
+                              type: string
+                          required:
+                          - applications
+                          - redaction
+                          - type
+                          type: object
+                          x-kubernetes-validations:
+                          - message: replacement is required only for replace redaction
+                            rule: 'self.redaction == ''replace'' ? has(self.replacement)
+                              : !has(self.replacement)'
+                        maxItems: 64
+                        type: array
                       safeFields:
                         items:
                           maxLength: 128
@@ -259,28 +708,274 @@ spec:
                         maxItems: 64
                         type: array
                     type: object
+                  symbolication:
+                    description: |-
+                      SymbolicationSettings owns portable native symbolication controls. An explicit empty
+                      builtinSources set disables every built-in source for the project.
+                    properties:
+                      builtinSources:
+                        items:
+                          description: |-
+                            BuiltinSymbolSource selects one public symbol server configured in both supported Sentry
+                            compatibility versions. Version-specific, private, and console-gated sources are excluded.
+                          enum:
+                          - amd
+                          - autodesk
+                          - chromium
+                          - citrix
+                          - electron
+                          - intel
+                          - microsoft
+                          - mozilla
+                          - nuget
+                          - nvidia
+                          - ubuntu
+                          - unity
+                          type: string
+                        maxItems: 12
+                        type: array
+                        x-kubernetes-list-type: set
+                    type: object
                 type: object
+              symbolSources:
+                additionalProperties:
+                  description: |-
+                    CustomSymbolSourceSpec owns one portable custom source child. The map key is its stable
+                    local alias; generated Sentry identities remain protected.
+                  properties:
+                    gcs:
+                      description: |-
+                        GCSSymbolSource fetches symbols from one Google Cloud Storage bucket using a service
+                        account private key held in a namespace-local Secret.
+                      properties:
+                        bucket:
+                          maxLength: 222
+                          minLength: 1
+                          type: string
+                        clientEmail:
+                          maxLength: 320
+                          minLength: 3
+                          type: string
+                        prefix:
+                          maxLength: 512
+                          type: string
+                        privateKeySecretRef:
+                          description: |-
+                            SecretKeyReference identifies one key in a Secret. The containing resource determines
+                            the lookup namespace: connection credentials use the fixed operator namespace, while
+                            namespaced project children use their SentryProject namespace. Namespace is never
+                            user-configurable.
+                          properties:
+                            key:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            name:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                      required:
+                      - bucket
+                      - clientEmail
+                      - privateKeySecretRef
+                      type: object
+                    http:
+                      description: |-
+                        HTTPSymbolSource fetches symbols over HTTPS. Basic-auth credentials are optional, but a
+                        password can only be supplied through a Secret in the SentryProject namespace.
+                      properties:
+                        passwordSecretRef:
+                          description: |-
+                            SecretKeyReference identifies one key in a Secret. The containing resource determines
+                            the lookup namespace: connection credentials use the fixed operator namespace, while
+                            namespaced project children use their SentryProject namespace. Namespace is never
+                            user-configurable.
+                          properties:
+                            key:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            name:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                        url:
+                          maxLength: 2048
+                          minLength: 9
+                          pattern: ^https://[^[:space:]]+$
+                          type: string
+                        username:
+                          maxLength: 256
+                          type: string
+                      required:
+                      - url
+                      type: object
+                    layout:
+                      description: SymbolSourceLayout is the portable layout contract
+                        for custom HTTP and cloud sources.
+                      properties:
+                        casing:
+                          description: SymbolSourceCasing controls case conversion
+                            while resolving symbol paths.
+                          enum:
+                          - default
+                          - uppercase
+                          - lowercase
+                          type: string
+                        type:
+                          description: |-
+                            SymbolSourceLayoutType selects a directory convention accepted by both supported Sentry
+                            versions.
+                          enum:
+                          - native
+                          - symstore
+                          - symstore_index2
+                          - ssqp
+                          - unified
+                          - debuginfod
+                          type: string
+                      required:
+                      - casing
+                      - type
+                      type: object
+                    s3:
+                      description: |-
+                        S3SymbolSource fetches symbols from one AWS S3 bucket. Both credential values remain in
+                        namespace-local Secrets and never enter status or protected binding state.
+                      properties:
+                        accessKeySecretRef:
+                          description: |-
+                            SecretKeyReference identifies one key in a Secret. The containing resource determines
+                            the lookup namespace: connection credentials use the fixed operator namespace, while
+                            namespaced project children use their SentryProject namespace. Namespace is never
+                            user-configurable.
+                          properties:
+                            key:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            name:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                        bucket:
+                          maxLength: 255
+                          minLength: 1
+                          type: string
+                        prefix:
+                          maxLength: 512
+                          type: string
+                        region:
+                          enum:
+                          - us-east-2
+                          - us-east-1
+                          - us-west-1
+                          - us-west-2
+                          - ap-east-1
+                          - ap-south-1
+                          - ap-northeast-2
+                          - ap-southeast-1
+                          - ap-southeast-2
+                          - ap-northeast-1
+                          - ca-central-1
+                          - cn-north-1
+                          - cn-northwest-1
+                          - eu-central-1
+                          - eu-west-1
+                          - eu-west-2
+                          - eu-west-3
+                          - eu-north-1
+                          - sa-east-1
+                          - us-gov-east-1
+                          - us-gov-west-1
+                          type: string
+                        secretKeySecretRef:
+                          description: |-
+                            SecretKeyReference identifies one key in a Secret. The containing resource determines
+                            the lookup namespace: connection credentials use the fixed operator namespace, while
+                            namespaced project children use their SentryProject namespace. Namespace is never
+                            user-configurable.
+                          properties:
+                            key:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            name:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                      required:
+                      - accessKeySecretRef
+                      - bucket
+                      - region
+                      - secretKeySecretRef
+                      type: object
+                  required:
+                  - layout
+                  type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of http, s3 or gcs is required
+                    rule: '(has(self.http) ? 1 : 0) + (has(self.s3) ? 1 : 0) + (has(self.gcs)
+                      ? 1 : 0) == 1'
+                description: |-
+                  SymbolSources owns portable HTTP, S3, and GCS source children. An absent field leaves
+                  custom sources unmanaged; an explicit empty map deletes only exact protected children.
+                maxProperties: 20
+                type: object
+                x-kubernetes-validations:
+                - message: symbol source names must be lowercase DNS labels no longer
+                    than 32 characters
+                  rule: self.all(k, k.matches('^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$'))
             required:
             - project
             - sentry
             type: object
             x-kubernetes-validations:
-            - message: project.use forbids settings, notification targets, alerts
-                and grantAccess
-              rule: '!has(self.project.use) || (!has(self.settings) && !has(self.notificationTargets)
-                && !has(self.alerts) && !has(self.grantAccess))'
+            - message: project.use forbids settings, issueOwnership, codeMappings,
+                clientKeys, symbolSources, notification targets, alerts and grantAccess
+              rule: '!has(self.project.use) || (!has(self.settings) && !has(self.issueOwnership)
+                && !has(self.codeMappings) && !has(self.clientKeys) && !has(self.symbolSources)
+                && !has(self.notificationTargets) && !has(self.alerts) && !has(self.grantAccess))'
             - message: project.use forbids alertPolicy
               rule: '!has(self.project.use) || !has(self.alertPolicy)'
             - message: project.use forbids lifecycle.onDelete DeleteProject
               rule: '!has(self.project.use) || self.lifecycle.onDelete != ''DeleteProject'''
-            - message: Standby forbids settings, grantAccess and DeleteProject lifecycle
-              rule: self.role != 'Standby' || (!has(self.settings) && !has(self.grantAccess)
-                && self.lifecycle.onDelete != 'DeleteProject')
+            - message: Standby forbids settings, issueOwnership, codeMappings, clientKeys,
+                symbolSources, grantAccess and DeleteProject lifecycle
+              rule: self.role != 'Standby' || (!has(self.settings) && !has(self.issueOwnership)
+                && !has(self.codeMappings) && !has(self.clientKeys) && !has(self.symbolSources)
+                && !has(self.grantAccess) && self.lifecycle.onDelete != 'DeleteProject')
             - message: alert names must be lowercase DNS labels
               rule: '!has(self.alerts) || self.alerts.all(k, k.matches(''^[a-z](?:[a-z0-9-]*[a-z0-9])?$''))'
             - message: grantAccess.teams must not repeat project.create.team
               rule: '!has(self.grantAccess) || !has(self.project.create) || !has(self.grantAccess.teams)
                 || !self.grantAccess.teams.exists(t, t == self.project.create.team)'
+            - message: issueOwnership teams must be the primary project team or appear
+                in grantAccess.teams
+              rule: '!has(self.issueOwnership) || (has(self.project.create) && self.issueOwnership.rules.all(r,
+                r.teams.all(t, t == self.project.create.team || (has(self.grantAccess)
+                && t in self.grantAccess.teams))))'
+            - message: dsn.managedClientKey must reference a declared clientKeys entry
+              rule: '!has(self.dsn) || !has(self.dsn.managedClientKey) || (has(self.clientKeys)
+                && self.dsn.managedClientKey in self.clientKeys)'
+            - message: dsn.managedClientKey must reference an active managed key
+              rule: '!has(self.dsn) || !has(self.dsn.managedClientKey) || self.clientKeys[self.dsn.managedClientKey].active'
           status:
             description: status defines the observed state of SentryProject
             properties:
@@ -307,6 +1002,52 @@ spec:
                 description: |-
                   Alerts exposes only local names and safe lifecycle state. Adapter and external IDs stay
                   in the protected project binding.
+                type: object
+                x-kubernetes-map-type: granular
+              clientKeys:
+                additionalProperties:
+                  description: ClientKeyStatus is the safe status of one local managed
+                    client-key child.
+                  properties:
+                    reason:
+                      maxLength: 64
+                      type: string
+                    rotationRevision:
+                      description: RotationRevision is safe desired-state metadata,
+                        not an external identity.
+                      format: int64
+                      type: integer
+                    state:
+                      maxLength: 64
+                      type: string
+                  required:
+                  - reason
+                  - rotationRevision
+                  - state
+                  type: object
+                description: |-
+                  ClientKeys exposes only local names and safe lifecycle state. External identities,
+                  public DSNs, public key material, and secret key material remain protected or transient.
+                type: object
+                x-kubernetes-map-type: granular
+              codeMappings:
+                additionalProperties:
+                  description: CodeMappingStatus is the safe status of one local repository
+                    path mapping.
+                  properties:
+                    reason:
+                      maxLength: 64
+                      type: string
+                    state:
+                      maxLength: 64
+                      type: string
+                  required:
+                  - reason
+                  - state
+                  type: object
+                description: |-
+                  CodeMappings exposes only local aliases and safe lifecycle state. Every Sentry,
+                  integration, repository, mapping, and CODEOWNERS identity remains protected.
                 type: object
                 x-kubernetes-map-type: granular
               conditions:
@@ -448,6 +1189,26 @@ spec:
                 - Active
                 - Standby
                 type: string
+              symbolSources:
+                additionalProperties:
+                  description: SymbolSourceStatus is the safe status of one local
+                    custom symbol-source child.
+                  properties:
+                    reason:
+                      maxLength: 64
+                      type: string
+                    state:
+                      maxLength: 64
+                      type: string
+                  required:
+                  - reason
+                  - state
+                  type: object
+                description: |-
+                  SymbolSources exposes only local aliases and safe lifecycle state. Sentry source IDs,
+                  credential fingerprints, and credential values remain protected or transient.
+                type: object
+                x-kubernetes-map-type: granular
             type: object
         required:
         - spec

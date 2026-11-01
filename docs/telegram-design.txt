@@ -9,6 +9,18 @@ plus strict timestamp and event GUID validation. The receiver authenticates befo
 JSON and binds the signed project slug to a locally configured source plan. Provider payload
 destinations are never trusted.
 
+Sentry generates this HMAC secret. The public connection API therefore supplies only the
+receiver base URL and the Telegram bot-token reference; it does not accept a fictitious
+user-selected service-hook secret. The controller reads the generated secret only through
+the authenticated Sentry hook API and publishes it directly to isolated verifier state.
+
+The platform may increment `serviceHookRevision` to request a proactive replacement without
+exposing secret material. The revision is monotonic, and changing the receiver URL requires
+an increment. Rotation creates the replacement disabled, overlaps both verifier keys before
+activation, independently reads back the active replacement, deletes the pinned old hook,
+and retires the old key last. Durable protected state resumes an interrupted target before
+processing a later revision.
+
 Sentry 24.7.1 and 26.10.1 source expose compatible v0 hook payload and HMAC mechanisms, but
 endpoint availability can be private or feature-gated. The operator therefore treats source
 configuration as an explicit deployment capability rather than assuming it from version.

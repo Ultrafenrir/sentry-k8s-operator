@@ -243,6 +243,12 @@ func TestCanonicalHashIgnoresNotifyOrderAndRejectsDuplicates(t *testing.T) {
 	if !errors.Is(validateDesired("rule", Desired{Trigger: TriggerFirstSeen, Enabled: true, Notify: []string{"chat", "chat"}}, destinations, false), ErrInvalidInput) {
 		t.Fatal("duplicate destination reference was accepted")
 	}
+	if err := validateDesired("affected-users", Desired{Trigger: TriggerUserCount, WindowMinutes: 10, Threshold: 50, Enabled: true, Notify: []string{"chat"}}, destinations, false); err != nil {
+		t.Fatalf("valid user-count desired state rejected: %v", err)
+	}
+	if !errors.Is(validateDesired("affected-users", Desired{Trigger: TriggerUserCount, Enabled: true, Notify: []string{"chat"}}, destinations, false), ErrInvalidInput) {
+		t.Fatal("user-count without metric bounds was accepted")
+	}
 }
 
 func TestSubmittedEnsureRecoversLostResponseWithoutSecondChild(t *testing.T) {
@@ -371,7 +377,7 @@ func newTestEngine(adapter Adapter) *Engine {
 }
 
 func allTriggers() map[Trigger]bool {
-	return map[Trigger]bool{TriggerFirstSeen: true, TriggerRegression: true, TriggerEventCount: true}
+	return map[Trigger]bool{TriggerFirstSeen: true, TriggerRegression: true, TriggerEventCount: true, TriggerUserCount: true}
 }
 
 func boundAlert(key, adapter string, desired Desired, marker binding.Marker) binding.AlertBinding {

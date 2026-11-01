@@ -72,6 +72,49 @@ type DSNBinding struct {
 	PendingSecret string `json:"pendingSecret,omitempty"`
 }
 
+// ClientKeyRateLimit is the protected normalized rate limit for one managed client key.
+type ClientKeyRateLimit struct {
+	Count         int64 `json:"count"`
+	WindowSeconds int32 `json:"windowSeconds"`
+}
+
+// ClientKeyBinding pins exactly one operator-owned Sentry client key. Public and secret key
+// material and DSNs are deliberately absent. Replacement fields make rotation resumable.
+type ClientKeyBinding struct {
+	ExternalIdentity       string              `json:"externalIdentity"`
+	RemoteName             string              `json:"remoteName"`
+	RotationRevision       int64               `json:"rotationRevision"`
+	Active                 bool                `json:"active"`
+	RateLimit              *ClientKeyRateLimit `json:"rateLimit,omitempty"`
+	DesiredHash            string              `json:"desiredHash"`
+	ReplacementIdentity    string              `json:"replacementIdentity,omitempty"`
+	ReplacementRemoteName  string              `json:"replacementRemoteName,omitempty"`
+	ReplacementRevision    int64               `json:"replacementRevision,omitempty"`
+	ReplacementDesiredHash string              `json:"replacementDesiredHash,omitempty"`
+}
+
+// SymbolSourceBinding pins one operator-owned custom symbol source without retaining any
+// credential value. DesiredHash is a one-way digest used to detect Secret rotation.
+type SymbolSourceBinding struct {
+	ExternalIdentity string `json:"externalIdentity"`
+	RemoteName       string `json:"remoteName"`
+	Type             string `json:"type"`
+	DesiredHash      string `json:"desiredHash"`
+}
+
+// CodeMappingBinding pins one repository path mapping and its optional imported CODEOWNERS
+// child. Numeric Sentry identities and remote catalog selections remain protected.
+type CodeMappingBinding struct {
+	ExternalIdentity      string `json:"externalIdentity"`
+	IntegrationIdentity   string `json:"integrationIdentity"`
+	RepositoryIdentity    string `json:"repositoryIdentity"`
+	IntegrationAlias      string `json:"integrationAlias"`
+	RepositoryAlias       string `json:"repositoryAlias"`
+	DesiredHash           string `json:"desiredHash"`
+	CodeownersIdentity    string `json:"codeownersIdentity,omitempty"`
+	CodeownersContentHash string `json:"codeownersContentHash,omitempty"`
+}
+
 // DestinationBinding pins external identities for one local destination key.
 // Numeric Telegram identities are stored by the registration subsystem, never here as
 // public status. SelectorHash prevents silent same-name rebinding.
@@ -99,6 +142,21 @@ type AlertBinding struct {
 	Enabled          bool       `json:"enabled"`
 	Destinations     []string   `json:"destinations"`
 	Marker           Marker     `json:"marker"`
+}
+
+// ServiceHookBinding pins the operator-owned Sentry hook and its protected receiver source.
+// Only a one-way secret fingerprint is retained; verifier material stays in its isolated
+// aggregate Secret.
+type ServiceHookBinding struct {
+	SourceBindingKey    string          `json:"sourceBindingKey"`
+	ExternalIdentity    string          `json:"externalIdentity,omitempty"`
+	EndpointURL         string          `json:"endpointURL"`
+	SecretHash          string          `json:"secretHash,omitempty"`
+	Revision            int64           `json:"revision"`
+	ReplacementIdentity string          `json:"replacementIdentity,omitempty"`
+	TargetEndpointURL   string          `json:"targetEndpointURL,omitempty"`
+	TargetRevision      int64           `json:"targetRevision,omitempty"`
+	Pending             *OperationState `json:"pending,omitempty"`
 }
 
 const (
@@ -149,30 +207,34 @@ type TelegramTarget struct {
 
 // ProjectBinding is the protected record for one SentryProject incarnation.
 type ProjectBinding struct {
-	Version           string                        `json:"version"`
-	Project           ProjectReference              `json:"project"`
-	Connection        string                        `json:"connection"`
-	Installation      string                        `json:"installation"`
-	Organization      string                        `json:"organization"`
-	Slug              string                        `json:"slug"`
-	Owner             string                        `json:"owner,omitempty"`
-	Origin            Origin                        `json:"origin"`
-	AccessMode        string                        `json:"accessMode"`
-	ExternalIdentity  string                        `json:"externalIdentity,omitempty"`
-	Marker            *Marker                       `json:"marker,omitempty"`
-	RegionalOwnership *ownership.Marker             `json:"regionalOwnership,omitempty"`
-	ManagerUID        string                        `json:"managerUID,omitempty"`
-	ClaimName         string                        `json:"claimName,omitempty"`
-	Pending           *OperationState               `json:"pending,omitempty"`
-	AppliedHashes     map[string]string             `json:"appliedHashes,omitempty"`
-	PinnedAdapters    map[string]string             `json:"pinnedAdapters,omitempty"`
-	ChildIdentities   map[string]string             `json:"childIdentities,omitempty"`
-	Tombstones        map[string]bool               `json:"tombstones,omitempty"`
-	DSN               *DSNBinding                   `json:"dsn,omitempty"`
-	GrantedTeams      map[string]string             `json:"grantedTeams,omitempty"`
-	Destinations      map[string]DestinationBinding `json:"destinations,omitempty"`
-	Alerts            map[string]AlertBinding       `json:"alerts,omitempty"`
-	AlertPolicy       *AppliedAlertPolicy           `json:"alertPolicy,omitempty"`
+	Version           string                         `json:"version"`
+	Project           ProjectReference               `json:"project"`
+	Connection        string                         `json:"connection"`
+	Installation      string                         `json:"installation"`
+	Organization      string                         `json:"organization"`
+	Slug              string                         `json:"slug"`
+	Owner             string                         `json:"owner,omitempty"`
+	Origin            Origin                         `json:"origin"`
+	AccessMode        string                         `json:"accessMode"`
+	ExternalIdentity  string                         `json:"externalIdentity,omitempty"`
+	Marker            *Marker                        `json:"marker,omitempty"`
+	RegionalOwnership *ownership.Marker              `json:"regionalOwnership,omitempty"`
+	ManagerUID        string                         `json:"managerUID,omitempty"`
+	ClaimName         string                         `json:"claimName,omitempty"`
+	Pending           *OperationState                `json:"pending,omitempty"`
+	AppliedHashes     map[string]string              `json:"appliedHashes,omitempty"`
+	PinnedAdapters    map[string]string              `json:"pinnedAdapters,omitempty"`
+	ChildIdentities   map[string]string              `json:"childIdentities,omitempty"`
+	Tombstones        map[string]bool                `json:"tombstones,omitempty"`
+	DSN               *DSNBinding                    `json:"dsn,omitempty"`
+	ClientKeys        map[string]ClientKeyBinding    `json:"clientKeys,omitempty"`
+	SymbolSources     map[string]SymbolSourceBinding `json:"symbolSources,omitempty"`
+	CodeMappings      map[string]CodeMappingBinding  `json:"codeMappings,omitempty"`
+	GrantedTeams      map[string]string              `json:"grantedTeams,omitempty"`
+	Destinations      map[string]DestinationBinding  `json:"destinations,omitempty"`
+	Alerts            map[string]AlertBinding        `json:"alerts,omitempty"`
+	AlertPolicy       *AppliedAlertPolicy            `json:"alertPolicy,omitempty"`
+	ServiceHook       *ServiceHookBinding            `json:"serviceHook,omitempty"`
 }
 
 type AppliedAlertPolicy struct {

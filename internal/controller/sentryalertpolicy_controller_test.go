@@ -136,21 +136,26 @@ func TestRegionalRevisionAuthorizerRevalidatesRemoteEvidence(t *testing.T) {
 		}},
 	}
 	protected := binding.ProjectBinding{
-		AccessMode: binding.AccessManage, ExternalIdentity: adapter.remote.Identity,
+		Origin: binding.OriginManaged, AccessMode: binding.AccessManage, ExternalIdentity: adapter.remote.Identity,
 		Organization: "company", Slug: adapter.remote.Slug, Owner: marker.Owner,
 		Installation: "https://sentry.example.test", Marker: &binding.Marker{Origin: "managed", Owner: marker.Owner, ManagedBy: marker.Installation}, RegionalOwnership: &marker,
 	}
 	if err := reconciler.validateRegionalRevision(context.Background(), connection, protected); err != nil {
 		t.Fatalf("valid regional evidence rejected: %v", err)
 	}
+	protected.AccessMode = binding.AccessReadOnly
+	if err := reconciler.validateChildMutationOwnership(context.Background(), connection, protected); err != nil {
+		t.Fatalf("managed standby child evidence rejected: %v", err)
+	}
 	changed := evidence
 	changed.Revision++
 	adapter.remote.RegionalEvidence = &changed
-	if err := reconciler.validateRegionalRevision(context.Background(), connection, protected); !errors.Is(err, dsn.ErrAuthorization) {
+	if err := reconciler.validateChildMutationOwnership(context.Background(), connection, protected); !errors.Is(err, dsn.ErrAuthorization) {
 		t.Fatalf("changed evidence error = %v, want authorization denial", err)
 	}
 	connection.Spec.Ownership.Role = sentryv1alpha1.ConnectionRoleStandby
-	if err := reconciler.validateRegionalRevision(context.Background(), connection, protected); !errors.Is(err, dsn.ErrAuthorization) {
+	adapter.remote.RegionalEvidence = &evidence
+	if err := reconciler.validateChildMutationOwnership(context.Background(), connection, protected); !errors.Is(err, dsn.ErrAuthorization) {
 		t.Fatalf("standby error = %v, want authorization denial", err)
 	}
 }

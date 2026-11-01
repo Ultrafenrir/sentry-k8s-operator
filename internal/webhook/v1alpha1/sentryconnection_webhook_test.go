@@ -40,6 +40,16 @@ var _ = Describe("SentryConnection Webhook", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("requires unambiguous source-code integration and repository aliases", func() {
+		obj := validConnection()
+		obj.Spec.Integrations = &sentryconfigurationv1alpha1.ConnectionIntegrations{SourceCode: &sentryconfigurationv1alpha1.SourceCodeIntegrations{Installations: []sentryconfigurationv1alpha1.SourceCodeIntegrationCatalogEntry{{
+			Name: "github", Provider: "github", SentryName: "acme",
+			Repositories: []sentryconfigurationv1alpha1.SourceCodeRepositoryCatalogEntry{{Name: "checkout", SentryName: "acme/checkout"}, {Name: "checkout", SentryName: "acme/other"}},
+		}}}}
+		_, err := validator.ValidateCreate(context.Background(), obj)
+		Expect(err).To(MatchError(ContainSubstring("Duplicate value")))
+	})
+
 	It("accepts only explicit supported alert compatibility profiles", func() {
 		obj := validConnection()
 		obj.Spec.Compatibility = &sentryconfigurationv1alpha1.ConnectionCompatibility{Alerts: sentryconfigurationv1alpha1.AlertCompatibilityLegacy24}
@@ -84,9 +94,8 @@ var _ = Describe("SentryConnection Webhook", func() {
 	It("requires the Sentry hook receiver to be an exact HTTPS events base", func() {
 		obj := validConnection()
 		obj.Spec.Integrations = &sentryconfigurationv1alpha1.ConnectionIntegrations{Telegram: &sentryconfigurationv1alpha1.TelegramIntegration{
-			BotTokenSecretRef:    sentryconfigurationv1alpha1.SecretKeyReference{Name: "telegram", Key: "bot"},
-			ReceiverURL:          "https://hooks.example.test/events",
-			WebhookAuthSecretRef: sentryconfigurationv1alpha1.SecretKeyReference{Name: "telegram", Key: "sentry-hook-secret"},
+			BotTokenSecretRef: sentryconfigurationv1alpha1.SecretKeyReference{Name: "telegram", Key: "bot"},
+			ReceiverURL:       "https://hooks.example.test/events",
 		}}
 		_, err := validator.ValidateCreate(context.Background(), obj)
 		Expect(err).NotTo(HaveOccurred())
@@ -149,6 +158,48 @@ var _ = Describe("SentryConnection Webhook", func() {
 		validPromotion.Spec.Ownership.Role = sentryconfigurationv1alpha1.ConnectionRoleActive
 		validPromotion.Spec.Ownership.Revision = 8
 		_, err = validator.ValidateUpdate(context.Background(), oldObj, validPromotion)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("requires service-hook revisions to move monotonically and fence receiver changes", func() {
+		oldObj := validConnection()
+		oldObj.Spec.Integrations = &sentryconfigurationv1alpha1.ConnectionIntegrations{Telegram: &sentryconfigurationv1alpha1.TelegramIntegration{
+			BotTokenSecretRef:   sentryconfigurationv1alpha1.SecretKeyReference{Name: "telegram", Key: "bot"},
+			ReceiverURL:         "https://hooks.example.test/events",
+			ServiceHookRevision: 4,
+		}}
+
+		decreased := oldObj.DeepCopy()
+		decreased.Spec.Integrations.Telegram.ServiceHookRevision = 3
+		_, err := validator.ValidateUpdate(context.Background(), oldObj, decreased)
+		Expect(err).To(MatchError(ContainSubstring("must not decrease")))
+
+		unfencedMove := oldObj.DeepCopy()
+		unfencedMove.Spec.Integrations.Telegram.ReceiverURL = "https://replacement.example.test/events"
+		_, err = validator.ValidateUpdate(context.Background(), oldObj, unfencedMove)
+		Expect(err).To(MatchError(ContainSubstring("must increase when receiverURL changes")))
+
+		fencedMove := unfencedMove.DeepCopy()
+		fencedMove.Spec.Integrations.Telegram.ServiceHookRevision = 5
+		_, err = validator.ValidateUpdate(context.Background(), oldObj, fencedMove)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("allows adoption only on an explicitly Active owned connection", func() {
+		obj := validConnection()
+		obj.Spec.ProjectManagement.UnmanagedProjects = sentryconfigurationv1alpha1.UnmanagedProjectsAdopt
+
+		_, err := validator.ValidateCreate(context.Background(), obj)
+		Expect(err).To(MatchError(ContainSubstring("Adopt requires ownership.role Active")))
+
+		obj.Spec.Ownership = &sentryconfigurationv1alpha1.ConnectionOwnership{
+			Region: "eu-west-1", Role: sentryconfigurationv1alpha1.ConnectionRoleStandby, Revision: 7,
+		}
+		_, err = validator.ValidateCreate(context.Background(), obj)
+		Expect(err).To(MatchError(ContainSubstring("Adopt requires ownership.role Active")))
+
+		obj.Spec.Ownership.Role = sentryconfigurationv1alpha1.ConnectionRoleActive
+		_, err = validator.ValidateCreate(context.Background(), obj)
 		Expect(err).NotTo(HaveOccurred())
 	})
 

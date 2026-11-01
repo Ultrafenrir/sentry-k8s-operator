@@ -15,11 +15,11 @@ trap cleanup EXIT INT TERM
 
 cd "$root_dir"
 GOMODCACHE="$product_gomodcache" GOCACHE="$product_gocache" \
-  "$go_bin" test -race ./internal/dsn ./internal/binding
+  "$go_bin" test -race ./internal/dsn ./internal/clientkey ./internal/binding
 KUBEBUILDER_ASSETS="$envtest_assets" GOMODCACHE="$product_gomodcache" GOCACHE="$product_gocache" \
   "$go_bin" test ./internal/controller
 GOMODCACHE="$product_gomodcache" GOCACHE="$product_gocache" \
-  "$go_bin" vet ./internal/dsn ./internal/binding ./internal/controller ./cmd
+  "$go_bin" vet ./internal/dsn ./internal/clientkey ./internal/binding ./internal/controller ./cmd
 
 ruby -ryaml -rjson -e '
   document = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)
@@ -56,10 +56,13 @@ if rg -n -g '!**/*_test.go' 'log\.[A-Za-z]+\([^\n]*(DSN|dsn\.public)|fmt\.Print[
 fi
 
 rg -q 'http.MethodGet' internal/sentryapi/pagination.go
-if rg -n 'http\.Method(Post|Put|Patch|Delete).*keys|/keys/.*http\.Method(Post|Put|Patch|Delete)' internal; then
-  echo 'client key mutation route found' >&2
-  exit 1
-fi
+rg -q 'http.MethodPost' internal/clientkey/http_adapter.go
+rg -q 'http.MethodPut' internal/clientkey/http_adapter.go
+rg -q 'http.MethodDelete' internal/clientkey/http_adapter.go
+rg -q 'CreateClientKey' internal/clientkey/engine.go
+rg -q 'ReplacementIdentity' internal/clientkey/engine.go
+rg -q 'managedClientKey' api/v1alpha1/sentryproject_types.go
+rg -q 'ClientKeysReady' internal/controller/sentryproject_controller.go
 rg -q 'confirm-dsn-cutover' internal/dsn/publisher.go
 rg -q 'OutputSecrets' internal/controller/sentryproject_controller.go
 rg -q 'DSNClientKey string.*dsnClientKey' api/v1alpha1/sentryproject_types.go
@@ -73,4 +76,4 @@ ruby -ryaml -e '
   abort "external DSN identity leaked into status schema" if status.key?("dsnClientKeyID") || status.key?("dsn")
 ' config/crd/bases/sentryconfiguration.io_sentryprojects.yaml
 
-echo 'T04 DSN pagination, persistent rename status, pinning, output Secret, revoke and workload contracts verified'
+echo 'T04 DSN pagination, managed client-key lifecycle, rotation, pinning, output Secret, revoke and workload contracts verified'

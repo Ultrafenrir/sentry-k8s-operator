@@ -1,0 +1,40 @@
+{
+  "sourceReviewDate": "2026-10-31",
+  "versions": {
+    "24.7.1": {
+      "dynamicSamplingBiases": {
+        "scope": "project",
+        "read": true,
+        "write": true,
+        "featureGated": true
+      },
+      "spikeProtection": {
+        "rawOptionReadOnly": "quotas:spike-protection-disabled"
+      }
+    },
+    "26.10.1": {
+      "dynamicSamplingBiases": {
+        "scope": "project",
+        "read": true,
+        "write": false,
+        "featureGated": true
+      },
+      "projectSamplingRates": {
+        "scope": "organization",
+        "read": true,
+        "write": true,
+        "publishStatus": "private",
+        "requiresNumericProjectIds": true,
+        "requiresProjectSamplingMode": true,
+        "featureGated": true
+      },
+      "spikeProtection": {
+        "rawOptionReadOnly": "quotas:spike-protection-disabled"
+      }
+    }
+  },
+  "decision": {
+    "portableProjectQuotaContract": false,
+    "managedClientKeyRateLimitAlreadyPublished": true
+  }
+}

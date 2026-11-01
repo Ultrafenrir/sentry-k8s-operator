@@ -32,13 +32,18 @@ func (a *HTTPAdapter) ListFilters(ctx context.Context, organization, projectSlug
 	return sentryapi.CollectPages[Filter](ctx, a.Client, projectPath(organization, projectSlug)+"filters/", "list-project-filters")
 }
 
-func (a *HTTPAdapter) UpdateFilter(ctx context.Context, organization, projectSlug, id string, active bool) error {
+func (a *HTTPAdapter) UpdateFilter(ctx context.Context, organization, projectSlug, id string, patch FilterPatch) error {
+	if id == "legacy-browsers" {
+		if patch.Active != nil || patch.Subfilters == nil {
+			return ErrInvalidDesiredState
+		}
+	} else if patch.Active == nil || patch.Subfilters != nil {
+		return ErrInvalidDesiredState
+	}
 	_, err := a.Client.DoJSON(ctx, sentryapi.Request{
-		Method: http.MethodPut,
-		Path:   projectPath(organization, projectSlug) + "filters/" + url.PathEscape(id) + "/",
-		Body: struct {
-			Active bool `json:"active"`
-		}{Active: active},
+		Method:    http.MethodPut,
+		Path:      projectPath(organization, projectSlug) + "filters/" + url.PathEscape(id) + "/",
+		Body:      patch,
 		RetrySafe: false,
 		Operation: "update-project-filter",
 	}, nil)
@@ -47,11 +52,20 @@ func (a *HTTPAdapter) UpdateFilter(ctx context.Context, organization, projectSlu
 
 func (a *HTTPAdapter) GetProjectState(ctx context.Context, organization, projectSlug string) (ProjectState, error) {
 	var response struct {
-		ScrubData        *bool     `json:"dataScrubber"`
-		ScrubDefaults    *bool     `json:"dataScrubberDefaults"`
-		ScrubIPAddresses *bool     `json:"scrubIPAddresses"`
-		SensitiveFields  *[]string `json:"sensitiveFields"`
-		SafeFields       *[]string `json:"safeFields"`
+		ScrubData            *bool     `json:"dataScrubber"`
+		ScrubDefaults        *bool     `json:"dataScrubberDefaults"`
+		ScrubIPAddresses     *bool     `json:"scrubIPAddresses"`
+		SensitiveFields      *[]string `json:"sensitiveFields"`
+		SafeFields           *[]string `json:"safeFields"`
+		ResolveAge           *int64    `json:"resolveAge"`
+		DefaultEnvironment   *string   `json:"defaultEnvironment"`
+		StoreCrashReports    *int32    `json:"storeCrashReports"`
+		ScrapeJavaScript     *bool     `json:"scrapeJavaScript"`
+		AllowedDomains       *[]string `json:"allowedDomains"`
+		RelayPIIConfig       *string   `json:"relayPiiConfig"`
+		GroupingEnhancements *string   `json:"groupingEnhancements"`
+		FingerprintingRules  *string   `json:"fingerprintingRules"`
+		BuiltinSymbolSources *[]string `json:"builtinSymbolSources"`
 	}
 	headers, err := a.Client.DoJSON(ctx, sentryapi.Request{
 		Method:    http.MethodGet,
@@ -63,12 +77,21 @@ func (a *HTTPAdapter) GetProjectState(ctx context.Context, organization, project
 		return ProjectState{}, err
 	}
 	return ProjectState{
-		ScrubData:        response.ScrubData,
-		ScrubDefaults:    response.ScrubDefaults,
-		ScrubIPAddresses: response.ScrubIPAddresses,
-		SensitiveFields:  response.SensitiveFields,
-		SafeFields:       response.SafeFields,
-		ETag:             headers.Get("ETag"),
+		ScrubData:            response.ScrubData,
+		ScrubDefaults:        response.ScrubDefaults,
+		ScrubIPAddresses:     response.ScrubIPAddresses,
+		SensitiveFields:      response.SensitiveFields,
+		SafeFields:           response.SafeFields,
+		ResolveAge:           response.ResolveAge,
+		DefaultEnvironment:   response.DefaultEnvironment,
+		StoreCrashReports:    response.StoreCrashReports,
+		ScrapeJavaScript:     response.ScrapeJavaScript,
+		AllowedDomains:       response.AllowedDomains,
+		RelayPIIConfig:       response.RelayPIIConfig,
+		GroupingEnhancements: response.GroupingEnhancements,
+		FingerprintingRules:  response.FingerprintingRules,
+		BuiltinSymbolSources: response.BuiltinSymbolSources,
+		ETag:                 headers.Get("ETag"),
 	}, nil
 }
 

@@ -47,6 +47,7 @@ import (
 	connectionruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/connection"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/controller"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/registration"
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryhook"
 	webhookv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
@@ -71,6 +72,7 @@ func main() {
 	var webhookPort int
 	var operatorNamespace string
 	var stateNamespace string
+	var hookSourceNamespace string
 	var routingNamespace string
 	var auditNamespace string
 	var managedBy string
@@ -109,6 +111,12 @@ func main() {
 	}
 	flag.StringVar(&stateNamespace, "state-namespace", defaultStateNamespace,
 		"Dedicated namespace for protected binding and operation state Secrets.")
+	defaultHookSourceNamespace := os.Getenv("HOOK_SOURCE_NAMESPACE")
+	if defaultHookSourceNamespace == "" {
+		defaultHookSourceNamespace = "sentry-kubernetes-operator-hook-sources"
+	}
+	flag.StringVar(&hookSourceNamespace, "hook-source-namespace", defaultHookSourceNamespace,
+		"Dedicated namespace for protected Sentry hook source plans.")
 	defaultRoutingNamespace := os.Getenv("ROUTING_NAMESPACE")
 	if defaultRoutingNamespace == "" {
 		defaultRoutingNamespace = "sentry-kubernetes-operator-routing"
@@ -146,7 +154,7 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
-	if stateNamespace == "" || routingNamespace == "" || auditNamespace == "" || stateNamespace == operatorNamespace || routingNamespace == operatorNamespace || auditNamespace == operatorNamespace || routingNamespace == stateNamespace || auditNamespace == stateNamespace || auditNamespace == routingNamespace || challengeGCInterval <= 0 || challengeGCBatch <= 0 || auditGCInterval <= 0 || auditRetention <= 0 || auditGCBatch <= 0 {
+	if stateNamespace == "" || hookSourceNamespace == "" || routingNamespace == "" || auditNamespace == "" || stateNamespace == operatorNamespace || hookSourceNamespace == operatorNamespace || routingNamespace == operatorNamespace || auditNamespace == operatorNamespace || hookSourceNamespace == stateNamespace || hookSourceNamespace == routingNamespace || hookSourceNamespace == auditNamespace || routingNamespace == stateNamespace || auditNamespace == stateNamespace || auditNamespace == routingNamespace || challengeGCInterval <= 0 || challengeGCBatch <= 0 || auditGCInterval <= 0 || auditRetention <= 0 || auditGCBatch <= 0 {
 		setupLog.Error(errors.New("namespace isolation is required"), "State, routing and audit namespaces must be non-empty and mutually separate from operator credentials")
 		os.Exit(1)
 	}
@@ -268,6 +276,8 @@ func main() {
 		os.Exit(1)
 	}
 	registrationState := &binding.Store{Client: outputSecretClient, Namespace: stateNamespace}
+	hookSources := &sentryhook.SourceStore{Client: outputSecretClient, Namespace: hookSourceNamespace}
+	hookVerifier := &sentryhook.VerifierStore{Client: outputSecretClient, Namespace: operatorNamespace}
 	registrationRoutes := &registration.RouteStore{Client: outputSecretClient, Namespace: routingNamespace}
 	registrationIndexes := &registration.ChallengeIndexStore{Client: outputSecretClient, Namespace: stateNamespace}
 	registrationAudit := &audit.KubernetesStore{Client: outputSecretClient, Namespace: auditNamespace, Logger: ctrl.Log.WithName("registration-mutation-audit")}
@@ -336,6 +346,8 @@ func main() {
 		RegistrationRecovery: registrationRecovery,
 		RegistrationRoutes:   registrationRoutes,
 		RegistrationIndexes:  registrationIndexes,
+		HookSources:          hookSources,
+		HookVerifier:         hookVerifier,
 		Recorder:             mgr.GetEventRecorder("sentryproject-controller"),
 		Metrics:              controllerMetrics,
 		Audit:                projectAudit,

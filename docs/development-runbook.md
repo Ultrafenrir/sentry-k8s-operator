@@ -40,8 +40,15 @@ Start with:
 git status --short
 make help
 make verify-sentry-self-hosted
+make docker-credential-diagnostics
 docker info --format 'CPUs={{.NCPU}} Memory={{.MemTotal}}'
 ```
+
+The diagnostic target reads only helper names from Docker configuration, requires every
+configured helper executable to exist, and runs each helper's `list` operation with a bounded
+timeout while discarding all helper output. Image build and push targets always run the static
+preflight first. They do not print authentication entries, rewrite Docker configuration, or
+bypass a missing, locked, failing, or hanging helper.
 
 ## 1. Remove only the managed local environment
 
@@ -95,11 +102,16 @@ is disposable; never add it to this repository. API verification does not requir
 
 ```sh
 make sentry-live-config-api SENTRY_VERSION=26.10.1
+make sentry-controller-live SENTRY_VERSION=26.10.1
 ```
 
 This destructive disposable-stack check covers the public project, client key, settings,
 filter, modern detector, and workflow configuration lifecycles. It intentionally skips event
-ingestion and notification delivery.
+ingestion and notification delivery. The controller gate also exercises lost-response
+recovery, a regional revision takeover with the real five-second fencing interval and
+read-after-write, stale and conflicting writer refusal, protected child configuration drift
+repair, service-hook rotation, and exact cleanup. It is configuration-only evidence, not a
+physical multi-cluster or network-partition failover test.
 
 ## 4. Create kind and install cert-manager
 
@@ -135,6 +147,30 @@ operator image reference to an unrelated public image.
 
 ## 6. Publish the local Sentry token to the operator namespace
 
+The recommended bounded workflow performs sections 6 and 7 without changing the current
+kubectl context. It accepts only a `kind-*` context, reads the mode-0600 token only from the
+ignored local-stack cache, applies the exact demo manifests, records the already proven local
+capabilities, and waits only for components expected to become ready on a clean stack:
+
+```sh
+make kind-local-demo KIND_CONTEXT=kind-sentry-operator-dev
+make kind-local-demo-status KIND_CONTEXT=kind-sentry-operator-dev
+```
+
+It is safe to rerun. It does not create Sentry, kind, cert-manager, the operator deployment,
+or external integration credentials; complete sections 1 through 5, then run
+`make sentry-bootstrap SENTRY_VERSION=26.10.1` and
+`make sentry-live-config-api SENTRY_VERSION=26.10.1` first. To remove the demo, including only its
+five named projects, two connections, credential Secret, and four ownership-labeled
+namespaces, run:
+
+```sh
+make kind-local-demo-clean KIND_CONTEXT=kind-sentry-operator-dev
+```
+
+Cleanup refuses to delete a namespace when the exact demo ownership label is absent. The
+commands below document the individual operations performed by the bounded workflow.
+
 Create or replace the Secret directly from the protected token file. This command does not
 print the token:
 
@@ -158,22 +194,16 @@ kubectl wait sentryconnection/demo-legacy \
 ```
 
 The connection controller deliberately loads credentials and transport configuration only;
-it does not infer capabilities from a version string. For this disposable local stack, apply
-the two capabilities already proven by `sentry-live-config-api`:
-
-```sh
-kubectl patch sentryconnection demo-modern --subresource=status --type=merge \
-  -p '{"status":{"serverVersion":"26.10.1","capabilities":["project.create.atomic-default-rules","project.create.automatic-active-key"]}}'
-kubectl patch sentryconnection demo-legacy --subresource=status --type=merge \
-  -p '{"status":{"serverVersion":"26.10.1","capabilities":["project.create.atomic-default-rules","project.create.automatic-active-key"]}}'
-```
-
-This patch is local acceptance evidence, not runtime auto-discovery. Never apply it to an
-unverified external Sentry installation.
+it does not infer capabilities from a version string. A successful local
+`sentry-live-config-api` or `sentry-live-api` run writes a mode-0600 capability evidence file
+under `.cache/sentry-self-hosted/evidence/`. `kind-local-demo` validates its exact version,
+organization, gate, and capability set before applying status to both demo connections.
+Stack recreation or removal deletes the evidence file, so stale evidence cannot be reused.
+Never synthesize or apply this local evidence to an unverified external Sentry installation.
 
 Wait for the independently supported project, DSN, and settings components, then attach the
-read-only consumer. The overall modern resource remains destination-blocked on a completely
-clean stack until the optional local PagerDuty fixture exists.
+read-only consumer. The bootstrap creates the explicitly invalid local PagerDuty catalog
+fixture used by the modern demo; it cannot prove notification delivery.
 
 ```sh
 kubectl -n sentry-demo-modern wait sentryproject/modern-demo \
@@ -204,17 +234,18 @@ Expected state on Sentry 26.10.1 `errors-only`:
 
 | Resource | Expected | Meaning |
 | --- | --- | --- |
-| `sentry-demo-modern/modern-demo` | Component-ready; overall Ready depends on fixture | Project, DSN, filters, and PII reconcile on a clean stack. PagerDuty pinning and modern alerts require the optional fake local catalog fixture. |
+| `sentry-demo-modern/modern-demo` | `Ready=True` after bootstrap | Project, DSN, filters, PII, fake PagerDuty catalog pinning, and modern alert configuration reconcile on a clean stack. |
 | `sentry-demo-modern/readonly-demo` | `Ready=True` | Existing project observed and its DSN published without taking project ownership. |
-| `sentry-demo-surface/destination-surface` | Not fully Ready | PagerDuty can be catalog-pinned only after the local fixture exists; Slack and Telegram intentionally remain unresolved without external integration/registration. |
+| `sentry-demo-surface/destination-surface` | Not fully Ready | PagerDuty is catalog-pinned by the invalid local fixture; Slack and Telegram intentionally remain unresolved without external integration/registration. |
 | `sentry-demo-legacy/legacy-demo` | `AlertsReady=False` | The 26.10.1 server returns 404 for legacy alert collections. Use Sentry 24.7.1 for legacy acceptance. |
 | `sentry-demo-paused/paused-demo` | Not Ready by design | `spec.paused: true` prevents mutation. |
 
-The demo's PagerDuty names require a disposable local integration fixture. If that fixture is
-absent, `NotificationTargetsReady=False` is expected. Do not improvise a fixture in production or
-place a real routing key in this repository. A future helper will create a clearly fake local
-fixture; the current manually seeded fixture proves only catalog resolution and Sentry
-configuration, never delivery.
+`make sentry-bootstrap` creates the demo's disposable PagerDuty integration and service with
+the literal invalid key `invalid-routing-key-not-for-delivery` and a synthetic numeric service
+ID required by the Sentry workflow form. The helper is restricted to the disposable
+version-scoped local organization. It proves catalog resolution and Sentry configuration
+only, never PagerDuty delivery. Do not reproduce this fixture in production or place a real
+routing key in this repository.
 
 ## 9. Verify the Sentry objects
 
@@ -229,6 +260,15 @@ repeatable evidence.
 Confirm project names, client keys, inbound filters, PII settings, detector/workflow state,
 and disabled alert state. Do not claim UI evidence when browser automation is unavailable;
 record API and status output instead.
+
+The bounded read-only API inventory provides the repeatable redacted view:
+
+```sh
+make sentry-api-report SENTRY_VERSION=26.10.1 > sentry-api-report.json
+```
+
+The output intentionally excludes DSNs, tokens, routing keys, external identities, raw Relay
+configuration, and sensitive/safe field names.
 
 Successful project reconciliation schedules a 30-second drift check. This bound is intended
 for prompt repair of managed settings and other observable configuration without relying on
@@ -296,8 +336,10 @@ test from the kind node. Docker Desktop normally provides the host gateway name.
 Legacy alert 404 on 26.10.1: expected. Start a clean 24.7.1 feature-complete stack and use
 the legacy compatibility profile for that acceptance path.
 
-Sentry installer or image build stalls: inspect Docker Desktop resource usage and credential
-helper behavior. Use `SENTRY_SKIP_PULL=true` only when the wrapper confirms a complete cache.
+Sentry installer or image build stalls: run `make docker-credential-diagnostics`, then inspect
+Docker Desktop resource usage. Repair or unlock a helper reported as missing, failing, or
+hanging. Use `SENTRY_SKIP_PULL=true` only when the wrapper confirms a complete cache; local
+operator image builds and pushes never bypass Docker credential handling.
 
 macOS `curl` rejects the controller metrics certificate with an empty issuer DN: this is a
 local cert-manager/curl diagnostic limitation, not permission to disable TLS verification in

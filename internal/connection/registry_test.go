@@ -25,13 +25,13 @@ func TestRegistryRotatesAllInputsWithoutRecreatingStableClient(t *testing.T) {
 	t.Parallel()
 
 	registry := NewRegistry()
-	first := SecretInputs{Token: []byte("token-one"), BotToken: []byte("bot-one"), WebhookAuth: []byte("auth-one")}
+	first := SecretInputs{Token: []byte("token-one"), BotToken: []byte("bot-one")}
 	clientOne, changed, err := registry.Apply("main", "https://sentry.example", first)
 	if err != nil || !changed {
 		t.Fatalf("initial Apply = %v, %v", changed, err)
 	}
 	versionOne, _ := registry.Versions("main")
-	second := SecretInputs{Token: []byte("token-two"), BotToken: []byte("bot-two"), WebhookAuth: []byte("auth-two")}
+	second := SecretInputs{Token: []byte("token-two"), BotToken: []byte("bot-two")}
 	clientTwo, changed, err := registry.Apply("main", "https://sentry.example", second)
 	if err != nil || !changed || clientOne != clientTwo {
 		t.Fatalf("rotated Apply changed=%v sameClient=%v err=%v", changed, clientOne == clientTwo, err)
@@ -41,7 +41,7 @@ func TestRegistryRotatesAllInputsWithoutRecreatingStableClient(t *testing.T) {
 		t.Fatal("rotation did not update safe input fingerprints")
 	}
 	loaded, _ := registry.Inputs("main")
-	if !bytes.Equal(loaded.BotToken, second.BotToken) || !bytes.Equal(loaded.WebhookAuth, second.WebhookAuth) {
+	if !bytes.Equal(loaded.BotToken, second.BotToken) {
 		t.Fatal("integration secrets were not rotated")
 	}
 	loaded.BotToken[0] = 'X'

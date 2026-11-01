@@ -35,7 +35,6 @@ type SecretInputs struct {
 	Token                 []byte
 	CABundle              []byte
 	BotToken              []byte
-	WebhookAuth           []byte
 	AllowInsecureHTTP     bool
 	InsecureSkipTLSVerify bool
 }
@@ -66,9 +65,6 @@ func LoadSecretInputs(ctx context.Context, reader client.Reader, namespace strin
 		if inputs.BotToken, err = loadSecretKey(ctx, reader, namespace, spec.Integrations.Telegram.BotTokenSecretRef); err != nil {
 			return SecretInputs{}, err
 		}
-		if inputs.WebhookAuth, err = loadSecretKey(ctx, reader, namespace, spec.Integrations.Telegram.WebhookAuthSecretRef); err != nil {
-			return SecretInputs{}, err
-		}
 	}
 	return inputs, nil
 }
@@ -83,7 +79,6 @@ func SecretNames(spec sentryv1alpha1.SentryConnectionSpec) []string {
 	}
 	if spec.Integrations != nil && spec.Integrations.Telegram != nil {
 		add(spec.Integrations.Telegram.BotTokenSecretRef)
-		add(spec.Integrations.Telegram.WebhookAuthSecretRef)
 	}
 	names := make([]string, 0, len(seen))
 	for name := range seen {

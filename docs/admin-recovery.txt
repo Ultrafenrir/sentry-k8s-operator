@@ -116,6 +116,14 @@ Git-only CR restore without the protected bundle remains read-only/OwnershipReco
 by design. The repository currently exposes this as an internal tested core, not a plaintext
 `kubectl sentry backup` command; encryption/key management belongs to the installation.
 
+`make verify-t09-kind-backup-restore KIND_CONTEXT=<kind-context>` exercises the protected
+bundle core against a real kind API server without writing the bundle to disk. It refuses
+non-kind contexts and pre-existing drill namespaces, creates four exact ownership-labeled
+namespaces, exports all representative protected record classes in memory, deletes and
+create-only restores them, verifies resumability and digest stability, rejects tampering and
+live conflicts, and removes only its labeled namespaces through a trap. This is protected
+state recovery evidence, not a persisted encrypted backup or a complete installation restore.
+
 Current boundary
 
 There is intentionally no `repair`, `adopt`, `force-delete`, `handoff`, or queue replay

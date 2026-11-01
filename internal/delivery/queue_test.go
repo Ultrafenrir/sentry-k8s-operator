@@ -18,6 +18,7 @@ package delivery
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -30,6 +31,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"github.com/artemantipov/sentry-kubernetes-operator/internal/audit"
 )
 
 func TestEnqueueIsIdempotentAndDetectsConflict(t *testing.T) {
@@ -303,6 +306,72 @@ func TestCompleteCreatesPayloadFreeDedupeTombstone(t *testing.T) {
 	}
 }
 
+func TestSweepAuditsRetentionWithoutProtectedData(t *testing.T) {
+	t.Parallel()
+	queue, now := newTestQueue(t, 10)
+	recorder := &queueAuditRecorder{}
+	queue.Audit = recorder
+	message := testMessage("a", "b", "payload-SHOULD-NOT-LEAK")
+	if _, _, err := queue.Enqueue(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := queue.Claim(context.Background(), testHash("c"), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent, err := queue.Complete(context.Background(), claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	*now = sent.ExpiresAt
+	if removed, err := queue.Sweep(context.Background(), 1); err != nil || removed != 1 {
+		t.Fatalf("sweep = (%d, %v)", removed, err)
+	}
+	if len(recorder.events) != 2 || recorder.events[0].Outcome != audit.OutcomeStarted || recorder.events[0].Reason != audit.ReasonRetentionExpired || recorder.events[1].Outcome != audit.OutcomeSucceeded || recorder.events[1].Reason != audit.ReasonMutationVerified {
+		t.Fatalf("audit events = %+v", recorder.events)
+	}
+	for _, event := range recorder.events {
+		if event.Component != audit.ComponentDelivery || event.Action != audit.ActionDelete || event.LocalResource != "delivery/queue-retention" || event.Revision != sent.Revision {
+			t.Fatalf("audit event = %+v", event)
+		}
+		payload, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, forbidden := range []string{message.DedupeKey, message.RouteKey, message.Text} {
+			if strings.Contains(string(payload), forbidden) {
+				t.Fatalf("audit payload exposes protected data: %s", payload)
+			}
+		}
+	}
+}
+
+func TestSweepFailsClosedWhenRetentionAuditIsUnavailable(t *testing.T) {
+	t.Parallel()
+	queue, now := newTestQueue(t, 10)
+	message := testMessage("a", "b", "protected summary")
+	if _, _, err := queue.Enqueue(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := queue.Claim(context.Background(), testHash("c"), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent, err := queue.Complete(context.Background(), claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	*now = sent.ExpiresAt
+	queue.Audit = &queueAuditRecorder{err: errors.New("injected audit outage")}
+	if removed, err := queue.Sweep(context.Background(), 1); removed != 0 || !errors.Is(err, ErrAuditUnavailable) {
+		t.Fatalf("sweep = (%d, %v), want fail-closed audit error", removed, err)
+	}
+	secret := &corev1.Secret{}
+	if err := queue.Client.Get(context.Background(), types.NamespacedName{Namespace: queue.Namespace, Name: recordName(message.DedupeKey)}, secret); err != nil {
+		t.Fatalf("retained queue record = %v", err)
+	}
+}
+
 func TestExpiredLeaseCanBeReclaimedAndStaleCompletionFails(t *testing.T) {
 	t.Parallel()
 	queue, now := newTestQueue(t, 10)
@@ -382,9 +451,23 @@ func newTestQueue(t *testing.T, capacity int) (*Queue, *time.Time) {
 		Client: fake.NewClientBuilder().WithScheme(scheme).Build(), Namespace: "state",
 		MaxOutstanding: capacity, MaxAttempts: 3,
 		DedupeRetention: time.Hour, DLQRetention: 24 * time.Hour,
+		Audit: &queueAuditRecorder{},
 	}
 	queue.Now = func() time.Time { return now }
 	return queue, &now
+}
+
+type queueAuditRecorder struct {
+	events []audit.Event
+	err    error
+}
+
+func (r *queueAuditRecorder) Record(_ context.Context, event audit.Event) error {
+	if r.err != nil {
+		return r.err
+	}
+	r.events = append(r.events, event)
+	return nil
 }
 
 func testMessage(dedupe, route, text string) Message {

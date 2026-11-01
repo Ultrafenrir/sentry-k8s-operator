@@ -8,6 +8,9 @@ The delivery namespace stores an at-least-once Kubernetes-backed queue. Object n
 only canonical hashes. Records use deterministic dedupe, content-hash conflict detection,
 conservative capacity checks, ResourceVersion compare-and-swap claims, expiring leases,
 bounded exponential retry, dead letters, and exact retention deletion.
+Retention deletion is audit-gated: expired admission candidates, sent tombstones, and dead
+letters are preserved when the immutable audit sink is unavailable, and each attempted
+deletion records only a fixed local resource, queue revision, and closed outcome enums.
 
 Admission uses an immutable candidate Secret followed by a deterministic final record so the
 producer needs create/delete but not update/patch. Lost final-create responses are recovered
@@ -41,6 +44,24 @@ request. HMAC rotation supports exactly one active key or a two-key old/new over
 checks both without early exit. The internal producer reloads its trust bundle on each
 handshake and creates queue records through a protected source-to-route resolver.
 
+The project controller now owns the matching Sentry project service hook. It journals a
+create before the Sentry call, recovers a lost create response by listing only the exact
+opaque source endpoint, rejects duplicate matches, and pins the returned hook identity and
+a one-way secret fingerprint in protected project state. Both supported Sentry versions
+expose active-on-create hooks even when `isActive=false` is requested. Initial creation
+therefore uses a deterministic unpublished staging URL, publishes the protected source plan
+and verifier key, moves the exact hook to the real receiver URL, and independently reads it
+back.
+Observed secret changes use an old/new verifier overlap before the new key is retired.
+Increasing the monotonic `serviceHookRevision` creates the replacement at its deterministic
+unpublished staging URL, publishes the old/new verifier overlap, moves and reads back the
+replacement at the real receiver, deletes only the pinned old hook, and then retires the old
+key. A receiver URL change is admitted only with a larger revision. Interrupted rotations
+finish their durable target before starting a later requested revision.
+Removal disables public verification, deletes the protected source, deletes only the pinned
+hook identity, and verifies absence before releasing the binding. The generated Sentry
+secret is never accepted through the public API or copied to public status.
+
 Rendering and privacy
 
 Messages are generated only from local project, alert, environment, and fixed severity
@@ -51,12 +72,21 @@ payload labels.
 Verification
 
 `make verify-t08-core` covers queue failure windows, concurrency, retry, dead letters,
-retention, hook validation, HMAC rotation, internal signatures, rendering, redaction, and
-Secret rotation. Dedicated kind targets cover CA rotation, Gateway API TLS passthrough,
-Prometheus discovery/rules, and queue soak behavior.
+fail-closed audited retention, hook validation, HMAC rotation, internal signatures, rendering, redaction, and
+Secret rotation. Unit and envtest coverage now also exercise service-hook HTTP contracts,
+lost-response recovery, active-on-create staging publication ordering, protected identity pinning,
+observed HMAC change overlap, proactive replacement rotation, queued-revision recovery,
+exact removal, and controller wiring. Dedicated kind targets cover CA rotation, Gateway API
+TLS passthrough, Prometheus discovery/rules, and queue soak behavior.
 
 Remaining evidence boundary
 
 Real Telegram send/retry/dead-letter behavior with bot/chat/topic credentials, public DNS,
 publicly trusted certificates, externally reachable ingress, and production Alertmanager
 routing are deferred. The existing tests prove local protocol and dataplane behavior only.
+The project service-hook API create/read/update/delete shape and its active-on-create behavior
+were live-accepted on Sentry 24.7.1 and 26.10.1 without sending a notification. Full-controller
+runs on both versions then proved staging publication, protected identity pinning, mutation-free
+convergence, revision-triggered replacement, old-hook cleanup, protected-secret redaction, and
+exact final removal. Failure-window recovery retains local unit and envtest evidence; external
+delivery remains deferred.

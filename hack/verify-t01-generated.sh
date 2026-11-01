@@ -69,9 +69,9 @@ jq -e '
     .admissionReviewVersions == ["v1"])
 ' "$tmp_dir/webhooks.json" >/dev/null
 
-if rg -n '(^|[[:space:]])(profile|grouping|advanced):' \
+if rg -n '(^|[[:space:]])(profile|rawSettings|secondaryGrouping):' \
   "$root_dir/testdata/t01/golden" "$root_dir/config/samples"; then
-  echo 'unpublished alpha field found in positive examples' >&2
+  echo 'unpublished or raw alpha field found in positive examples' >&2
   exit 1
 fi
 

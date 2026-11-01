@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
@@ -64,7 +65,7 @@ func TestModernHTTPAdapterFullMetricIssueLifecycle(t *testing.T) {
 	if got := remote.lastWorkflow.ActionFilters[0].Actions; len(got) != 2 || got[0].Type != "slack" || got[0].IntegrationID != 12 || got[0].Config["targetIdentifier"] != "C123" || got[1].Type != "pagerduty" {
 		t.Fatalf("actions = %#v", got)
 	}
-	if got := remote.lastDetector; got.DataSources[0].TimeWindow != 300 || got.ConditionGroup.Conditions[0].Comparison != 200 || !reflect.DeepEqual(got.WorkflowIDs, []string{"101"}) {
+	if got := remote.lastDetector; got.DataSources[0].Aggregate != "count()" || got.DataSources[0].TimeWindow != 300 || got.ConditionGroup.Conditions[0].Comparison != 200 || !reflect.DeepEqual(got.WorkflowIDs, []string{"101"}) {
 		t.Fatalf("detector payload = %#v", got)
 	}
 
@@ -104,14 +105,33 @@ func TestModernHTTPAdapterFullMetricIssueLifecycle(t *testing.T) {
 	}
 }
 
-func TestModernHTTPAdapterFailsClosedOnUnsupportedDestinationAndIdentity(t *testing.T) {
+func TestModernHTTPAdapterRendersUserCountAggregate(t *testing.T) {
 	t.Parallel()
 	adapter := &ModernHTTPAdapter{Client: &sentryapi.Client{}, Destinations: map[string]binding.DestinationBinding{
-		"telegram": {Kind: "telegram", State: "Active", ResourceIdentity: "1", ResourceName: "ops"},
+		"page": {Kind: "pagerduty", State: "Active", IntegrationIdentity: "34", ResourceIdentity: "567", ResourceName: "checkout"},
+	}}
+	desired := Desired{Trigger: TriggerUserCount, WindowMinutes: 10, Threshold: 50, Enabled: true, Notify: []string{"page"}}
+	if err := adapter.validate(ModernMetricIssueAdapter, "checkout", "affected-users", desired); err != nil {
+		t.Fatalf("user-count desired state rejected: %v", err)
+	}
+	payload := detectorPayload("affected-users", "101", desired)
+	if payload.DataSources[0].Aggregate != "count_unique(user)" {
+		t.Fatalf("detector payload=%#v", payload)
+	}
+}
+
+func TestModernHTTPAdapterRoutesTelegramThroughOwnedServiceHookAndRejectsInvalidIdentity(t *testing.T) {
+	t.Parallel()
+	adapter := &ModernHTTPAdapter{Client: &sentryapi.Client{}, Destinations: map[string]binding.DestinationBinding{
+		"telegram": {Kind: "telegram", State: "Active", Telegram: &binding.TelegramBinding{RouteKey: strings.Repeat("a", 64), Target: &binding.TelegramTarget{ChatIdentity: "-1001"}}},
 	}}
 	desired := Desired{Trigger: TriggerEventCount, WindowMinutes: 5, Threshold: 1, Enabled: true, Notify: []string{"telegram"}}
-	if !errors.Is(adapter.validate(ModernMetricIssueAdapter, "checkout", "errors", desired), ErrModernDestinationUnsupported) {
-		t.Fatal("unsupported Telegram action was accepted")
+	if err := adapter.validate(ModernMetricIssueAdapter, "checkout", "errors", desired); err != nil {
+		t.Fatalf("service-hook Telegram destination rejected: %v", err)
+	}
+	payload, err := adapter.workflowPayload("errors", desired)
+	if err != nil || len(payload.ActionFilters) != 0 {
+		t.Fatalf("payload=%#v err=%v", payload, err)
 	}
 	for _, value := range []string{
 		`{"detector":"1","workflow":"2","extra":"3"}`,

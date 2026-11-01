@@ -2,5 +2,6 @@
   "dataScrubber": true,
   "dataScrubberDefaults": true,
   "scrubIPAddresses": true,
-  "sensitiveFields": ["authorization", "password"]
+  "sensitiveFields": ["authorization", "password"],
+  "allowedDomains": ["*.checkout.example.com", "https://checkout.example.com:443"]
 }

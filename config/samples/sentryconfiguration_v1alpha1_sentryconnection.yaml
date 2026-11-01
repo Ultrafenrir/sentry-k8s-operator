@@ -29,6 +29,14 @@ spec:
       accounts:
         - name: company-pagerduty
           sentryName: Company PagerDuty
+    sourceCode:
+      installations:
+        - name: company-github
+          provider: github
+          sentryName: Company GitHub
+          repositories:
+            - name: checkout
+              sentryName: company/checkout
   access:
     - owner: payments
       namespaces:

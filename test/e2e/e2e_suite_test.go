@@ -32,13 +32,15 @@ import (
 )
 
 var (
-	// managerImage is the manager image to be built and loaded for testing.
+	// managerImage is built from the exact upgrade baseline commit.
 	managerImage = "example.com/sentry-kubernetes-operator:v0.0.1"
-	// upgradeManagerImage is a second immutable test tag used to exercise a real Deployment rollout.
+	// upgradeManagerImage is built from the current worktree.
 	upgradeManagerImage = "example.com/sentry-kubernetes-operator:v0.0.2"
 	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
 	shouldCleanupCertManager = false
 )
+
+const upgradeBaselineCommit = "ba5143fa704a923e251a31c71d8f32342ba81344"
 
 // TestE2E runs the e2e test suite to validate the solution in an isolated environment.
 // The default setup requires Kind and CertManager.
@@ -53,12 +55,17 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	for _, image := range []string{managerImage, upgradeManagerImage} {
-		By("building manager image " + image)
-		cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", image))
-		_, err := utils.Run(cmd)
-		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build manager image %s", image)
+	By("building the baseline manager image from an exact commit")
+	cmd := exec.Command("sh", "hack/build-git-ref-image.sh", upgradeBaselineCommit, managerImage)
+	_, err := utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build baseline manager image %s", managerImage)
 
+	By("building the upgrade manager image from the current worktree")
+	cmd = exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", upgradeManagerImage))
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build upgrade manager image %s", upgradeManagerImage)
+
+	for _, image := range []string{managerImage, upgradeManagerImage} {
 		// TODO(user): If you want to change the e2e test vendor from Kind,
 		// ensure the image is built and available, then remove the following block.
 		By("loading manager image on Kind " + image)

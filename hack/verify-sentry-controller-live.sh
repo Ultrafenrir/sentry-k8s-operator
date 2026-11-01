@@ -37,4 +37,4 @@ GOMODCACHE="$product_gomodcache" \
 GOCACHE="$product_gocache" \
   "$go_bin" test ./internal/controller --ginkgo.label-filter=live-sentry -count=1
 
-echo "Sentry $version controller recovery/settings-drift/team-access acceptance passed"
+echo "Sentry $version controller recovery/regional-takeover/standby-promotion/adopt-retain/managed-handoff/standby-alert-cleanup/client-key/settings/symbol-sources/code-mappings/issue-ownership/service-hook/team-access/user-count acceptance passed"

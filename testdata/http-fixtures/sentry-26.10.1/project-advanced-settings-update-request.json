@@ -1,0 +1,5 @@
+{
+  "relayPiiConfig": "{\"rules\":{\"0\":{\"type\":\"email\",\"redaction\":{\"method\":\"remove\"}},\"1\":{\"type\":\"anything\",\"redaction\":{\"method\":\"replace\",\"text\":\"[Filtered]\"}}},\"applications\":{\"$message\":[\"0\"],\"extra.customer.email\":[\"0\"],\"request.headers.Authorization\":[\"1\"]}}",
+  "groupingEnhancements": "stack.abs_path:\"*/node_modules/*\" -app\n!stack.function:\"vendor_*\" +group",
+  "fingerprintingRules": "error.type:\"DatabaseUnavailable\" -> \"database-unavailable\"\nstack.function:\"query_*\" -> \"database\", {{ default }}"
+}

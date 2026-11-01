@@ -5,10 +5,13 @@ public API uses readable project, team, Slack, PagerDuty, and Telegram names; ex
 DSNs, tokens, Telegram chat IDs, and operation journals stay out of CR specs and status.
 
 The repository currently provides project ownership, declarative project-team access,
-public DSN publication, typed filters/PII settings, destination pinning, legacy and modern alert adapters, protected
-Telegram registration/delivery components, recovery tooling, metrics, and alpha packaging.
-It is **not production-ready**: Slack runtime discovery, live external delivery, complete
-upgrade recovery, SaaS acceptance, and hosted release evidence are still incomplete. See
+managed client-key lifecycle and public DSN publication, typed filters/PII/grouping and
+symbolication settings, Secret-backed custom symbol-source ownership, team-only issue
+ownership, connection-aliased repository code mappings and CODEOWNERS import, destination
+pinning, legacy and modern alert adapters, protected Telegram
+registration/delivery components, recovery tooling, metrics, and alpha packaging.
+It is **not production-ready**: Slack runtime discovery, live external delivery, SaaS
+acceptance, and hosted upgrade/release evidence are still incomplete. See
 [`docs/t06-destinations-progress.txt`](docs/t06-destinations-progress.txt),
 [`docs/t07-alerts-progress.txt`](docs/t07-alerts-progress.txt), and
 [`docs/kubernetes-compatibility.txt`](docs/kubernetes-compatibility.txt) for the precise

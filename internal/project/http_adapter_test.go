@@ -130,6 +130,28 @@ func TestHTTPAdapterUpdatesOnlyRegionalRevisionEvidence(t *testing.T) {
 	}
 }
 
+func TestHTTPAdapterReleasesOwnershipByRestoringStableSlugName(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/api/0/projects/company/checkout/" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if body["name"] != "checkout" || len(body) != 1 {
+			t.Errorf("release body = %#v", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	adapter := &HTTPAdapter{Client: testHTTPClient(t, server)}
+	if err := adapter.ReleaseOwnership(context.Background(), "company", "checkout"); err != nil {
+		t.Fatalf("ReleaseOwnership: %v", err)
+	}
+}
+
 func TestHTTPAdapterGETParsesOnlyExactMarker(t *testing.T) {
 	t.Parallel()
 

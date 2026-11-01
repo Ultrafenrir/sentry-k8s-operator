@@ -1,0 +1,32 @@
+[
+  {
+    "id": "sko-fixture-http",
+    "name": "sko:http-symbols:fixture",
+    "type": "http",
+    "url": "https://symbols.example.invalid",
+    "username": "fixture-reader",
+    "password": "fixture-password-not-a-real-secret",
+    "layout": {"type": "native", "casing": "default"}
+  },
+  {
+    "id": "sko-fixture-s3",
+    "name": "sko:s3-symbols:fixture",
+    "type": "s3",
+    "bucket": "fixture-symbols",
+    "region": "eu-west-1",
+    "access_key": "fixture-access-key",
+    "secret_key": "fixture-secret-key-not-a-real-secret",
+    "prefix": "native/",
+    "layout": {"type": "symstore", "casing": "lowercase"}
+  },
+  {
+    "id": "sko-fixture-gcs",
+    "name": "sko:gcs-symbols:fixture",
+    "type": "gcs",
+    "bucket": "fixture-symbols",
+    "client_email": "symbols@example.invalid",
+    "private_key": "fixture-private-key-not-a-real-secret",
+    "prefix": "debug/",
+    "layout": {"type": "unified", "casing": "uppercase"}
+  }
+]

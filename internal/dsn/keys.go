@@ -66,6 +66,21 @@ type Selection struct {
 	ExternalRenamed bool
 }
 
+// SelectManaged pins one exact operator-managed key identity while exposing only its local
+// logical name. Rotation is intentionally allowed to replace the previous key identity;
+// the client-key lifecycle has already verified ownership and DSN cutover ordering.
+func SelectManaged(key ClientKey, logicalName string, current *binding.DSNBinding, allowInsecureHTTP bool) (Selection, error) {
+	if !validReadableName(logicalName) || key.ID == "" || !key.IsActive || !validPublicDSN(key.DSN.Public, allowInsecureHTTP) {
+		return Selection{}, ErrInvalidDSN
+	}
+	selected := binding.DSNBinding{KeyIdentity: key.ID, KeyName: logicalName, SelectorHash: hashSelector("managed:" + logicalName)}
+	if current != nil {
+		selected.CurrentSecret = current.CurrentSecret
+		selected.PendingSecret = current.PendingSecret
+	}
+	return Selection{Key: key, Binding: selected, ReadableName: logicalName}, nil
+}
+
 // Select chooses only from a complete, already paginated list and preserves a pinned key.
 func Select(keys []ClientKey, selector string, current *binding.DSNBinding) (Selection, error) {
 	return SelectWithTransport(keys, selector, current, false)
