@@ -1,0 +1,184 @@
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryProject
+metadata:
+  labels:
+    app.kubernetes.io/name: sentry-kubernetes-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: checkout-advanced
+  namespace: checkout-prod
+spec:
+  sentry: company-sentry
+  alertPolicy: common-backend-alerts
+  role: Active
+  project:
+    create:
+      team: payments
+      platform: python
+  dsn:
+    secret: checkout-advanced-sentry
+    managedClientKey: primary
+  clientKeys:
+    primary:
+      active: true
+      rateLimit:
+        count: 1000
+        windowSeconds: 60
+      rotationRevision: 1
+  settings:
+    filters:
+      browserExtensions: true
+      localhost: true
+      webCrawlers: true
+      filteredTransactions: true
+      legacyBrowsers:
+        - ie
+        - edge
+        - safari
+        - firefox
+        - chrome
+        - opera
+        - android
+        - opera_mini
+    pii:
+      scrubData: true
+      scrubDefaults: true
+      scrubIPAddresses: true
+      sensitiveFields:
+        - authorization
+        - customer_token
+      safeFields:
+        - request_id
+      advancedRules:
+        - type: creditcard
+          redaction: remove
+          applications:
+            - root: message
+        - type: password
+          redaction: replace
+          replacement: redacted
+          applications:
+            - root: request
+              path:
+                - headers
+                - Authorization
+    behavior:
+      autoResolveHours: 168
+      defaultEnvironment: production
+      crashReportLimit: 10
+      scrapeJavaScript: true
+      allowedDomains:
+        - checkout.example.invalid
+        - https://*.example.invalid:443
+    grouping:
+      enhancements:
+        - matcher: path
+          pattern: src/vendor/*
+          action: MarkOutOfApp
+        - matcher: module
+          pattern: checkout.*
+          negate: true
+          action: Include
+      fingerprints:
+        - matcher: error.type
+          pattern: CheckoutError
+          values:
+            - checkout-errors
+          includeDefault: true
+    symbolication:
+      builtinSources:
+        - amd
+        - autodesk
+        - chromium
+        - citrix
+        - electron
+        - intel
+        - microsoft
+        - mozilla
+        - nuget
+        - nvidia
+        - ubuntu
+        - unity
+  symbolSources:
+    internal-http:
+      layout:
+        type: native
+        casing: default
+      http:
+        url: https://symbols.example.invalid
+        username: symbol-reader
+        passwordSecretRef:
+          name: checkout-symbols
+          key: http-password
+    release-s3:
+      layout:
+        type: unified
+        casing: lowercase
+      s3:
+        bucket: checkout-symbols
+        region: eu-west-1
+        prefix: releases/
+        accessKeySecretRef:
+          name: checkout-symbols
+          key: s3-access-key
+        secretKeySecretRef:
+          name: checkout-symbols
+          key: s3-secret-key
+    release-gcs:
+      layout:
+        type: debuginfod
+        casing: default
+      gcs:
+        bucket: checkout-symbols
+        clientEmail: symbol-reader@example.invalid
+        prefix: releases/
+        privateKeySecretRef:
+          name: checkout-symbols
+          key: gcs-private-key
+  grantAccess:
+    teams:
+      - platform-observability
+  issueOwnership:
+    rules:
+      - matcher:
+          type: path
+          pattern: src/payments/*
+        teams:
+          - payments
+      - matcher:
+          type: tag
+          tagKey: service
+          pattern: checkout
+        teams:
+          - platform-observability
+    fallthrough: AllMembers
+    autoAssignment: IssueOwner
+    codeownersAutoSync: true
+  codeMappings:
+    checkout-source:
+      integration: company-github
+      repository: checkout
+      stackRoot: /app
+      sourceRoot: src
+      defaultBranch: main
+      importCodeowners: true
+  notificationTargets:
+    slack:
+      company-slack:
+        - payments-alerts
+    pagerDuty:
+      company-pagerduty:
+        - Payments Primary
+  alerts:
+    regressions:
+      trigger: regression
+      notify:
+        - slack/payments-alerts
+    affected-users:
+      trigger: user-count
+      windowMinutes: 10
+      threshold: 50
+      notify:
+        - pagerDuty/Payments Primary
+  paused: true
+  lifecycle:
+    onDelete: Retain

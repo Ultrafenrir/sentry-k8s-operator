@@ -59,10 +59,13 @@ spec:
                       default: true
                       type: boolean
                     notify:
+                      description: |-
+                        Telegram destinations are registration-only until an authenticated alert-firing source
+                        can preserve trigger semantics end to end.
                       items:
                         maxLength: 211
                         minLength: 1
-                        pattern: ^(slack|pagerDuty|telegram)/[^/[:space:]][^/]*$
+                        pattern: ^(slack|pagerDuty)/[^/[:space:]][^/]*$
                         type: string
                       maxItems: 20
                       minItems: 1

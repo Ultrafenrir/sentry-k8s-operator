@@ -9,7 +9,8 @@ managed client-key lifecycle and public DSN publication, typed filters/PII/group
 symbolication settings, Secret-backed custom symbol-source ownership, team-only issue
 ownership, connection-aliased repository code mappings and CODEOWNERS import, destination
 pinning, legacy and modern alert adapters, protected Telegram
-registration/delivery components, recovery tooling, metrics, and alpha packaging.
+registration and isolated delivery-plane components with alert-source wiring disabled,
+recovery tooling, metrics, and alpha packaging.
 It is **not production-ready**: Slack runtime discovery, live external delivery, SaaS
 acceptance, and hosted upgrade/release evidence are still incomplete. See
 [`docs/t06-destinations-progress.txt`](docs/t06-destinations-progress.txt),
@@ -24,6 +25,13 @@ environment procedure is [`docs/development-runbook.md`](docs/development-runboo
 the current implementation/evidence/backlog summary is
 [`docs/project-status.md`](docs/project-status.md). These three files are intentionally
 shorter and more current than the historical task reports.
+
+Users should start with the complete
+[`docs/configuration.md`](docs/configuration.md) CRD and feature guide, the minimal
+[`docs/quickstart.md`](docs/quickstart.md), and the admitted
+[`config/samples/`](config/samples/) manifests. Helm installation, values, optional
+components, CRD upgrades, and uninstall behavior are documented in the
+[`chart README`](charts/sentry-kubernetes-operator/README.md).
 
 All repository documentation and source comments must be written in English.
 
@@ -132,6 +140,11 @@ Secrets, and a compatible Sentry installation:
 kubectl apply -k config/samples/
 ```
 
+The [sample index](config/samples/README.md) explains the platform connection, reusable
+alert policy, managed and read-only projects, full paused feature surface, and workload DSN
+consumer. Review and adapt each manifest instead of applying the complete example set to a
+production cluster.
+
 For the service-owner path, start with the single-resource
 [`docs/quickstart.md`](docs/quickstart.md). It separates platform prerequisites from the
 minimal `SentryProject`, uses no external identifiers, and states which final checks still
@@ -217,8 +230,9 @@ and can egress only to DNS and the mTLS writer. The writer is internal-only and 
 Sentry token. The tokenless Sentry receiver reads projected source configuration per
 request and hands a closed two-hash envelope to the internal mTLS producer; only that
 producer can create queue records. The delivery worker reloads the bot token per operation
-and has no Sentry credentials. Deploying these workloads does not enable alert delivery
-until the protected source plan and matching public verifier config are provisioned.
+and has no Sentry credentials. Deploying these workloads does not enable alert delivery. The
+controller deliberately does not map raw project events to alert routes because those events
+do not identify a fired alert or preserve trigger semantics.
 It exposes identity-free Prometheus metrics on its internal metrics Service. Only pods in
 namespaces labeled `metrics: enabled` are admitted by the registration NetworkPolicy;
 no ServiceMonitor or alert rules are installed automatically.
@@ -334,6 +348,8 @@ routing, dedupe, DLQ, or mutation audit evidence.
 
 - [`SENTRY_CONFIGURATION_OPERATOR_PLAN_V2.txt`](SENTRY_CONFIGURATION_OPERATOR_PLAN_V2.txt)
   defines product intent and sequencing.
+- [`docs/configuration.md`](docs/configuration.md) documents every published CRD feature and
+  links admitted configuration examples.
 - [`docs/project-status.md`](docs/project-status.md) is the current implementation,
   evidence, deferral, and backlog source of truth.
 - [`docs/alpha-surface.txt`](docs/alpha-surface.txt) records the published alpha boundary.
@@ -352,6 +368,23 @@ routing, dedupe, DLQ, or mutation audit evidence.
 - [`docs/t10-packaging-progress.txt`](docs/t10-packaging-progress.txt) records generated
   Helm chart guarantees and the remaining end-to-end release work.
 
+## Community and project policy
+
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) explains development, testing, generated files, and
+  pull request expectations.
+- [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) defines community behavior and private
+  reporting paths.
+- [`SECURITY.md`](SECURITY.md) defines supported versions and private vulnerability
+  reporting.
+- [`SUPPORT.md`](SUPPORT.md) explains best-effort support scope and required diagnostics.
+- [`GOVERNANCE.md`](GOVERNANCE.md) and [`MAINTAINERS.md`](MAINTAINERS.md) record decision,
+  release, and review authority.
+- [`CHANGELOG.md`](CHANGELOG.md) records user-facing changes and release history.
+
 ## License
 
-Copyright 2026 Sentry Kubernetes Operator Authors. Licensed under the Apache License 2.0.
+Copyright 2026 Sentry Kubernetes Operator Authors.
+
+Licensed under the [Apache License 2.0](LICENSE). Attribution and trademark notices are in
+[`NOTICE`](NOTICE). Sentry and related marks belong to their respective owners; this project
+is independent and is not affiliated with or endorsed by Sentry.

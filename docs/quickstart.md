@@ -170,8 +170,10 @@ kubectl -n checkout-prod describe sentryproject checkout
 
 The complete condition/action reference is in
 [`docs/troubleshooting.md`](troubleshooting.md). The controller emits transition-only Events
-from the same redacted conditions, but the current alpha does not claim a complete audit
-trail, so status remains the source of truth.
+from the same redacted conditions, so status remains the source of truth for current
+resource health. The separate immutable mutation trail is available to authorized
+administrators through `kubectl sentry audit-export`; see
+[`docs/admin-recovery.txt`](admin-recovery.txt).
 
 Deleting this CR uses the default `Retain` policy: the Sentry project remains, while the
 operator removes its owned child configuration, verified remote ownership marker, and

@@ -18,3 +18,7 @@ cover.out
 # Re-include Go module files
 !go.mod
 !go.sum
+
+# Include license and attribution notices in the distributed image.
+!LICENSE
+!NOTICE

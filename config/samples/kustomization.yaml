@@ -3,5 +3,7 @@ resources:
 - sentryconfiguration_v1alpha1_sentryconnection.yaml
 - sentryconfiguration_v1alpha1_sentryalertpolicy.yaml
 - sentryconfiguration_v1alpha1_sentryproject.yaml
+- sentryconfiguration_v1alpha1_sentryproject_existing.yaml
+- sentryconfiguration_v1alpha1_sentryproject_features.yaml
 - workload_with_sentry_dsn.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

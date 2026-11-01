@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private security report
+    url: https://github.com/Ultrafenrir/sentry-k8s-operator/security/advisories/new
+    about: Report suspected vulnerabilities privately; never publish credentials or sensitive data.
+  - name: Configuration documentation
+    url: https://github.com/Ultrafenrir/sentry-k8s-operator/blob/main/docs/configuration.md
+    about: Review the complete CRD and configuration guide before opening an issue.
+  - name: Support policy
+    url: https://github.com/Ultrafenrir/sentry-k8s-operator/blob/main/SUPPORT.md
+    about: Check the supported scope and required diagnostic information.

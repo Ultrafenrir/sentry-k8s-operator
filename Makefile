@@ -71,6 +71,10 @@ help: ## Display this help.
 verify-english: ## Reject Cyrillic text in repository documentation, comments, and source files.
 	sh hack/verify-english-repository.sh
 
+.PHONY: verify-community
+verify-community: ## Verify open-source license, policy, ownership, and GitHub community files.
+	sh hack/verify-community.sh
+
 ##@ Development
 
 .PHONY: verify-sentry-self-hosted verify-sentry-compose sentry-up sentry-bootstrap sentry-live-api sentry-live-config-api sentry-controller-live sentry-api-report sentry-smoke sentry-status sentry-logs sentry-down sentry-reset sentry-clean sentry-matrix verify-kind-local-demo verify-sentry-api-report kind-local-demo kind-local-demo-status kind-local-demo-clean

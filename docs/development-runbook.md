@@ -110,7 +110,8 @@ filter, modern detector, and workflow configuration lifecycles. It intentionally
 ingestion and notification delivery. The controller gate also exercises lost-response
 recovery, a regional revision takeover with the real five-second fencing interval and
 read-after-write, stale and conflicting writer refusal, protected child configuration drift
-repair, service-hook rotation, and exact cleanup. It is configuration-only evidence, not a
+repair, and exact cleanup. The isolated service-hook lifecycle is not invoked by current
+project reconciliation. This is configuration-only evidence, not a
 physical multi-cluster or network-partition failover test.
 
 ## 4. Create kind and install cert-manager

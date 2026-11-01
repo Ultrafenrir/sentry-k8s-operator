@@ -1943,40 +1943,13 @@ func (r *SentryProjectReconciler) reconcileServiceHook(ctx context.Context, reso
 	if err != nil {
 		return err
 	}
-	deliveries, err := telegramHookDeliveries(resource.Name, record.Binding)
-	if err != nil {
-		return err
+	// A project event hook does not identify a fired Sentry alert and cannot preserve
+	// first-seen, regression, event-count, or user-count semantics. Remove any alpha hook
+	// created by an earlier controller instead of fanning every raw event out to every route.
+	if record.Binding.ServiceHook == nil {
+		return nil
 	}
-	if len(deliveries) == 0 {
-		if record.Binding.ServiceHook == nil {
-			return nil
-		}
-		return r.removeServiceHook(ctx, resource, connection, apiClient, record)
-	}
-	if connection.Spec.Integrations == nil || connection.Spec.Integrations.Telegram == nil || r.HookSources == nil || r.HookVerifier == nil {
-		return sentryhook.ErrServiceHookLifecycle
-	}
-	return r.ensureServiceHook(ctx, resource, connection, apiClient, record, connection.Spec.Integrations.Telegram.ReceiverURL, deliveries)
-}
-
-func (r *SentryProjectReconciler) ensureServiceHook(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, apiClient *sentryapi.Client, record binding.BindingRecord, receiverBase string, deliveries []sentryhook.TelegramDelivery) error {
-	adapter := sentryhook.ServiceHookAdapter(&sentryhook.HTTPServiceHookAdapter{Client: apiClient})
-	if r.NewServiceHookAdapter != nil {
-		adapter = r.NewServiceHookAdapter(apiClient)
-	}
-	_, err := (&sentryhook.LifecycleEngine{Bindings: r.Bindings, Adapter: adapter, Sources: r.HookSources, Verifier: r.HookVerifier}).Ensure(ctx, sentryhook.LifecycleInput{
-		Binding: record, ConnectionUID: string(connection.UID), ReceiverBase: receiverBase,
-		Organization: record.Binding.Organization, ProjectSlug: record.Binding.Slug, Revision: effectiveServiceHookRevision(connection.Spec.Integrations.Telegram.ServiceHookRevision), Deliveries: deliveries,
-		Authorize: r.dsnAuthorizer(resource, connection, record.Binding),
-	})
-	return err
-}
-
-func effectiveServiceHookRevision(revision int64) int64 {
-	if revision < 1 {
-		return 1
-	}
-	return revision
+	return r.removeServiceHook(ctx, resource, connection, apiClient, record)
 }
 
 func (r *SentryProjectReconciler) removeServiceHook(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, apiClient *sentryapi.Client, record binding.BindingRecord) error {
@@ -1997,45 +1970,6 @@ func (r *SentryProjectReconciler) removeServiceHook(ctx context.Context, resourc
 		Authorize: r.dsnAuthorizer(resource, connection, record.Binding),
 	})
 	return err
-}
-
-func telegramHookDeliveries(projectName string, protected binding.ProjectBinding) ([]sentryhook.TelegramDelivery, error) {
-	alertNames := make([]string, 0, len(protected.Alerts))
-	for name := range protected.Alerts {
-		alertNames = append(alertNames, name)
-	}
-	sort.Strings(alertNames)
-	routes := map[string]bool{}
-	result := make([]sentryhook.TelegramDelivery, 0)
-	for _, alertName := range alertNames {
-		alert := protected.Alerts[alertName]
-		if !alert.Enabled {
-			continue
-		}
-		for _, destinationName := range alert.Destinations {
-			target, found := protected.Destinations[destinationName]
-			if !found || target.Kind != "telegram" || target.State != destination.StateActive || target.Telegram == nil || target.Telegram.RouteKey == "" || target.Telegram.Target == nil || target.Telegram.RouteRevoked {
-				continue
-			}
-			if routes[target.Telegram.RouteKey] {
-				return nil, sentryhook.ErrServiceHookLifecycle
-			}
-			routes[target.Telegram.RouteKey] = true
-			result = append(result, sentryhook.TelegramDelivery{RouteKey: target.Telegram.RouteKey, Render: sentryhook.RenderInput{ProjectName: projectName, AlertName: alertName, Severity: hookSeverity(alert.Trigger)}})
-		}
-	}
-	return result, nil
-}
-
-func hookSeverity(trigger string) sentryhook.Severity {
-	switch trigger {
-	case string(sentryconfigurationv1alpha1.AlertTriggerEventCount), string(sentryconfigurationv1alpha1.AlertTriggerUserCount):
-		return sentryhook.SeverityCritical
-	case string(sentryconfigurationv1alpha1.AlertTriggerRegression):
-		return sentryhook.SeverityWarning
-	default:
-		return sentryhook.SeverityInfo
-	}
 }
 
 func (r *SentryProjectReconciler) engine(apiClient *sentryapi.Client) *projectruntime.Engine {

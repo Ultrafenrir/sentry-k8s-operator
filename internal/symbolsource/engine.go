@@ -248,8 +248,8 @@ func validDesired(name string, desired Desired) bool {
 	}
 	switch desired.Type {
 	case "http":
-		parsed, err := url.Parse(desired.URL)
-		return err == nil && parsed.Scheme == "https" && parsed.Host != "" && desired.Bucket == "" && desired.Region == "" && desired.AccessKey == "" && desired.SecretKey == "" && desired.ClientEmail == "" && desired.PrivateKey == ""
+		parsed, err := url.ParseRequestURI(desired.URL)
+		return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && desired.Bucket == "" && desired.Region == "" && desired.AccessKey == "" && desired.SecretKey == "" && desired.ClientEmail == "" && desired.PrivateKey == ""
 	case "s3":
 		return desired.Bucket != "" && validRegion(desired.Region) && desired.AccessKey != "" && desired.SecretKey != "" && desired.URL == "" && desired.Username == "" && desired.Password == "" && desired.ClientEmail == "" && desired.PrivateKey == ""
 	case "gcs":

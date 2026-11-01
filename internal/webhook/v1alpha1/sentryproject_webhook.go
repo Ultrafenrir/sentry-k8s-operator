@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	"context"
+	"net/url"
 	"reflect"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -302,6 +303,10 @@ func validateSentryProject(obj *sentryconfigurationv1alpha1.SentryProject) error
 			types := 0
 			if source.HTTP != nil {
 				types++
+				parsed, err := url.ParseRequestURI(source.HTTP.URL)
+				if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+					allErrs = append(allErrs, field.Invalid(sourcePath.Child("http", "url"), source.HTTP.URL, "must be an absolute HTTPS URL without userinfo"))
+				}
 				if source.HTTP.PasswordSecretRef != nil {
 					allErrs = append(allErrs, validateSecretKeyReference(*source.HTTP.PasswordSecretRef, sourcePath.Child("http", "passwordSecretRef"))...)
 				}

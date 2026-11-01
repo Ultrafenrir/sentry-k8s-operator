@@ -111,6 +111,20 @@ func TestEngineValidatesEveryChildBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestEngineRejectsHTTPURLUserinfoBeforeMutation(t *testing.T) {
+	t.Parallel()
+	adapter := newFakeAdapter()
+	input := testInput()
+	input.Desired["symbols"] = Desired{
+		Type: "http", Layout: Layout{Type: "native", Casing: "default"},
+		URL: "https://reader:secret@symbols.example.invalid", Username: "reader", Password: "SECRET-SENTINEL",
+	}
+	result := (&Engine{Adapter: adapter}).Reconcile(context.Background(), input)
+	if !errors.Is(result.Err(), ErrInvalidInput) || adapter.createCalls != 0 || adapter.updateCalls != 0 || adapter.deleteCalls != 0 {
+		t.Fatalf("result=%#v calls=%d/%d/%d", result, adapter.createCalls, adapter.updateCalls, adapter.deleteCalls)
+	}
+}
+
 func testInput() Input {
 	return Input{
 		Organization: "company", ProjectSlug: "checkout", ProjectUID: "project-uid-123",

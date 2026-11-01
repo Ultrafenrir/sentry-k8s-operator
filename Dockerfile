@@ -42,6 +42,8 @@ COPY --from=builder /workspace/telegram-receiver .
 COPY --from=builder /workspace/telegram-delivery-worker .
 COPY --from=builder /workspace/sentry-hook-producer .
 COPY --from=builder /workspace/sentry-hook-receiver .
+COPY --from=builder /workspace/LICENSE /licenses/sentry-kubernetes-operator/LICENSE
+COPY --from=builder /workspace/NOTICE /licenses/sentry-kubernetes-operator/NOTICE
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]

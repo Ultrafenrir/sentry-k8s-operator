@@ -1,0 +1,71 @@
+name: Feature request
+description: Propose a bounded feature or public contract change.
+title: "Feature: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature proposals must fit the typed, readable-name API and state their compatibility, ownership, security, and evidence boundaries.
+        Raw vendor payloads, external IDs, and arbitrary settings maps are outside the current alpha design.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and reviewed the alpha surface, compatibility, and project-status documents.
+          required: true
+        - label: The proposal contains no credentials, private data, or protected-state contents.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the user problem without prescribing an implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-contract
+    attributes:
+      label: Proposed public contract
+      description: Describe readable inputs, validation, defaults, status, and omission or deletion semantics.
+    validations:
+      required: true
+
+  - type: textarea
+    id: ownership
+    attributes:
+      label: Ownership and lifecycle
+      description: Explain creation, update, drift repair, deletion, recovery, and preservation of unmanaged objects.
+    validations:
+      required: true
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility evidence
+      description: Identify target Sentry/Kubernetes versions and the evidence needed before the feature can be claimed portable.
+    validations:
+      required: true
+
+  - type: textarea
+    id: security
+    attributes:
+      label: Security and privacy
+      description: Explain credentials, authorization, protected state, redaction, and failure behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe existing workflows or narrower designs and why they are insufficient.
+
+  - type: textarea
+    id: external-boundaries
+    attributes:
+      label: External evidence boundaries
+      description: State provider credentials, public infrastructure, delivery, SaaS, or hosted release work that would remain outside local tests.

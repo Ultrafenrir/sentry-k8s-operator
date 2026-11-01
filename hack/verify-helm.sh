@@ -15,6 +15,8 @@ cp -R "$chart_dir" "$tmp_dir/chart"
 CHART_DIR="$tmp_dir/chart" "$root_dir/hack/update-helm-chart.sh"
 diff -ru "$chart_dir/files" "$tmp_dir/chart/files"
 diff -ru "$chart_dir/crds" "$tmp_dir/chart/crds"
+cmp "$root_dir/LICENSE" "$chart_dir/LICENSE"
+cmp "$root_dir/NOTICE" "$chart_dir/NOTICE"
 
 cp "$root_dir/config/manager/kustomization.yaml" "$tmp_dir/manager-kustomization.yaml"
 cp "$root_dir/config/registration/kustomization.yaml" "$tmp_dir/registration-kustomization.yaml"
@@ -141,5 +143,9 @@ fi
 
 "$helm_bin" package "$chart_dir" --destination "$tmp_dir" >/dev/null
 test -f "$tmp_dir/sentry-kubernetes-operator-0.1.0-alpha.1.tgz"
+tar -tzf "$tmp_dir/sentry-kubernetes-operator-0.1.0-alpha.1.tgz" \
+  | rg -q '^sentry-kubernetes-operator/LICENSE$'
+tar -tzf "$tmp_dir/sentry-kubernetes-operator-0.1.0-alpha.1.tgz" \
+  | rg -q '^sentry-kubernetes-operator/NOTICE$'
 
 echo 'Helm chart drift, non-mutating image render, schema, Kubernetes 1.35/1.36, CRD, opt-in and immutable-image contracts verified'

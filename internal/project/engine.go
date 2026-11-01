@@ -274,22 +274,23 @@ func (e *Engine) Delete(ctx context.Context, input Input) (DeletionResult, error
 	if e.Audit == nil {
 		return DeletionResult{}, &Error{Reason: ReasonInvalidState, cause: ErrAuditUnavailable}
 	}
+	installation := input.CanonicalInstallation
+	var err error
+	if installation == "" {
+		installation, err = binding.CanonicalInstallation(input.Connection.URL)
+		if err != nil {
+			return DeletionResult{}, &Error{Reason: ReasonInvalidState}
+		}
+	}
 	state, err := e.Bindings.GetBinding(ctx, string(input.Project.UID))
-	if errors.Is(err, binding.ErrNotFound) && input.Project.Spec.Lifecycle.OnDelete != sentryv1alpha1.OnDeleteDeleteProject {
-		return DeletionResult{Complete: true, Retained: true}, nil
+	if errors.Is(err, binding.ErrNotFound) {
+		return e.recoverMissingBinding(ctx, input, installation)
 	}
 	if err != nil {
 		return DeletionResult{}, &Error{Reason: ReasonOwnershipLost, cause: err}
 	}
 	if input.Project.Spec.Lifecycle.OnDelete != sentryv1alpha1.OnDeleteDeleteProject && state.Binding.AccessMode == binding.AccessReadOnly {
 		return e.releaseReadOnlyBinding(ctx, input)
-	}
-	installation := input.CanonicalInstallation
-	if installation == "" {
-		installation, err = binding.CanonicalInstallation(input.Connection.URL)
-		if err != nil {
-			return DeletionResult{}, &Error{Reason: ReasonInvalidState}
-		}
 	}
 	decision, err := policy.EvaluateProject(input.Project.Namespace, input.Project.Spec, input.Connection)
 	if err != nil || decision.AccessMode != binding.AccessManage {
@@ -392,6 +393,45 @@ func (e *Engine) Delete(ctx context.Context, input Input) (DeletionResult, error
 	return DeletionResult{}, &Error{Reason: ReasonDeletionPending}
 }
 
+// recoverMissingBinding completes only local cleanup states that cannot represent an owned
+// remote project. A same-project claim without a binding is possible before the first binding
+// create, or after completeDeletion removed the binding and claim deletion failed. Any remote
+// ownership evidence still fails closed because the missing binding is the authorization record.
+func (e *Engine) recoverMissingBinding(ctx context.Context, input Input, installation string) (DeletionResult, error) {
+	retain := input.Project.Spec.Lifecycle.OnDelete != sentryv1alpha1.OnDeleteDeleteProject
+	claim, err := e.Bindings.GetClaim(ctx, installation, input.Connection.Organization, input.Project.Name)
+	if errors.Is(err, binding.ErrNotFound) {
+		if retain {
+			return DeletionResult{Complete: true, Retained: true}, nil
+		}
+		return DeletionResult{}, &Error{Reason: ReasonOwnershipLost}
+	}
+	if err != nil {
+		return DeletionResult{}, &Error{Reason: ReasonOwnershipLost, cause: err}
+	}
+	manager := claim.Claim.Manager
+	if manager.UID != string(input.Project.UID) || manager.Namespace != input.Project.Namespace || manager.Name != input.Project.Name || claim.Claim.Handoff != nil {
+		return DeletionResult{}, &Error{Reason: ReasonOwnershipLost}
+	}
+
+	remoteRetained := false
+	if claim.Claim.ExternalIdentity != "" {
+		remote, remoteErr := e.Adapter.GetBySlug(ctx, input.Connection.Organization, input.Project.Name)
+		if remoteErr == nil {
+			if remote.Identity != claim.Claim.ExternalIdentity || remote.Marker != nil || remote.RegionalEvidence != nil {
+				return DeletionResult{}, &Error{Reason: ReasonOwnershipLost}
+			}
+			remoteRetained = true
+		} else if !sentryapi.IsKind(remoteErr, sentryapi.ErrorNotFound) {
+			return DeletionResult{}, remoteErr
+		}
+	}
+	if err := e.Bindings.DeleteClaim(ctx, claim); err != nil && !errors.Is(err, binding.ErrNotFound) {
+		return DeletionResult{}, err
+	}
+	return DeletionResult{Complete: true, Retained: retain || remoteRetained}, nil
+}
+
 func (e *Engine) releaseReadOnlyBinding(ctx context.Context, input Input) (DeletionResult, error) {
 	record, err := e.Bindings.GetBinding(ctx, string(input.Project.UID))
 	if errors.Is(err, binding.ErrNotFound) {
@@ -480,10 +520,12 @@ func (e *Engine) releaseManaged(ctx context.Context, input Input, installation s
 }
 
 func (e *Engine) completeDeletion(ctx context.Context, state binding.BindingRecord, claim binding.ClaimRecord) (DeletionResult, error) {
-	if err := e.Bindings.DeleteClaim(ctx, claim); err != nil && !errors.Is(err, binding.ErrNotFound) {
+	// Delete the UID-scoped binding first. If claim deletion then fails, Delete can safely
+	// recover the same-UID claim after proving that no remote ownership evidence remains.
+	if err := e.Bindings.DeleteBinding(ctx, state); err != nil && !errors.Is(err, binding.ErrNotFound) {
 		return DeletionResult{}, err
 	}
-	if err := e.Bindings.DeleteBinding(ctx, state); err != nil && !errors.Is(err, binding.ErrNotFound) {
+	if err := e.Bindings.DeleteClaim(ctx, claim); err != nil && !errors.Is(err, binding.ErrNotFound) {
 		return DeletionResult{}, err
 	}
 	return DeletionResult{Complete: true}, nil

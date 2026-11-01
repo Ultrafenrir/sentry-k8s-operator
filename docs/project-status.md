@@ -25,8 +25,8 @@ The operator provides:
   deletion;
 - legacy Sentry 24.7.1 issue/metric alert adapters and modern Sentry 26.10.1 metric
   detector/workflow adapters;
-- protected Telegram registration, hook verification, durable at-least-once queue, retry,
-  dead-letter state, and isolated worker components;
+- protected Telegram registration, isolated hook-verification components, durable at-least-once
+  queue, retry, dead-letter state, and isolated worker components; alert-source wiring is disabled;
 - transition-only Kubernetes Events and bounded-label Prometheus controller metrics;
 - HA-oriented deployment, protected-state namespaces, read-only recovery inventory, audit
   export, Kustomize resources, and an alpha Helm chart.
@@ -41,8 +41,8 @@ Verified against disposable self-hosted Sentry:
 
 | Target | Verified boundary |
 | --- | --- |
-| Sentry 24.7.1 feature-complete | Project/managed-client-key/settings, custom HTTP/S3/GCS symbol-source, issue-ownership, and service-hook configuration; client-key and symbol-source credential rotation and guarded deletion; complete legacy issue and event-count/user-count metric alert CRUD; controller lost-response recovery, regional revision takeover and stale-writer fencing, DSN cutover, settings/symbol-source/ownership drift repair, and additional-team grant/revoke with primary-team preservation. The 2026-11-01 clean run also proved event ingestion, filtering behavior, operator-published DSN ingestion, and browser-visible issue creation. It did not prove notification delivery. |
-| Sentry 26.10.1 errors-only | Project/managed-client-key/settings, custom HTTP/S3/GCS symbol-source, issue-ownership, and service-hook configuration; client-key and symbol-source credential rotation and guarded deletion; modern metric detector/workflow lifecycle; controller lost-response recovery, regional revision takeover and stale-writer fencing, DSN cutover, settings/symbol-source/ownership drift repair, and additional-team grant/revoke with primary-team preservation. The 2026-11-01 clean run also proved event ingestion, filtering behavior, operator-published DSN ingestion, and browser-visible issue creation. It did not prove notification delivery. |
+| Sentry 24.7.1 feature-complete | Project/managed-client-key/settings, custom HTTP/S3/GCS symbol-source, issue-ownership, and historical isolated service-hook configuration; client-key and symbol-source credential rotation and guarded deletion; complete legacy issue and event-count/user-count metric alert CRUD; controller lost-response recovery, regional revision takeover and stale-writer fencing, DSN cutover, settings/symbol-source/ownership drift repair, and additional-team grant/revoke with primary-team preservation. The current project controller does not create a hook for alerts. The 2026-11-01 clean run also proved event ingestion, filtering behavior, operator-published DSN ingestion, and browser-visible issue creation. It did not prove notification delivery. |
+| Sentry 26.10.1 errors-only | Project/managed-client-key/settings, custom HTTP/S3/GCS symbol-source, issue-ownership, and historical isolated service-hook configuration; client-key and symbol-source credential rotation and guarded deletion; modern metric detector/workflow lifecycle; controller lost-response recovery, regional revision takeover and stale-writer fencing, DSN cutover, settings/symbol-source/ownership drift repair, and additional-team grant/revoke with primary-team preservation. The current project controller does not create a hook for alerts. The 2026-11-01 clean run also proved event ingestion, filtering behavior, operator-published DSN ingestion, and browser-visible issue creation. It did not prove notification delivery. |
 
 Sentry 26.10.1 returns 404 for the legacy `/rules/` and `/alert-rules/` collection routes.
 Legacy compatibility must remain not ready on that server.
@@ -176,21 +176,18 @@ of the exact remote ownership marker, verifies the marker is absent by readback,
 deletes the protected claim and binding. Lost release responses recover from the durable
 journal without repeating the mutation. Read-only Retain removes only its local binding.
 The managed Retain release path now has unit, envtest, and live Sentry evidence; child cleanup
-ordering remains covered by unit and envtest tests.
+ordering remains covered by unit and envtest tests. Local cleanup now deletes the UID-scoped
+binding before the global claim and recovers a same-project claim left after binding deletion.
+It also removes a claim acquired before binding creation, preventing a transient create failure
+from permanently blocking the slug.
 
-The controller-owned Telegram service-hook lifecycle is now wired through project
-reconciliation. Because the supported Sentry endpoint creates hooks active even when
-`isActive=false` is requested, the controller creates at a deterministic unpublished staging
-URL, publishes the protected source plan and verifier key, moves and independently reads back
-the exact hook at the real receiver, pins only its identity and a secret fingerprint, recovers
-lost create/delete responses, overlaps an observed HMAC change, and removes public verification
-before exact hook deletion. The monotonic `serviceHookRevision` trigger uses the same staging
-boundary for a replacement, publishes an old/new verifier overlap, moves and reads back the
-replacement, deletes only the pinned old hook, and then retires the old verifier key.
-Interrupted rotations resume their durable target before a later requested revision. Receiver
-URL changes require a larger revision.
-Sentry, not the user, generates the hook secret, so the obsolete `webhookAuthSecretRef` was
-removed from the clean alpha API. Unit, HTTP-contract, and envtest evidence cover this path.
+The service-hook lifecycle remains an isolated, contract-tested component, but the project
+controller no longer creates a hook from alert configuration. A project event hook cannot prove
+that a first-seen, regression, event-count, or user-count alert fired. The earlier alpha wiring
+would therefore have fanned every event out to every configured route. Reconciliation removes
+any previously recorded hook, and the public alert selector admits only Slack and PagerDuty.
+Telegram alert-source wiring remains deferred until an authenticated firing identity or a
+durable trigger evaluator is available.
 Live API and full-controller acceptance on Sentry 24.7.1 and 26.10.1 proved the
 active-on-create behavior, unpublished staging publication, protected identity pinning,
 revision-triggered replacement, convergent read-back, old-hook cleanup, and exact final
@@ -274,15 +271,17 @@ payloads must remain in Secret references or protected state, never public specs
    delay, exact readback, audit completion, and refusal of stale and equal-revision
    conflicting writers. Physical multi-cluster failover and network-partition behavior remain
    outside this configuration-only evidence boundary.
-2. **Implemented and live-accepted on both supported versions.** The controller-owned Sentry
-   service-hook lifecycle creates or recovers exactly one owned project hook, pins its
-   external identity, publishes the protected source plan and verifier configuration in
-   fail-closed order, rotates HMAC secrets through an overlap, verifies the hook after every
-   mutation, and removes only the exact owned hook. Public DNS, trusted certificates, real
-   delivery remain separate evidence boundaries. Configuration-only API and full-controller
-   acceptance on 24.7.1 and 26.10.1 proved that create is active despite `isActive=false`,
-   plus staging publication, protected-state redaction, revision rotation, convergent read-back,
-   old-hook cleanup, and exact deletion.
+2. **Isolated component contract implemented and historically live-accepted on both
+   supported versions; current alert wiring is disabled.** The service-hook lifecycle engine
+   can create or recover exactly one owned project hook, pin its external identity, publish
+   protected source/verifier state in fail-closed order, rotate HMAC secrets through an
+   overlap, verify each mutation, and remove only the exact owned hook. Historical
+   configuration-only API and controller acceptance on 24.7.1 and 26.10.1 proved active
+   create behavior, staging publication, redaction, revision rotation, convergent read-back,
+   old-hook cleanup, and exact deletion. The current project controller deliberately does not
+   invoke that lifecycle from alerts and removes earlier hook state because a raw project
+   event cannot preserve alert-trigger semantics. Public DNS, trusted certificates, an
+   authenticated alert-firing source, and real delivery remain separate evidence boundaries.
 3. **Implemented and live-accepted for the portable common fields.** The standard
    filtered-transaction and legacy-browser filters have typed contracts with validated
    subfilters. Auto-resolve age, default environment, crash-report retention, and

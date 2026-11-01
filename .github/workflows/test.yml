@@ -51,5 +51,6 @@ jobs:
 
       - name: Verify repository language and patches
         run: |
+          make verify-community
           make verify-english
           git diff --check

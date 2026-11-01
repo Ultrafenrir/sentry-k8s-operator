@@ -1060,7 +1060,7 @@ var _ = Describe("SentryProject Controller", func() {
 			Expect(alertAdapter.deleteCalls).To(Equal(1))
 		})
 
-		It("owns one exact Sentry service hook for active Telegram alert routes", func() {
+		It("does not map raw Sentry events to Telegram alert routes", func() {
 			connection := &sentryconfigurationv1alpha1.SentryConnection{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: connectionName}, connection)).To(Succeed())
 			connection.Spec.Compatibility = &sentryconfigurationv1alpha1.ConnectionCompatibility{Alerts: sentryconfigurationv1alpha1.AlertCompatibilityLegacy24}
@@ -1083,8 +1083,6 @@ var _ = Describe("SentryProject Controller", func() {
 			resource := &sentryconfigurationv1alpha1.SentryProject{}
 			Expect(k8sClient.Get(ctx, key, resource)).To(Succeed())
 			resource.Spec.NotificationTargets = &sentryconfigurationv1alpha1.NotificationTargets{Telegram: []string{"ops"}}
-			alerts := map[string]sentryconfigurationv1alpha1.AlertSpec{"regression": {Trigger: sentryconfigurationv1alpha1.AlertTriggerRegression, Notify: []string{"telegram/ops"}}}
-			resource.Spec.Alerts = &alerts
 			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
@@ -1107,37 +1105,9 @@ var _ = Describe("SentryProject Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			record, err = reconciler.Bindings.GetBinding(ctx, string(resource.UID))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(record.Binding.ServiceHook).NotTo(BeNil())
-			Expect(hookAdapter.createCalls).To(Equal(1))
-			_, err = reconciler.HookSources.Get(ctx, record.Binding.ServiceHook.SourceBindingKey)
-			Expect(err).NotTo(HaveOccurred())
-			_, err = reconciler.HookVerifier.Get(ctx, record.Binding.ServiceHook.SourceBindingKey)
-			Expect(err).NotTo(HaveOccurred())
-
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: connectionName}, connection)).To(Succeed())
-			connection.Spec.Integrations.Telegram.ServiceHookRevision = 2
-			Expect(k8sClient.Update(ctx, connection)).To(Succeed())
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
-			Expect(err).NotTo(HaveOccurred())
-			record, err = reconciler.Bindings.GetBinding(ctx, string(resource.UID))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(record.Binding.ServiceHook).NotTo(BeNil())
-			Expect(record.Binding.ServiceHook.Revision).To(Equal(int64(2)))
-			Expect(record.Binding.ServiceHook.ExternalIdentity).To(Equal("hook-id-2"))
-			Expect(hookAdapter.createCalls).To(Equal(2))
-			Expect(hookAdapter.deleteCalls).To(Equal(1))
-
-			Expect(k8sClient.Get(ctx, key, resource)).To(Succeed())
-			emptyAlerts := map[string]sentryconfigurationv1alpha1.AlertSpec{}
-			resource.Spec.Alerts = &emptyAlerts
-			resource.Spec.NotificationTargets = &sentryconfigurationv1alpha1.NotificationTargets{}
-			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
-			Expect(err).NotTo(HaveOccurred())
-			record, err = reconciler.Bindings.GetBinding(ctx, string(resource.UID))
-			Expect(err).NotTo(HaveOccurred())
 			Expect(record.Binding.ServiceHook).To(BeNil())
-			Expect(hookAdapter.deleteCalls).To(Equal(2))
+			Expect(hookAdapter.createCalls).To(Equal(0))
+			Expect(hookAdapter.deleteCalls).To(Equal(0))
 		})
 
 		It("revokes one destination grant without blocking an allowed sibling", func() {

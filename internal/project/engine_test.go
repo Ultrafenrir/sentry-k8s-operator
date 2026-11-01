@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	sentryv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
@@ -903,6 +904,91 @@ func TestRetainRecoversLostReleaseResponseWithoutSecondMutation(t *testing.T) {
 	}
 }
 
+func TestRetainRecoversClaimDeleteFailureAfterBindingDelete(t *testing.T) {
+	engine, adapter, store := testEngine(t)
+	input := managedInput("checkout", "uid-one", "payments")
+	if _, err := engine.Reconcile(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.GetClaim(context.Background(), "https://sentry.example", "company", "checkout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Client = &failOnceDeleteClient{Client: store.Client, name: claim.Name}
+
+	if _, err := engine.Delete(context.Background(), input); err == nil || adapter.releaseCalls != 1 {
+		t.Fatalf("first delete error=%v releaseCalls=%d", err, adapter.releaseCalls)
+	}
+	if _, err := store.GetBinding(context.Background(), "uid-one"); !errors.Is(err, binding.ErrNotFound) {
+		t.Fatalf("binding remains after first cleanup: %v", err)
+	}
+	if _, err := store.GetClaim(context.Background(), "https://sentry.example", "company", "checkout"); err != nil {
+		t.Fatalf("claim should remain after injected failure: %v", err)
+	}
+
+	result, err := engine.Delete(context.Background(), input)
+	if err != nil || !result.Complete || !result.Retained || adapter.releaseCalls != 1 {
+		t.Fatalf("recovered result=%#v err=%v releaseCalls=%d", result, err, adapter.releaseCalls)
+	}
+	if _, err := store.GetClaim(context.Background(), "https://sentry.example", "company", "checkout"); !errors.Is(err, binding.ErrNotFound) {
+		t.Fatalf("claim remains after recovery: %v", err)
+	}
+}
+
+func TestDeleteProjectRecoversClaimDeleteFailureAfterBindingDelete(t *testing.T) {
+	engine, adapter, store := testEngine(t)
+	input := managedInput("checkout", "uid-one", "payments")
+	if _, err := engine.Reconcile(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	input.Project.Spec.Lifecycle.OnDelete = sentryv1alpha1.OnDeleteDeleteProject
+	claim, err := store.GetClaim(context.Background(), "https://sentry.example", "company", "checkout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Client = &failOnceDeleteClient{Client: store.Client, name: claim.Name}
+
+	if _, err := engine.Delete(context.Background(), input); err == nil || adapter.deleteCalls != 1 {
+		t.Fatalf("first delete error=%v deleteCalls=%d", err, adapter.deleteCalls)
+	}
+	if _, err := store.GetBinding(context.Background(), "uid-one"); !errors.Is(err, binding.ErrNotFound) {
+		t.Fatalf("binding remains after first cleanup: %v", err)
+	}
+
+	result, err := engine.Delete(context.Background(), input)
+	if err != nil || !result.Complete || result.Retained || adapter.deleteCalls != 1 {
+		t.Fatalf("recovered result=%#v err=%v deleteCalls=%d", result, err, adapter.deleteCalls)
+	}
+	if _, err := store.GetClaim(context.Background(), "https://sentry.example", "company", "checkout"); !errors.Is(err, binding.ErrNotFound) {
+		t.Fatalf("claim remains after recovery: %v", err)
+	}
+}
+
+func TestDeleteCleansClaimWhenBindingWasNeverCreated(t *testing.T) {
+	for _, onDelete := range []sentryv1alpha1.OnDeletePolicy{sentryv1alpha1.OnDeleteRetain, sentryv1alpha1.OnDeleteDeleteProject} {
+		t.Run(string(onDelete), func(t *testing.T) {
+			engine, _, store := testEngine(t)
+			input := managedInput("checkout", "uid-one", "payments")
+			input.Project.Spec.Lifecycle.OnDelete = onDelete
+			_, _, err := store.AcquireClaim(context.Background(), binding.ManagerClaim{
+				Version: binding.CurrentVersion, Installation: "https://sentry.example", Organization: "company", Slug: "checkout",
+				Owner: "payments", Manager: projectReference(input.Project),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			result, err := engine.Delete(context.Background(), input)
+			if err != nil || !result.Complete {
+				t.Fatalf("result=%#v err=%v", result, err)
+			}
+			if _, err := store.GetClaim(context.Background(), "https://sentry.example", "company", "checkout"); !errors.Is(err, binding.ErrNotFound) {
+				t.Fatalf("claim remains after recovery: %v", err)
+			}
+		})
+	}
+}
+
 func TestDeleteProjectRejectsSameSlugReplacement(t *testing.T) {
 	t.Parallel()
 
@@ -937,6 +1023,20 @@ type fakeAdapter struct {
 	loseUpdateResponse  bool
 	releaseCalls        int
 	loseReleaseResponse bool
+}
+
+type failOnceDeleteClient struct {
+	client.Client
+	name   string
+	failed bool
+}
+
+func (c *failOnceDeleteClient) Delete(ctx context.Context, object client.Object, options ...client.DeleteOption) error {
+	if object.GetName() == c.name && !c.failed {
+		c.failed = true
+		return errors.New("injected delete failure")
+	}
+	return c.Client.Delete(ctx, object, options...)
 }
 
 func (a *fakeAdapter) UpdateRegionalEvidence(_ context.Context, _, slug string, evidence ownership.Evidence) error {

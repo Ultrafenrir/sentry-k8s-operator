@@ -1,6 +1,6 @@
 SENTRY CONFIGURATION OPERATOR — TELEGRAM DELIVERY DESIGN
-Updated: 2026-10-31
-Status: Design and source/kind contract; production delivery not yet accepted
+Updated: 2026-11-01
+Status: Component contract only; alert-source wiring is disabled
 
 1. Sentry source authentication
 
@@ -9,17 +9,20 @@ plus strict timestamp and event GUID validation. The receiver authenticates befo
 JSON and binds the signed project slug to a locally configured source plan. Provider payload
 destinations are never trusted.
 
-Sentry generates this HMAC secret. The public connection API therefore supplies only the
-receiver base URL and the Telegram bot-token reference; it does not accept a fictitious
-user-selected service-hook secret. The controller reads the generated secret only through
-the authenticated Sentry hook API and publishes it directly to isolated verifier state.
+Sentry generates this HMAC secret. The public connection API therefore contains only the
+receiver base URL, Telegram bot-token reference, and monotonic service-hook revision; it does
+not accept a fictitious user-selected service-hook secret. The isolated lifecycle engine,
+when exercised directly, reads the generated secret only through the authenticated Sentry
+hook API and publishes it directly to isolated verifier state. The current project
+controller does not invoke that engine from alert configuration.
 
-The platform may increment `serviceHookRevision` to request a proactive replacement without
-exposing secret material. The revision is monotonic, and changing the receiver URL requires
-an increment. Rotation creates the replacement disabled, overlaps both verifier keys before
-activation, independently reads back the active replacement, deletes the pinned old hook,
-and retires the old key last. Durable protected state resumes an interrupted target before
-processing a later revision.
+The isolated contract uses `serviceHookRevision` for a proactive replacement without
+exposing secret material. Changing the receiver URL requires a larger revision. Rotation
+creates the replacement disabled, overlaps both verifier keys before activation,
+independently reads back the active replacement, deletes the pinned old hook, and retires
+the old key last. Durable protected state resumes an interrupted target before processing a
+later revision. These mechanics remain component evidence, not currently enabled alert
+wiring.
 
 Sentry 24.7.1 and 26.10.1 source expose compatible v0 hook payload and HMAC mechanisms, but
 endpoint availability can be private or feature-gated. The operator therefore treats source
@@ -58,11 +61,15 @@ publishes the protected route with compare-and-swap semantics.
 
 5. Delivery plane
 
-Authenticated Sentry events resolve a protected source plan to local route keys. A
-PII-minimal renderer creates bounded plain text using only local names and fixed severity.
-The producer enqueues deterministic per-route records. Isolated workers claim records,
-resolve protected numeric routes, send through Telegram Bot API, and complete, retry, or
-dead-letter them.
+The receiver, producer, queue, renderer, and worker remain independently testable components.
+The project controller does not publish alert routes from the Sentry project event hook. That
+hook identifies a project event, not an actual alert firing, so it cannot preserve first-seen,
+regression, event-count, or user-count semantics. Reconciliation removes any service hook
+created by the earlier alpha wiring.
+
+Supported alert delivery requires a future authenticated source that identifies the exact
+Sentry alert firing, or a durable evaluator with the complete trigger state. Until then no
+valid SentryProject or SentryAlertPolicy can select a Telegram destination in an alert.
 
 6. Durable storage decision
 
@@ -73,7 +80,7 @@ high-volume production use may require a future external queue adapter.
 
 7. Evidence boundary
 
-Fixtures, source tests, envtest, and kind prove validation, rotation, mTLS handoff, queue
-semantics, privacy, Gateway passthrough, and monitoring. They do not prove public reachability
-or that Telegram accepted a real message. Real bot/chat/topic delivery is deferred by the
-repository owner.
+Fixtures, source tests, envtest, and kind prove component validation, rotation, mTLS handoff,
+queue semantics, privacy, Gateway passthrough, and monitoring. They do not prove an alert-source
+integration, public reachability, or that Telegram accepted a real message. Alert-source wiring
+and real bot/chat/topic delivery are deferred.

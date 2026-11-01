@@ -55,7 +55,6 @@ import (
 	projectruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/project"
 	projectaccessruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/projectaccess"
 	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryhook"
 	settingsruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/settings"
 	symbolsourceruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/symbolsource"
 )
@@ -749,20 +748,10 @@ var _ = Describe("Live Sentry project recovery", Label("live-sentry"), func() {
 		createLiveTeam(apiClient, organization, grantTeam)
 		defer deleteLiveTeam(apiClient, organization, grantTeam)
 		auditSink := &liveAuditSink{}
-		verifierSecretName := "live-hook-verifier-" + versionSlug
-		verifierSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: verifierSecretName, Namespace: "default"}, Type: corev1.SecretTypeOpaque, Data: map[string][]byte{}}
-		Expect(k8sClient.Create(context.Background(), verifierSecret)).To(Succeed())
-		defer func() {
-			if err := k8sClient.Delete(context.Background(), verifierSecret); err != nil && !apierrors.IsNotFound(err) {
-				Fail("hook verifier Secret cleanup failed: " + err.Error())
-			}
-		}()
 		reconciler := &SentryProjectReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(), Registry: registry,
 			Bindings: &binding.Store{Client: k8sClient, Namespace: "default"}, ManagedBy: "sko",
-			Audit:        auditSink,
-			HookSources:  &sentryhook.SourceStore{Client: k8sClient, Namespace: "default"},
-			HookVerifier: &sentryhook.VerifierStore{Client: k8sClient, Namespace: "default", SecretName: verifierSecretName},
+			Audit: auditSink,
 		}
 
 		result, err := reconciler.Reconcile(context.Background(), reconcile.Request{NamespacedName: key})
@@ -796,47 +785,6 @@ var _ = Describe("Live Sentry project recovery", Label("live-sentry"), func() {
 			HaveField("Status", metav1.ConditionTrue), HaveField("Reason", "CodeMappingsReady"),
 		), codeMappingsCondition.Reason+": "+codeMappingsCondition.Message)
 		Expect(resource.Status.CodeMappings).To(HaveKeyWithValue("checkout", sentryv1alpha1.CodeMappingStatus{State: codemappingruntime.StateReady, Reason: "CodeMappingReady"}))
-		hookDeliveries := []sentryhook.TelegramDelivery{{
-			RouteKey: strings.Repeat("a", 64),
-			Render:   sentryhook.RenderInput{ProjectName: resourceName, AlertName: "live-hook", Severity: sentryhook.SeverityCritical},
-		}}
-		hookRecord, err := reconciler.Bindings.GetBinding(context.Background(), string(resource.UID))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(reconciler.ensureServiceHook(context.Background(), resource, connection, apiClient, hookRecord, connection.Spec.Integrations.Telegram.ReceiverURL, hookDeliveries)).To(Succeed())
-		hookRecord, err = reconciler.Bindings.GetBinding(context.Background(), string(resource.UID))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(hookRecord.Binding.ServiceHook).NotTo(BeNil())
-		firstHookIdentity := hookRecord.Binding.ServiceHook.ExternalIdentity
-		Expect(hookRecord.Binding.ServiceHook.EndpointURL).To(HavePrefix(connection.Spec.Integrations.Telegram.ReceiverURL + "/"))
-		hookAdapter := &sentryhook.HTTPServiceHookAdapter{Client: apiClient}
-		hooks, err := hookAdapter.List(context.Background(), organization, slug)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(hooks).To(ConsistOf(And(
-			HaveField("Identity", firstHookIdentity), HaveField("URL", hookRecord.Binding.ServiceHook.EndpointURL), HaveField("Active", true),
-		)))
-		hookBindingJSON, err := json.Marshal(hookRecord.Binding.ServiceHook)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(string(hookBindingJSON)).NotTo(ContainSubstring(string(hooks[0].Secret)))
-
-		connection.Spec.Integrations.Telegram.ServiceHookRevision = 2
-		Expect(k8sClient.Update(context.Background(), connection)).To(Succeed())
-		Expect(reconciler.ensureServiceHook(context.Background(), resource, connection, apiClient, hookRecord, connection.Spec.Integrations.Telegram.ReceiverURL, hookDeliveries)).To(Succeed())
-		hookRecord, err = reconciler.Bindings.GetBinding(context.Background(), string(resource.UID))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(hookRecord.Binding.ServiceHook).NotTo(BeNil())
-		Expect(hookRecord.Binding.ServiceHook.Revision).To(Equal(int64(2)))
-		Expect(hookRecord.Binding.ServiceHook.ExternalIdentity).NotTo(Equal(firstHookIdentity))
-		hooks, err = hookAdapter.List(context.Background(), organization, slug)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(hooks).To(ConsistOf(HaveField("Identity", hookRecord.Binding.ServiceHook.ExternalIdentity)))
-
-		Expect(reconciler.removeServiceHook(context.Background(), resource, connection, apiClient, hookRecord)).To(Succeed())
-		hookRecord, err = reconciler.Bindings.GetBinding(context.Background(), string(resource.UID))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(hookRecord.Binding.ServiceHook).To(BeNil())
-		hooks, err = hookAdapter.List(context.Background(), organization, slug)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(hooks).To(BeEmpty())
 		clientKeyAdapter := &clientkeyruntime.HTTPAdapter{Client: apiClient}
 		assertLiveManagedClientKeys(clientKeyAdapter, organization, slug, ":r1", 1)
 		publishedDSN := &corev1.Secret{}

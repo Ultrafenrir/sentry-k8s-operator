@@ -705,7 +705,9 @@ type AlertSpec struct {
 	// +kubebuilder:validation:MaxItems=20
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=211
-	// +kubebuilder:validation:items:Pattern=`^(slack|pagerDuty|telegram)/[^/[:space:]][^/]*$`
+	// Telegram destinations are registration-only until an authenticated alert-firing source
+	// can preserve trigger semantics end to end.
+	// +kubebuilder:validation:items:Pattern=`^(slack|pagerDuty)/[^/[:space:]][^/]*$`
 	// +listType=set
 	Notify []string `json:"notify"`
 }

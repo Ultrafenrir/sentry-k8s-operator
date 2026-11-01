@@ -189,6 +189,13 @@ var _ = Describe("SentryProject Webhook", func() {
 		(*invalid.Spec.SymbolSources)["native"] = entry
 		_, err = validator.ValidateCreate(context.Background(), invalid)
 		Expect(err).To(MatchError(ContainSubstring("key is required")))
+
+		invalid = obj.DeepCopy()
+		entry = (*invalid.Spec.SymbolSources)["native"]
+		entry.HTTP.URL = "https://reader:secret@symbols.example.invalid"
+		(*invalid.Spec.SymbolSources)["native"] = entry
+		_, err = validator.ValidateCreate(context.Background(), invalid)
+		Expect(err).To(MatchError(ContainSubstring("without userinfo")))
 	})
 
 	It("rejects ambiguous names within one provider", func() {

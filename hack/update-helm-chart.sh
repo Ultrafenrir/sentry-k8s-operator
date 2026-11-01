@@ -31,3 +31,5 @@ kubectl kustomize "$root_dir/config/registration-monitoring" >"$chart_dir/files/
 kubectl kustomize "$root_dir/config/controller-monitoring" >"$chart_dir/files/controller-monitoring.yaml"
 cp "$root_dir/config/controller-monitoring-access/cluster-role-binding.yaml" "$chart_dir/files/controller-monitoring-access.yaml"
 cp "$root_dir"/config/crd/bases/*.yaml "$chart_dir/crds/"
+cp "$root_dir/LICENSE" "$chart_dir/LICENSE"
+cp "$root_dir/NOTICE" "$chart_dir/NOTICE"

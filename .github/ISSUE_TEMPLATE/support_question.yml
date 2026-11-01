@@ -1,0 +1,50 @@
+name: Support question
+description: Ask a non-sensitive usage or configuration question.
+title: "Question: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Support is best-effort. Read SUPPORT.md and the configuration and troubleshooting guides first.
+        Never include credentials, DSNs, Secret data, protected-state contents, customer events, or raw sensitive responses.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I reviewed the README, configuration guide, troubleshooting guide, and support policy.
+          required: true
+        - label: This question contains no sensitive data and is not a vulnerability report.
+          required: true
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What are you trying to configure or understand?
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Operator commit/image/chart, Kubernetes version, and Sentry version/profile when relevant.
+      placeholder: commit SHA; Kubernetes 1.35.5; Sentry 26.10.1 errors-only
+    validations:
+      required: true
+
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What you tried
+      description: Include synthetic configuration and safe condition reasons, not Secret values or external IDs.
+    validations:
+      required: true
+
+  - type: textarea
+    id: documentation-gap
+    attributes:
+      label: Documentation gap
+      description: Which existing document was unclear or incomplete?

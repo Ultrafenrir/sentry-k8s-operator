@@ -1,6 +1,6 @@
 T08 — TELEGRAM HOOK INGRESS AND DELIVERY
-Updated: 2026-10-31
-Status: Contract-tested durable core and kind dataplane; real Telegram delivery is deferred
+Updated: 2026-11-01
+Status: Contract-tested components; alert-source wiring and real delivery are deferred
 
 Queue and worker
 
@@ -44,23 +44,13 @@ request. HMAC rotation supports exactly one active key or a two-key old/new over
 checks both without early exit. The internal producer reloads its trust bundle on each
 handshake and creates queue records through a protected source-to-route resolver.
 
-The project controller now owns the matching Sentry project service hook. It journals a
-create before the Sentry call, recovers a lost create response by listing only the exact
-opaque source endpoint, rejects duplicate matches, and pins the returned hook identity and
-a one-way secret fingerprint in protected project state. Both supported Sentry versions
-expose active-on-create hooks even when `isActive=false` is requested. Initial creation
-therefore uses a deterministic unpublished staging URL, publishes the protected source plan
-and verifier key, moves the exact hook to the real receiver URL, and independently reads it
-back.
-Observed secret changes use an old/new verifier overlap before the new key is retired.
-Increasing the monotonic `serviceHookRevision` creates the replacement at its deterministic
-unpublished staging URL, publishes the old/new verifier overlap, moves and reads back the
-replacement at the real receiver, deletes only the pinned old hook, and then retires the old
-key. A receiver URL change is admitted only with a larger revision. Interrupted rotations
-finish their durable target before starting a later requested revision.
-Removal disables public verification, deletes the protected source, deletes only the pinned
-hook identity, and verifies absence before releasing the binding. The generated Sentry
-secret is never accepted through the public API or copied to public status.
+The service-hook lifecycle engine still has contract tests for journaled create, exact identity
+pinning, secret overlap, revision replacement, and exact removal. It is not wired to create a
+hook from project alerts. A project event hook carries only a project slug and event ID, so
+mapping it to alert routes would discard trigger, window, threshold, and rule identity and
+would notify every route for every event. Project reconciliation now removes any hook created
+by that earlier alpha wiring. The generated Sentry secret is never accepted through the public
+API or copied to public status.
 
 Rendering and privacy
 
@@ -72,21 +62,17 @@ payload labels.
 Verification
 
 `make verify-t08-core` covers queue failure windows, concurrency, retry, dead letters,
-fail-closed audited retention, hook validation, HMAC rotation, internal signatures, rendering, redaction, and
-Secret rotation. Unit and envtest coverage now also exercise service-hook HTTP contracts,
-lost-response recovery, active-on-create staging publication ordering, protected identity pinning,
-observed HMAC change overlap, proactive replacement rotation, queued-revision recovery,
-exact removal, and controller wiring. Dedicated kind targets cover CA rotation, Gateway API
-TLS passthrough, Prometheus discovery/rules, and queue soak behavior.
+fail-closed audited retention, hook validation, HMAC rotation, internal signatures, rendering,
+redaction, and Secret rotation. Unit coverage exercises the isolated service-hook lifecycle
+contract, while envtest proves that the controller does not create a raw-event fan-out hook.
+Dedicated kind targets cover CA rotation, Gateway API TLS passthrough, Prometheus
+discovery/rules, and queue soak behavior.
 
 Remaining evidence boundary
 
-Real Telegram send/retry/dead-letter behavior with bot/chat/topic credentials, public DNS,
-publicly trusted certificates, externally reachable ingress, and production Alertmanager
-routing are deferred. The existing tests prove local protocol and dataplane behavior only.
-The project service-hook API create/read/update/delete shape and its active-on-create behavior
-were live-accepted on Sentry 24.7.1 and 26.10.1 without sending a notification. Full-controller
-runs on both versions then proved staging publication, protected identity pinning, mutation-free
-convergence, revision-triggered replacement, old-hook cleanup, protected-secret redaction, and
-exact final removal. Failure-window recovery retains local unit and envtest evidence; external
-delivery remains deferred.
+An authenticated source that identifies an actual alert firing, real Telegram
+send/retry/dead-letter behavior with bot/chat/topic credentials, public DNS, publicly trusted
+certificates, externally reachable ingress, and production Alertmanager routing are deferred.
+The existing tests prove local protocol and dataplane component behavior only. Historical live
+acceptance of the project service-hook API on Sentry 24.7.1 and 26.10.1 remains protocol evidence;
+the current controller deliberately does not create that hook for alert delivery.

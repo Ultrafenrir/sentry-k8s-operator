@@ -1,0 +1,113 @@
+name: Bug report
+description: Report a reproducible operator, chart, admission, or documentation defect.
+title: "Bug: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a defect. This project is alpha and maintained on a best-effort basis.
+        Do not include tokens, DSNs, Secret data, protected-state contents, customer events, external IDs, or raw sensitive responses.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and read the troubleshooting and project-status documentation.
+          required: true
+        - label: This report contains no credentials, private data, protected-state contents, or unsanitized payloads.
+          required: true
+        - label: This is not a suspected security vulnerability; security issues must use private reporting.
+          required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - SentryConnection
+        - SentryProject
+        - SentryAlertPolicy
+        - Admission or CRD schema
+        - Helm or Kustomize packaging
+        - Telegram registration or delivery-plane component
+        - kubectl-sentry plugin
+        - Metrics, events, audit, or recovery
+        - Documentation
+        - Build, test, or release tooling
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: evidence
+    attributes:
+      label: Observation boundary
+      description: Select the strongest environment in which the behavior was observed.
+      options:
+        - Source or rendered configuration only
+        - Unit test or fake server
+        - Envtest
+        - kind cluster without live Sentry
+        - Self-hosted Sentry configuration lifecycle
+        - Live event ingestion
+        - Live external notification delivery
+        - Hosted release or registry workflow
+    validations:
+      required: true
+
+  - type: input
+    id: operator-version
+    attributes:
+      label: Operator version
+      description: Commit SHA, image digest, or chart version. Do not use only a mutable tag.
+      placeholder: commit SHA or repository@sha256:...
+    validations:
+      required: true
+
+  - type: input
+    id: platform-versions
+    attributes:
+      label: Kubernetes and Sentry versions
+      description: Include the Kubernetes version and exact Sentry version/profile when relevant.
+      placeholder: Kubernetes 1.35.5; Sentry 26.10.1 errors-only
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Describe the documented or intended result.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Describe the result and include fixed condition reasons or safe status fields when available.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide bounded steps and synthetic configuration. Redact secrets and private identities.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostics
+      description: Include relevant conditions, Events, or logs only after removing sensitive data and raw external response bodies.
+      render: text
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Add links, regression range, workarounds, or other relevant information.

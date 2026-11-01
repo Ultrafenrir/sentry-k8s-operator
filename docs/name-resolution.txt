@@ -26,6 +26,10 @@ Status contains readable names and fixed reasons, not private IDs.
 | PagerDuty service | account + service | exact integration account | ambiguous |
 | Telegram target | local registration name | exact project binding | registration required or ambiguous |
 
+Telegram resolution is registration-only in the current alpha. `AlertSpec.notify` accepts
+only Slack and PagerDuty references until an authenticated alert-firing source can preserve
+trigger semantics.
+
 3. Rename and replacement behavior
 
 An external rename produces `ExternalNameChanged`; the operator does not silently rewrite
