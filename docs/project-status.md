@@ -41,21 +41,46 @@ Verified against disposable self-hosted Sentry:
 
 | Target | Verified boundary |
 | --- | --- |
-| Sentry 24.7.1 feature-complete | Project/managed-client-key/settings, custom HTTP/S3/GCS symbol-source, issue-ownership, and service-hook configuration; client-key and symbol-source credential rotation and guarded deletion; legacy issue and metric alert CRUD; controller lost-response recovery, regional revision takeover and stale-writer fencing, DSN cutover, settings/symbol-source/ownership drift repair, and additional-team grant/revoke with primary-team preservation. This is configuration-only evidence; the earlier ingestion attempt was blocked by Relay memory health. |
-| Sentry 26.10.1 errors-only | Project/managed-client-key/settings, custom HTTP/S3/GCS symbol-source, issue-ownership, and service-hook configuration; client-key and symbol-source credential rotation and guarded deletion; modern metric detector/workflow lifecycle; controller lost-response recovery, regional revision takeover and stale-writer fencing, DSN cutover, settings/symbol-source/ownership drift repair, and additional-team grant/revoke with primary-team preservation. This is configuration-only evidence. |
+| Sentry 24.7.1 feature-complete | Project/managed-client-key/settings, custom HTTP/S3/GCS symbol-source, issue-ownership, and service-hook configuration; client-key and symbol-source credential rotation and guarded deletion; complete legacy issue and event-count/user-count metric alert CRUD; controller lost-response recovery, regional revision takeover and stale-writer fencing, DSN cutover, settings/symbol-source/ownership drift repair, and additional-team grant/revoke with primary-team preservation. The 2026-11-01 clean run also proved event ingestion, filtering behavior, operator-published DSN ingestion, and browser-visible issue creation. It did not prove notification delivery. |
+| Sentry 26.10.1 errors-only | Project/managed-client-key/settings, custom HTTP/S3/GCS symbol-source, issue-ownership, and service-hook configuration; client-key and symbol-source credential rotation and guarded deletion; modern metric detector/workflow lifecycle; controller lost-response recovery, regional revision takeover and stale-writer fencing, DSN cutover, settings/symbol-source/ownership drift repair, and additional-team grant/revoke with primary-team preservation. The 2026-11-01 clean run also proved event ingestion, filtering behavior, operator-published DSN ingestion, and browser-visible issue creation. It did not prove notification delivery. |
 
 Sentry 26.10.1 returns 404 for the legacy `/rules/` and `/alert-rules/` collection routes.
 Legacy compatibility must remain not ready on that server.
 
-The 2026-10-31 clean kind acceptance used browser automation on both Sentry versions to
-create teams and pre-existing projects before the operator attached read-only consumers.
-It also proved managed project creation and deletion, existing-project retention, DSN
-publication, filters/PII settings, additional-team access, fake local PagerDuty catalog
-pinning, direct and policy-owned alerts, policy updates, and paused-project behavior. The
-26.10.1 run repaired browser-induced settings drift within 9 seconds and exposed bounded
-controller, alert-policy, condition-transition, and synchronization metrics. The 24.7.1
-run accepted a decimal `20.0` metric threshold returned by Sentry. All of this remains
-configuration-only evidence; the fake PagerDuty service did not deliver a notification.
+The 2026-11-01 first-release kind acceptance used browser automation on both Sentry versions.
+It proved managed project creation and deletion, external-project observation and retention,
+DSN publication, filters/PII settings, fake local PagerDuty catalog pinning, complete legacy
+alerts on 24.7.1, modern detector/workflow updates and enablement on 26.10.1, browser-induced
+settings drift repair, operator-published DSN ingestion, browser-visible issues, Kubernetes
+Events, and authenticated TLS controller metrics. The fake PagerDuty service did not deliver
+a notification. Browser inspection also exposed a Sentry 24.7.1 list-rendering defect where
+an issue rule and metric rule with the same numeric identifier can occupy one row; direct
+search and detail views still showed the independently correct regression rule.
+
+## First-release decision
+
+The 2026-11-01 deployed-controller run found one release-blocking ownership gap. A manually
+created project can be observed as `External/ReadOnly` and safely retained, but it cannot be
+promoted by the deployed controllers. After a valid Standby-to-Active revision increase, the
+connection controller reports `OwnershipReady=False`, reason `RevisionUnverified`, and keeps
+`effectiveRole=Standby`. The project controller therefore keeps an explicitly Active project
+request in effective Standby even after `unmanagedProjects: Adopt` is enabled. The same result
+was reproduced on both supported Sentry versions without changing or replacing the external
+project.
+
+The direct full-controller acceptance still proves the adoption engine when supplied with an
+explicitly proven Active connection. That does not prove that the deployed connection and
+project controllers can bootstrap the first remote ownership marker together. The first
+release is therefore **no-go for the advertised existing-project adoption user story** until
+that bootstrap path is implemented and repeated in clean kind plus browser acceptance. If
+adoption is removed from the advertised first-release scope, Observe/ReadOnly plus Retain is
+live-proven and fail-closed.
+
+One additional legacy behavior needs product clarification rather than data recovery: setting
+one Sentry 24.7.1 legacy alert to `enabled: false` selects no compatible combined legacy
+adapter and temporarily reports every alert child unavailable. Re-enabling the alert restored
+all four children and preserved their external identities. Modern 26.10.1 alert enable/disable
+works independently and was browser-verified.
 
 Additional project-team access is covered by generated schema, admission, policy, domain,
 HTTP adapter, and controller tests. On 2026-10-31 clean disposable-stack runs verified
