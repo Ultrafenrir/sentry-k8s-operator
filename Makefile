@@ -20,10 +20,8 @@ help: ## Show the available targets.
 generate: ## Generate DeepCopy implementations.
 	PATH="$(dir $(GO)):$$PATH" $(CONTROLLER_GEN) object paths=./api/...
 
-manifests: ## Generate CRDs and controller RBAC.
-	PATH="$(dir $(GO)):$$PATH" $(CONTROLLER_GEN) crd paths=./api/... output:crd:artifacts:config=config/crd/bases
-	PATH="$(dir $(GO)):$$PATH" $(CONTROLLER_GEN) rbac:roleName=manager-role paths=./internal/controller/... output:rbac:artifacts:config=config/rbac
-	cp config/crd/bases/*.yaml charts/sentry-kubernetes-operator/crds/
+manifests: ## Generate Helm CRDs.
+	PATH="$(dir $(GO)):$$PATH" $(CONTROLLER_GEN) crd paths=./api/... output:crd:artifacts:config=charts/sentry-kubernetes-operator/crds
 
 fmt: ## Format Go source.
 	$(GO) fmt ./...
@@ -58,7 +56,15 @@ docker-push: ## Push the operator image.
 
 helm-lint: ## Lint and render the Helm chart.
 	$(HELM) lint charts/sentry-kubernetes-operator
-	$(HELM) template sentry-operator charts/sentry-kubernetes-operator >/dev/null
+	mkdir -p .cache/helm
+	$(HELM) template helm-contract charts/sentry-kubernetes-operator --namespace helm-contract-ns --include-crds \
+		--set sentryConnection.spec.credentials.tokenSecretRef.name=helm-contract-token \
+		--set sentryConnection.spec.credentials.tokenSecretRef.key=api-token >.cache/helm/rendered.yaml
+	@rg -q '^  name: helm-contract-controller$$' .cache/helm/rendered.yaml
+	@rg -q '^  namespace: helm-contract-ns$$' .cache/helm/rendered.yaml
+	@rg -q '^      name: helm-contract-token$$' .cache/helm/rendered.yaml
+	@rg -q '^      key: api-token$$' .cache/helm/rendered.yaml
+	@if rg -q '^kind: Namespace$$|sentry-kubernetes-operator-system|sentry-kubernetes-operator-state|sentry-kubernetes-operator-audit' .cache/helm/rendered.yaml; then echo 'Helm render contains fixed namespaces'; exit 1; fi
 
 verify-english: ## Reject Cyrillic text in repository files.
 	@if rg -n -P '[\x{0400}-\x{04FF}]' --glob '!.git/**' .; then echo 'Repository text must be English.'; exit 1; fi

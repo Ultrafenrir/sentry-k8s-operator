@@ -45,16 +45,18 @@ controllerMonitoring:
   enabled: false
 ```
 
-The token Secret is deliberately not stored in Helm values. Create it in the fixed operator
-namespace, then install the chart:
+The token Secret is deliberately not stored in Helm values. Create it in the namespace selected
+for this Helm release, then install the chart:
 
 ```sh
-kubectl create namespace sentry-kubernetes-operator-system
-kubectl -n sentry-kubernetes-operator-system create secret generic sentry-api-token \
+export OPERATOR_NAMESPACE=observability
+
+kubectl create namespace "$OPERATOR_NAMESPACE"
+kubectl -n "$OPERATOR_NAMESPACE" create secret generic sentry-api-token \
   --from-literal=token='YOUR_SENTRY_API_TOKEN'
 
 helm upgrade --install sentry-operator ./charts/sentry-kubernetes-operator \
-  --namespace sentry-kubernetes-operator-system \
+  --namespace "$OPERATOR_NAMESPACE" \
   --create-namespace \
   -f values-production.yaml
 ```

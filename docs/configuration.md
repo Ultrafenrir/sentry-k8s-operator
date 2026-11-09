@@ -1,7 +1,7 @@
 # Configuration
 
 `SentryConnection` is cluster-scoped. Its referenced token and optional CA bundle Secrets are
-read only from `sentry-kubernetes-operator-system`. Access rules authorize namespaced projects
+read only from the Helm release namespace. Access rules authorize namespaced projects
 by owner, namespace, Sentry team, create permission, existing project slugs, and notification
 integration catalogs.
 

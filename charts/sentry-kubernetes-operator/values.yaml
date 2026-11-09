@@ -1,12 +1,23 @@
 image:
   repository: ultrafenrir/sentry-k8s-operator
-  tag: dev
+  tag: v0.2.0-alpha.1
   pullPolicy: IfNotPresent
 
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 128Mi
+
 # The chart always creates this cluster-scoped connection. Create the referenced Secret
-# in sentry-kubernetes-operator-system before or immediately after installing the chart.
+# in the Helm release namespace before or immediately after installing the chart.
 sentryConnection:
-  name: default
+  # Empty means the Helm release name.
+  name: ""
   spec:
     url: https://sentry.example.com
     organization: example

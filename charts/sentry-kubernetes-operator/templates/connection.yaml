@@ -1,0 +1,8 @@
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryConnection
+metadata:
+  name: {{ default (include "sentry-kubernetes-operator.fullname" .) .Values.sentryConnection.name | quote }}
+  labels:
+    {{- include "sentry-kubernetes-operator.labels" . | nindent 4 }}
+spec:
+  {{- toYaml .Values.sentryConnection.spec | nindent 2 }}

@@ -10,6 +10,7 @@ Dockerfile.cross
 /dist/
 /.cache/sentry-self-hosted/
 /.cache/go-build/
+/.cache/helm/
 
 # Test binary, built with `go test -c`
 *.test

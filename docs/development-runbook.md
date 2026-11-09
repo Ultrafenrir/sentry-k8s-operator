@@ -16,13 +16,13 @@ make verify-english
 git diff --check
 ```
 
-Generated CRDs come from API markers. Generated RBAC comes from controller markers. `make
-manifests` also copies the generated CRDs into the Helm chart. Render canonical deployment files
-with:
+Generated CRDs come from API markers and are written directly into the Helm chart. All runtime
+resources are ordinary Helm templates. Render them with:
 
 ```sh
-kubectl kustomize config/chart -o charts/sentry-kubernetes-operator/files/operator.yaml
-kubectl kustomize config/state -o charts/sentry-kubernetes-operator/files/state.yaml
+helm template my-sentry-operator charts/sentry-kubernetes-operator \
+  --namespace observability \
+  --include-crds
 ```
 
 Build the single controller image with `make docker-build IMG=repository/name:tag`.

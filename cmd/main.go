@@ -101,6 +101,7 @@ func main() {
 	var auditRetention time.Duration
 	var auditGCBatch int
 	var enableLeaderElection bool
+	var leaderElectionID string
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
@@ -111,26 +112,24 @@ func main() {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
+	flag.StringVar(&leaderElectionID, "leader-election-id", "sentry-kubernetes-operator", "Leader election lease name.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
 	defaultOperatorNamespace := os.Getenv("POD_NAMESPACE")
-	if defaultOperatorNamespace == "" {
-		defaultOperatorNamespace = "sentry-kubernetes-operator-system"
-	}
 	flag.StringVar(&operatorNamespace, "operator-namespace", defaultOperatorNamespace,
 		"Fixed namespace from which platform-owned connection Secrets are read.")
 	defaultStateNamespace := os.Getenv("STATE_NAMESPACE")
 	if defaultStateNamespace == "" {
-		defaultStateNamespace = "sentry-kubernetes-operator-state"
+		defaultStateNamespace = defaultOperatorNamespace
 	}
 	flag.StringVar(&stateNamespace, "state-namespace", defaultStateNamespace,
-		"Dedicated namespace for protected binding and operation state Secrets.")
+		"Namespace for protected binding and operation state Secrets.")
 	defaultAuditNamespace := os.Getenv("AUDIT_NAMESPACE")
 	if defaultAuditNamespace == "" {
-		defaultAuditNamespace = "sentry-kubernetes-operator-audit"
+		defaultAuditNamespace = defaultOperatorNamespace
 	}
 	flag.StringVar(&auditNamespace, "audit-namespace", defaultAuditNamespace,
-		"Dedicated namespace for immutable mutation audit Secrets.")
+		"Namespace for immutable mutation audit Secrets.")
 	flag.DurationVar(&auditGCInterval, "audit-gc-interval", 10*time.Minute,
 		"Leader-only interval for durable mutation audit retention.")
 	flag.DurationVar(&auditRetention, "audit-retention", 30*24*time.Hour,
@@ -152,8 +151,8 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
-	if stateNamespace == "" || auditNamespace == "" || stateNamespace == operatorNamespace || auditNamespace == operatorNamespace || auditNamespace == stateNamespace || auditGCInterval <= 0 || auditRetention <= 0 || auditGCBatch <= 0 {
-		setupLog.Error(errors.New("namespace isolation is required"), "State and audit namespaces must be non-empty and separate from operator credentials")
+	if operatorNamespace == "" || stateNamespace == "" || auditNamespace == "" || leaderElectionID == "" || auditGCInterval <= 0 || auditRetention <= 0 || auditGCBatch <= 0 {
+		setupLog.Error(errors.New("invalid manager configuration"), "Namespaces, leader election ID and audit retention settings must be valid")
 		os.Exit(1)
 	}
 
@@ -172,8 +171,7 @@ func main() {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
 
-	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
-	// More info:
+	// Metrics options configure the controller-runtime server. More info:
 	// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1/pkg/metrics/server
 	// - https://book.kubebuilder.io/reference/metrics.html
 	metricsServerOptions := metricsserver.Options{
@@ -185,7 +183,7 @@ func main() {
 	if secureMetrics {
 		// FilterProvider is used to protect the metrics endpoint with authn/authz.
 		// These configurations ensure that only authorized users and service accounts
-		// can access the metrics endpoint. The RBAC are configured in 'config/rbac/kustomization.yaml'. More info:
+		// can access the metrics endpoint. More info:
 		// https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1/pkg/metrics/filters#WithAuthenticationAndAuthorization
 		metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
 	}
@@ -214,7 +212,7 @@ func main() {
 		WebhookServer:          newDisabledWebhookServer(),
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "c4d7095e.io",
+		LeaderElectionID:       leaderElectionID,
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly

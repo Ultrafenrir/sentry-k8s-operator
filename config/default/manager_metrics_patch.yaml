@@ -1,7 +1,0 @@
-# Expose controller metrics over HTTP.
-- op: add
-  path: /spec/template/spec/containers/0/args/0
-  value: --metrics-bind-address=:8443
-- op: add
-  path: /spec/template/spec/containers/0/args/1
-  value: --metrics-secure=false

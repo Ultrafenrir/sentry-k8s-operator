@@ -1,5 +1,0 @@
-resources:
-- bases/sentryconfiguration.io_sentryalertpolicies.yaml
-- bases/sentryconfiguration.io_sentryconnections.yaml
-- bases/sentryconfiguration.io_sentryprojects.yaml
-# +kubebuilder:scaffold:crdkustomizeresource

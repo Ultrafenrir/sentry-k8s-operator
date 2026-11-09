@@ -2,8 +2,8 @@ apiVersion: v2
 name: sentry-kubernetes-operator
 description: Kubernetes operator for Sentry projects and alert policies
 type: application
-version: 0.1.0-alpha.1
-appVersion: "0.1.0-alpha.1"
+version: 0.2.0-alpha.1
+appVersion: "0.2.0-alpha.1"
 home: https://github.com/Ultrafenrir/sentry-k8s-operator
 sources:
   - https://github.com/Ultrafenrir/sentry-k8s-operator

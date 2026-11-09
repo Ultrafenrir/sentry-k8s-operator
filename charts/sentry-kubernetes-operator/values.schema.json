@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["image", "sentryConnection", "controllerMonitoring"],
+  "required": ["image", "replicaCount", "resources", "sentryConnection", "controllerMonitoring"],
   "properties": {
     "image": {
       "type": "object",
@@ -14,12 +14,14 @@
         "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]}
       }
     },
+    "replicaCount": {"type": "integer", "minimum": 1},
+    "resources": {"type": "object"},
     "sentryConnection": {
       "type": "object",
       "additionalProperties": false,
       "required": ["name", "spec"],
       "properties": {
-        "name": {"type": "string", "minLength": 1},
+        "name": {"type": "string"},
         "spec": {"type": "object"}
       }
     },

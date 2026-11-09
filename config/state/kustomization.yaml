@@ -1,7 +1,0 @@
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-- namespace.yaml
-- audit-namespace.yaml
-- rbac.yaml
-- audit-rbac.yaml
