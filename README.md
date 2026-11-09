@@ -67,5 +67,5 @@ See [docs/quickstart.md](docs/quickstart.md) for test project and alert policy e
 make help
 make generate manifests
 make test
-make helm-lint
+make lint
 ```

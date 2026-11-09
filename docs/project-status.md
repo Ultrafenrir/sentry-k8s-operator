@@ -14,3 +14,7 @@ version; the Helm chart does not block installation based on the Kubernetes serv
 
 Live event ingestion and third-party notification delivery are outside the evidence provided by
 unit tests and rendered manifests.
+
+CI runs `make lint` and the complete `make test` suite. The test target includes unit tests for
+project authorization, protected state, destination resolution, alert adapters, and audit state,
+plus controller envtest coverage against a local Kubernetes API server.
