@@ -110,6 +110,9 @@ func TestPublishFailureLeavesResumableOutbox(t *testing.T) {
 	if !errors.Is(err, ErrPublishPending) {
 		t.Fatalf("redeem err=%v", err)
 	}
+	if err := service.Redeem(context.Background(), reference.UID, "telegram/payments-alerts", code, binding.TelegramTarget{ChatIdentity: "other-chat"}, func(context.Context, binding.TelegramChallenge) error { return nil }); !errors.Is(err, ErrChallengeInvalid) {
+		t.Fatalf("pending target replacement err=%v", err)
+	}
 	if _, err := service.Issue(context.Background(), issueInput(reference)); !errors.Is(err, ErrRegistrationRequired) {
 		t.Fatalf("pending registration was overwritten: %v", err)
 	}
@@ -310,20 +313,56 @@ type fakePublisher struct {
 
 type resourceVersionClient struct {
 	client.Client
-	mu sync.Mutex
+	mu       sync.Mutex
+	versions map[client.ObjectKey]string
+}
+
+func (c *resourceVersionClient) Get(ctx context.Context, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.Client.Get(ctx, key, object, options...); err != nil {
+		return err
+	}
+	if c.versions == nil {
+		c.versions = make(map[client.ObjectKey]string)
+	}
+	version, found := c.versions[key]
+	if !found {
+		version = "test:" + object.GetResourceVersion()
+		c.versions[key] = version
+	}
+	object.SetResourceVersion(version)
+	return nil
 }
 
 func (c *resourceVersionClient) Update(ctx context.Context, object client.Object, options ...client.UpdateOption) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	key := client.ObjectKeyFromObject(object)
 	current := &corev1.Secret{}
-	if err := c.Client.Get(ctx, client.ObjectKeyFromObject(object), current); err != nil {
+	if err := c.Client.Get(ctx, key, current); err != nil {
 		return err
 	}
-	if object.GetResourceVersion() != current.ResourceVersion {
+	if c.versions == nil {
+		c.versions = make(map[client.ObjectKey]string)
+	}
+	version, found := c.versions[key]
+	if !found {
+		version = "test:" + current.ResourceVersion
+		c.versions[key] = version
+	}
+	if object.GetResourceVersion() != version {
 		return apierrors.NewConflict(corev1.Resource("secrets"), object.GetName(), errors.New("stale resourceVersion"))
 	}
-	return c.Client.Update(ctx, object, options...)
+	object.SetResourceVersion(current.ResourceVersion)
+	if err := c.Client.Update(ctx, object, options...); err != nil {
+		object.SetResourceVersion(version)
+		return err
+	}
+	version += ".next"
+	c.versions[key] = version
+	object.SetResourceVersion(version)
+	return nil
 }
 
 type registrationAuditSink struct {

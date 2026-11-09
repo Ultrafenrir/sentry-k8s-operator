@@ -352,7 +352,7 @@ func (s *Service) newOperationHash(outboxKey string) (string, error) {
 
 func challengeFrom(project binding.ProjectBinding, destinationName string) (binding.DestinationBinding, binding.TelegramChallenge, error) {
 	destination, found := project.Destinations[destinationName]
-	if !found || destination.Kind != "telegram" || destination.State != "RegistrationRequired" || destination.Telegram == nil || destination.Telegram.Challenge == nil || destination.Telegram.Challenge.Project.UID != project.Project.UID || destination.Telegram.Challenge.Destination != destinationName || destination.Telegram.Challenge.SelectorHash != destination.SelectorHash || destination.Telegram.Challenge.Owner != project.Owner || destination.Telegram.Challenge.Connection != project.Connection {
+	if !found || destination.Kind != "telegram" || destination.State != "RegistrationRequired" || destination.Telegram == nil || destination.Telegram.Challenge == nil || destination.Telegram.Target != nil || destination.Telegram.Phase != "" || destination.Telegram.OutboxKey != "" || destination.Telegram.FenceHash != "" || destination.Telegram.RouteKey != "" || destination.Telegram.RouteRevoked || destination.Telegram.Challenge.Project.UID != project.Project.UID || destination.Telegram.Challenge.Destination != destinationName || destination.Telegram.Challenge.SelectorHash != destination.SelectorHash || destination.Telegram.Challenge.Owner != project.Owner || destination.Telegram.Challenge.Connection != project.Connection {
 		return binding.DestinationBinding{}, binding.TelegramChallenge{}, ErrChallengeInvalid
 	}
 	return destination, *destination.Telegram.Challenge, nil
