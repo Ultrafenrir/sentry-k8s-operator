@@ -45,7 +45,6 @@ type ProjectCreate struct {
 	Platform string `json:"platform,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="has(self.create) != has(self.use)",message="exactly one of project.create or project.use is required"
 // ProjectSelector chooses either a new managed project or an existing read-only project.
 type ProjectSelector struct {
 	// +optional
@@ -57,7 +56,6 @@ type ProjectSelector struct {
 	Use *string `json:"use,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="!(has(self.clientKey) && has(self.managedClientKey))",message="clientKey and managedClientKey are mutually exclusive"
 // DSNSpec customizes the public DSN output without exposing external IDs.
 type DSNSpec struct {
 	// +kubebuilder:validation:MinLength=1
@@ -189,7 +187,6 @@ type AdvancedPIIRedaction string
 // +kubebuilder:validation:Enum=message;extra;request;user;contexts;tags;breadcrumbs
 type AdvancedPIISelectorRoot string
 
-// +kubebuilder:validation:XValidation:rule="self.root == 'message' ? !has(self.path) || size(self.path) == 0 : has(self.path) && size(self.path) > 0",message="message selectors cannot have a path; all other selector roots require one"
 // AdvancedPIISelector identifies one exact event field. Path segments are serialized into a
 // canonical Relay selector by the settings adapter.
 type AdvancedPIISelector struct {
@@ -204,7 +201,6 @@ type AdvancedPIISelector struct {
 	Path []string `json:"path,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="self.redaction == 'replace' ? has(self.replacement) : !has(self.replacement)",message="replacement is required only for replace redaction"
 // AdvancedPIIRule applies one built-in detector and redaction to one or more exact fields.
 type AdvancedPIIRule struct {
 	Type AdvancedPIIRuleType `json:"type"`
@@ -251,7 +247,6 @@ type GroupingEnhancementRule struct {
 // +kubebuilder:validation:Enum=error.type;error.value;message;logger;level;stack.module;stack.abs_path;stack.package;stack.function
 type FingerprintMatcher string
 
-// +kubebuilder:validation:XValidation:rule="(has(self.includeDefault) && self.includeDefault) || (has(self.values) && size(self.values) > 0)",message="at least one custom value or includeDefault is required"
 // FingerprintRule is serialized into one canonical ordered Sentry fingerprinting rule.
 type FingerprintRule struct {
 	Matcher FingerprintMatcher `json:"matcher"`
@@ -370,7 +365,6 @@ type GCSSymbolSource struct {
 	PrivateKeySecretRef SecretKeyReference `json:"privateKeySecretRef"`
 }
 
-// +kubebuilder:validation:XValidation:rule="(has(self.http) ? 1 : 0) + (has(self.s3) ? 1 : 0) + (has(self.gcs) ? 1 : 0) == 1",message="exactly one of http, s3 or gcs is required"
 // CustomSymbolSourceSpec owns one portable custom source child. The map key is its stable
 // local alias; generated Sentry identities remain protected.
 type CustomSymbolSourceSpec struct {
@@ -386,7 +380,6 @@ type CustomSymbolSourceSpec struct {
 	GCS *GCSSymbolSource `json:"gcs,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="!has(self.allowedDomains) || !(self.allowedDomains.exists(d, d == '*') && size(self.allowedDomains) > 1)",message="allowedDomains wildcard must be the only entry"
 // BehaviorSettings contains bounded project behavior shared by both supported Sentry
 // compatibility versions.
 type BehaviorSettings struct {
@@ -438,7 +431,6 @@ const (
 	IssueOwnershipMatcherTag    IssueOwnershipMatcherType = "tag"
 )
 
-// +kubebuilder:validation:XValidation:rule="self.type == 'tag' ? has(self.tagKey) : !has(self.tagKey)",message="tagKey is required only for tag matchers"
 // IssueOwnershipMatcher is a bounded, structured ownership-rule matcher. Whitespace,
 // comments, quoted identifiers, and raw Sentry grammar stay outside the alpha API.
 type IssueOwnershipMatcher struct {
@@ -509,7 +501,6 @@ type IssueOwnershipSpec struct {
 
 // CodeMappingSpec maps stack-trace paths to one connection-owned repository alias. Sentry,
 // integration, repository, and mapping identities never enter the public resource.
-// +kubebuilder:validation:XValidation:rule="!self.importCodeowners || size(self.defaultBranch) > 0",message="CODEOWNERS import requires defaultBranch"
 type CodeMappingSpec struct {
 	// Integration selects a sourceCode installation alias on the SentryConnection.
 	// +kubebuilder:validation:MinLength=1
@@ -581,7 +572,6 @@ type PagerDutyDestination struct {
 	Service string `json:"service"`
 }
 
-// +kubebuilder:validation:XValidation:rule="(has(self.slack) && !has(self.pagerDuty)) || (!has(self.slack) && has(self.pagerDuty))",message="exactly one destination type is required"
 // DestinationSpec contains exactly one adapter-neutral destination selector.
 type DestinationSpec struct {
 	// +optional
@@ -658,7 +648,6 @@ const (
 	AlertTriggerUserCount  AlertTrigger = "user-count"
 )
 
-// +kubebuilder:validation:XValidation:rule="self.trigger in ['event-count', 'user-count'] ? (has(self.windowMinutes) && has(self.threshold)) : (!has(self.windowMinutes) && !has(self.threshold))",message="metric triggers require windowMinutes and threshold; issue triggers forbid them"
 // AlertSpec is adapter-neutral and references notification destinations only by local key.
 type AlertSpec struct {
 	Trigger AlertTrigger `json:"trigger"`
@@ -714,15 +703,6 @@ type ProjectGrantAccess struct {
 	Teams []string `json:"teams,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="!has(self.project.use) || (!has(self.settings) && !has(self.issueOwnership) && !has(self.codeMappings) && !has(self.clientKeys) && !has(self.symbolSources) && !has(self.notificationTargets) && !has(self.alerts) && !has(self.grantAccess))",message="project.use forbids settings, issueOwnership, codeMappings, clientKeys, symbolSources, notification targets, alerts and grantAccess"
-// +kubebuilder:validation:XValidation:rule="!has(self.project.use) || !has(self.alertPolicy)",message="project.use forbids alertPolicy"
-// +kubebuilder:validation:XValidation:rule="!has(self.project.use) || self.lifecycle.onDelete != 'DeleteProject'",message="project.use forbids lifecycle.onDelete DeleteProject"
-// +kubebuilder:validation:XValidation:rule="self.role != 'Standby' || (!has(self.settings) && !has(self.issueOwnership) && !has(self.codeMappings) && !has(self.clientKeys) && !has(self.symbolSources) && !has(self.grantAccess) && self.lifecycle.onDelete != 'DeleteProject')",message="Standby forbids settings, issueOwnership, codeMappings, clientKeys, symbolSources, grantAccess and DeleteProject lifecycle"
-// +kubebuilder:validation:XValidation:rule="!has(self.alerts) || self.alerts.all(k, k.matches('^[a-z](?:[a-z0-9-]*[a-z0-9])?$'))",message="alert names must be lowercase DNS labels"
-// +kubebuilder:validation:XValidation:rule="!has(self.grantAccess) || !has(self.project.create) || !has(self.grantAccess.teams) || !self.grantAccess.teams.exists(t, t == self.project.create.team)",message="grantAccess.teams must not repeat project.create.team"
-// +kubebuilder:validation:XValidation:rule="!has(self.issueOwnership) || (has(self.project.create) && self.issueOwnership.rules.all(r, r.teams.all(t, t == self.project.create.team || (has(self.grantAccess) && t in self.grantAccess.teams))))",message="issueOwnership teams must be the primary project team or appear in grantAccess.teams"
-// +kubebuilder:validation:XValidation:rule="!has(self.dsn) || !has(self.dsn.managedClientKey) || (has(self.clientKeys) && self.dsn.managedClientKey in self.clientKeys)",message="dsn.managedClientKey must reference a declared clientKeys entry"
-// +kubebuilder:validation:XValidation:rule="!has(self.dsn) || !has(self.dsn.managedClientKey) || self.clientKeys[self.dsn.managedClientKey].active",message="dsn.managedClientKey must reference an active managed key"
 // SentryProjectSpec defines the desired state of SentryProject.
 type SentryProjectSpec struct {
 	// +kubebuilder:validation:MinLength=1
@@ -761,14 +741,12 @@ type SentryProjectSpec struct {
 	// ClientKeys owns bounded server-generated client-key children. An absent field leaves
 	// all client keys unmanaged; an explicit empty map removes protected operator-owned keys.
 	// +kubebuilder:validation:MaxProperties=20
-	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$'))",message="client key names must be lowercase DNS labels no longer than 32 characters"
 	// +optional
 	ClientKeys *map[string]ManagedClientKeySpec `json:"clientKeys,omitempty"`
 
 	// SymbolSources owns portable HTTP, S3, and GCS source children. An absent field leaves
 	// custom sources unmanaged; an explicit empty map deletes only exact protected children.
 	// +kubebuilder:validation:MaxProperties=20
-	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$'))",message="symbol source names must be lowercase DNS labels no longer than 32 characters"
 	// +optional
 	SymbolSources *map[string]CustomSymbolSourceSpec `json:"symbolSources,omitempty"`
 

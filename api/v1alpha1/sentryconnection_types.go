@@ -275,11 +275,6 @@ type ConnectionCompatibility struct {
 	Alerts AlertCompatibilityProfile `json:"alerts,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="self.url.startsWith('https://') || (has(self.transport) && self.transport.allowInsecureHTTP)",message="plain HTTP requires transport.allowInsecureHTTP=true"
-// +kubebuilder:validation:XValidation:rule="!has(self.transport) || !self.transport.insecureSkipTLSVerify || self.url.startsWith('https://')",message="transport.insecureSkipTLSVerify requires an HTTPS URL"
-// +kubebuilder:validation:XValidation:rule="!has(self.transport) || !self.transport.insecureSkipTLSVerify || !has(self.credentials.caBundleSecretRef)",message="transport.insecureSkipTLSVerify and credentials.caBundleSecretRef are mutually exclusive"
-// +kubebuilder:validation:XValidation:rule="self.url.startsWith('https://') || !has(self.credentials.caBundleSecretRef)",message="credentials.caBundleSecretRef requires an HTTPS URL"
-// +kubebuilder:validation:XValidation:rule="self.projectManagement.unmanagedProjects != 'Adopt' || (has(self.ownership) && self.ownership.role == 'Active')",message="projectManagement.unmanagedProjects Adopt requires ownership.role Active"
 // SentryConnectionSpec defines the desired state of SentryConnection.
 type SentryConnectionSpec struct {
 	// +kubebuilder:validation:MinLength=9

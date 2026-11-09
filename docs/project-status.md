@@ -11,6 +11,8 @@ manager, or network-policy dependency.
 
 Compatibility with a Kubernetes or Sentry version must be demonstrated by tests against that
 version; the Helm chart does not block installation based on the Kubernetes server version.
+Generated CRDs intentionally avoid CEL `x-kubernetes-validations` so older API servers can install
+them. Cross-field errors are reported by controller reconciliation instead of CRD CEL admission.
 
 Live event ingestion and third-party notification delivery are outside the evidence provided by
 unit tests and rendered manifests.

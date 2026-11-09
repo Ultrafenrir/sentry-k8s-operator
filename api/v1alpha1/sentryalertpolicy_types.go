@@ -15,7 +15,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// +kubebuilder:validation:XValidation:rule="!has(self.alerts) || self.alerts.all(k, k.matches('^[a-z](?:[a-z0-9-]*[a-z0-9])?$'))",message="alert names must be lowercase DNS labels"
 // SentryAlertPolicySpec is a reusable cluster-scoped alert configuration. Creating a
 // policy alone never mutates Sentry; projects opt in by name.
 type SentryAlertPolicySpec struct {

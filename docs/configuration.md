@@ -12,6 +12,9 @@ declared in the CR. External identities and credentials are not exposed in statu
 `SentryAlertPolicy` is cluster-scoped and reusable. It does not change Sentry by itself; a
 `SentryProject` opts in through `spec.alertPolicy`.
 
+The CRDs use structural OpenAPI validation but do not require Kubernetes CEL validation support.
+Cross-field configuration errors are surfaced through resource status during reconciliation.
+
 The supported notification providers are Slack and PagerDuty. They must already be installed in
 Sentry and declared by readable aliases in the connection. The operator does not install provider
 integrations.

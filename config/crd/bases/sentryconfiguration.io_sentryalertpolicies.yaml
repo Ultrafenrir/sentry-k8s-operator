@@ -90,11 +90,6 @@ spec:
                   - notify
                   - trigger
                   type: object
-                  x-kubernetes-validations:
-                  - message: metric triggers require windowMinutes and threshold;
-                      issue triggers forbid them
-                    rule: 'self.trigger in [''event-count'', ''user-count''] ? (has(self.windowMinutes)
-                      && has(self.threshold)) : (!has(self.windowMinutes) && !has(self.threshold))'
                 maxProperties: 100
                 type: object
               notificationTargets:
@@ -130,9 +125,6 @@ spec:
             required:
             - sentry
             type: object
-            x-kubernetes-validations:
-            - message: alert names must be lowercase DNS labels
-              rule: '!has(self.alerts) || self.alerts.all(k, k.matches(''^[a-z](?:[a-z0-9-]*[a-z0-9])?$''))'
           status:
             description: SentryAlertPolicyStatus is bounded and never lists consumer
               projects or protected IDs.

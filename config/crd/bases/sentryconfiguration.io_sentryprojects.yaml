@@ -96,11 +96,6 @@ spec:
                   - notify
                   - trigger
                   type: object
-                  x-kubernetes-validations:
-                  - message: metric triggers require windowMinutes and threshold;
-                      issue triggers forbid them
-                    rule: 'self.trigger in [''event-count'', ''user-count''] ? (has(self.windowMinutes)
-                      && has(self.threshold)) : (!has(self.windowMinutes) && !has(self.threshold))'
                 description: |-
                   An absent alerts field leaves existing alert children unmanaged. An explicit empty map
                   deletes all protected operator-owned alerts.
@@ -149,10 +144,6 @@ spec:
                   all client keys unmanaged; an explicit empty map removes protected operator-owned keys.
                 maxProperties: 20
                 type: object
-                x-kubernetes-validations:
-                - message: client key names must be lowercase DNS labels no longer
-                    than 32 characters
-                  rule: self.all(k, k.matches('^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$'))
               codeMappings:
                 additionalProperties:
                   description: |-
@@ -191,9 +182,6 @@ spec:
                   - integration
                   - repository
                   type: object
-                  x-kubernetes-validations:
-                  - message: CODEOWNERS import requires defaultBranch
-                    rule: '!self.importCodeowners || size(self.defaultBranch) > 0'
                 description: |-
                   CodeMappings owns repository path mappings keyed by stable local aliases. An absent
                   field leaves mappings unmanaged; an explicit empty map removes owned mappings and their
@@ -221,9 +209,6 @@ spec:
                     minLength: 1
                     type: string
                 type: object
-                x-kubernetes-validations:
-                - message: clientKey and managedClientKey are mutually exclusive
-                  rule: '!(has(self.clientKey) && has(self.managedClientKey))'
               grantAccess:
                 description: |-
                   GrantAccess manages additional team access for a managed project. The connection access
@@ -301,9 +286,6 @@ spec:
                           - pattern
                           - type
                           type: object
-                          x-kubernetes-validations:
-                          - message: tagKey is required only for tag matchers
-                            rule: 'self.type == ''tag'' ? has(self.tagKey) : !has(self.tagKey)'
                         teams:
                           items:
                             maxLength: 63
@@ -390,9 +372,6 @@ spec:
                     minLength: 1
                     type: string
                 type: object
-                x-kubernetes-validations:
-                - message: exactly one of project.create or project.use is required
-                  rule: has(self.create) != has(self.use)
               role:
                 default: Active
                 description: |-
@@ -456,10 +435,6 @@ spec:
                           source files and source maps.
                         type: boolean
                     type: object
-                    x-kubernetes-validations:
-                    - message: allowedDomains wildcard must be the only entry
-                      rule: '!has(self.allowedDomains) || !(self.allowedDomains.exists(d,
-                        d == ''*'') && size(self.allowedDomains) > 1)'
                   filters:
                     description: |-
                       FilterSettings contains the source-confirmed inbound filters. A nil field is unmanaged;
@@ -577,11 +552,6 @@ spec:
                           - matcher
                           - pattern
                           type: object
-                          x-kubernetes-validations:
-                          - message: at least one custom value or includeDefault is
-                              required
-                            rule: (has(self.includeDefault) && self.includeDefault)
-                              || (has(self.values) && size(self.values) > 0)
                         maxItems: 100
                         type: array
                     type: object
@@ -629,12 +599,6 @@ spec:
                                 required:
                                 - root
                                 type: object
-                                x-kubernetes-validations:
-                                - message: message selectors cannot have a path; all
-                                    other selector roots require one
-                                  rule: 'self.root == ''message'' ? !has(self.path)
-                                    || size(self.path) == 0 : has(self.path) && size(self.path)
-                                    > 0'
                               maxItems: 16
                               minItems: 1
                               type: array
@@ -676,10 +640,6 @@ spec:
                           - redaction
                           - type
                           type: object
-                          x-kubernetes-validations:
-                          - message: replacement is required only for replace redaction
-                            rule: 'self.redaction == ''replace'' ? has(self.replacement)
-                              : !has(self.replacement)'
                         maxItems: 64
                         type: array
                       safeFields:
@@ -922,53 +882,15 @@ spec:
                   required:
                   - layout
                   type: object
-                  x-kubernetes-validations:
-                  - message: exactly one of http, s3 or gcs is required
-                    rule: '(has(self.http) ? 1 : 0) + (has(self.s3) ? 1 : 0) + (has(self.gcs)
-                      ? 1 : 0) == 1'
                 description: |-
                   SymbolSources owns portable HTTP, S3, and GCS source children. An absent field leaves
                   custom sources unmanaged; an explicit empty map deletes only exact protected children.
                 maxProperties: 20
                 type: object
-                x-kubernetes-validations:
-                - message: symbol source names must be lowercase DNS labels no longer
-                    than 32 characters
-                  rule: self.all(k, k.matches('^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$'))
             required:
             - project
             - sentry
             type: object
-            x-kubernetes-validations:
-            - message: project.use forbids settings, issueOwnership, codeMappings,
-                clientKeys, symbolSources, notification targets, alerts and grantAccess
-              rule: '!has(self.project.use) || (!has(self.settings) && !has(self.issueOwnership)
-                && !has(self.codeMappings) && !has(self.clientKeys) && !has(self.symbolSources)
-                && !has(self.notificationTargets) && !has(self.alerts) && !has(self.grantAccess))'
-            - message: project.use forbids alertPolicy
-              rule: '!has(self.project.use) || !has(self.alertPolicy)'
-            - message: project.use forbids lifecycle.onDelete DeleteProject
-              rule: '!has(self.project.use) || self.lifecycle.onDelete != ''DeleteProject'''
-            - message: Standby forbids settings, issueOwnership, codeMappings, clientKeys,
-                symbolSources, grantAccess and DeleteProject lifecycle
-              rule: self.role != 'Standby' || (!has(self.settings) && !has(self.issueOwnership)
-                && !has(self.codeMappings) && !has(self.clientKeys) && !has(self.symbolSources)
-                && !has(self.grantAccess) && self.lifecycle.onDelete != 'DeleteProject')
-            - message: alert names must be lowercase DNS labels
-              rule: '!has(self.alerts) || self.alerts.all(k, k.matches(''^[a-z](?:[a-z0-9-]*[a-z0-9])?$''))'
-            - message: grantAccess.teams must not repeat project.create.team
-              rule: '!has(self.grantAccess) || !has(self.project.create) || !has(self.grantAccess.teams)
-                || !self.grantAccess.teams.exists(t, t == self.project.create.team)'
-            - message: issueOwnership teams must be the primary project team or appear
-                in grantAccess.teams
-              rule: '!has(self.issueOwnership) || (has(self.project.create) && self.issueOwnership.rules.all(r,
-                r.teams.all(t, t == self.project.create.team || (has(self.grantAccess)
-                && t in self.grantAccess.teams))))'
-            - message: dsn.managedClientKey must reference a declared clientKeys entry
-              rule: '!has(self.dsn) || !has(self.dsn.managedClientKey) || (has(self.clientKeys)
-                && self.dsn.managedClientKey in self.clientKeys)'
-            - message: dsn.managedClientKey must reference an active managed key
-              rule: '!has(self.dsn) || !has(self.dsn.managedClientKey) || self.clientKeys[self.dsn.managedClientKey].active'
           status:
             description: status defines the observed state of SentryProject
             properties:
