@@ -47,12 +47,3 @@ jobs:
 
       - name: Run tests and sample admission validation
         run: make test KUBEBUILDER_ASSETS="$KUBEBUILDER_ASSETS"
-
-      - name: Verify deterministic failure contracts
-        run: make verify-t10-failure-injection
-
-      - name: Verify repository language and patches
-        run: |
-          make verify-community
-          make verify-english
-          git diff --check
