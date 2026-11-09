@@ -25,12 +25,12 @@ import (
 	"fmt"
 	"time"
 
-	sentryv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/audit"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/ownership"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/policy"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
+	sentryv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/audit"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/binding"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/ownership"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/policy"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/sentryapi"
 )
 
 type ErrorReason string
@@ -456,7 +456,7 @@ func (e *Engine) releaseManaged(ctx context.Context, input Input, installation s
 	if !matchesManagedContext(state.Binding, input, installation, project.Name, decision.Owner, marker, regional) || state.Binding.ExternalIdentity == "" {
 		return DeletionResult{}, &Error{Reason: ReasonOwnershipLost}
 	}
-	if len(state.Binding.Alerts) != 0 || len(state.Binding.Destinations) != 0 || len(state.Binding.GrantedTeams) != 0 || len(state.Binding.ClientKeys) != 0 || state.Binding.ServiceHook != nil {
+	if len(state.Binding.Alerts) != 0 || len(state.Binding.Destinations) != 0 || len(state.Binding.GrantedTeams) != 0 || len(state.Binding.ClientKeys) != 0 {
 		return DeletionResult{}, &Error{Reason: ReasonReleasePending}
 	}
 	claim, err := e.Bindings.GetClaim(ctx, installation, input.Connection.Organization, project.Name)

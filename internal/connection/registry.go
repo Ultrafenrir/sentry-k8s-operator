@@ -21,14 +21,13 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/sentryapi"
 )
 
 // InputVersions are safe hashes used only to detect rotations.
 type InputVersions struct {
 	Token    [32]byte
 	CABundle [32]byte
-	BotToken [32]byte
 }
 
 type registryEntry struct {
@@ -141,7 +140,6 @@ func hashInputs(inputs SecretInputs) InputVersions {
 	return InputVersions{
 		Token:    sha256.Sum256(inputs.Token),
 		CABundle: sha256.Sum256(inputs.CABundle),
-		BotToken: sha256.Sum256(inputs.BotToken),
 	}
 }
 
@@ -149,7 +147,6 @@ func cloneInputs(inputs SecretInputs) SecretInputs {
 	return SecretInputs{
 		Token:                 append([]byte(nil), inputs.Token...),
 		CABundle:              append([]byte(nil), inputs.CABundle...),
-		BotToken:              append([]byte(nil), inputs.BotToken...),
 		AllowInsecureHTTP:     inputs.AllowInsecureHTTP,
 		InsecureSkipTLSVerify: inputs.InsecureSkipTLSVerify,
 	}

@@ -22,9 +22,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	sentryv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
-	projectruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/project"
+	sentryv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/binding"
+	projectruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/project"
 )
 
 func TestConnectionOwnershipStatusDoesNotEchoUnverifiedActiveRevision(t *testing.T) {

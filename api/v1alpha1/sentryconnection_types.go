@@ -100,11 +100,6 @@ type NotificationTargetAccess struct {
 	// +listType=set
 	// +optional
 	PagerDutyAccounts []string `json:"pagerDutyAccounts,omitempty"`
-
-	// +kubebuilder:validation:MaxItems=100
-	// +listType=set
-	// +optional
-	TelegramTargets []string `json:"telegramTargets,omitempty"`
 }
 
 // AccessRule binds one trusted owner to namespace, project and destination policy.
@@ -251,22 +246,6 @@ type ProjectManagement struct {
 	UnmanagedProjects UnmanagedProjectPolicy `json:"unmanagedProjects,omitempty"`
 }
 
-// TelegramIntegration configures the platform-owned Telegram delivery route.
-type TelegramIntegration struct {
-	BotTokenSecretRef SecretKeyReference `json:"botTokenSecretRef"`
-
-	// +kubebuilder:validation:MinLength=9
-	// +kubebuilder:validation:MaxLength=2048
-	// +kubebuilder:validation:Pattern=`^https://[^[:space:]]+$`
-	ReceiverURL string `json:"receiverURL"`
-
-	// ServiceHookRevision is a platform-controlled monotonic trigger for replacing the
-	// Sentry-generated hook secret without placing that secret in the public API.
-	// +kubebuilder:default=1
-	// +kubebuilder:validation:Minimum=1
-	ServiceHookRevision int64 `json:"serviceHookRevision,omitempty"`
-}
-
 // ConnectionIntegrations contains optional platform integration defaults.
 type ConnectionIntegrations struct {
 	// +optional
@@ -277,9 +256,6 @@ type ConnectionIntegrations struct {
 
 	// +optional
 	SourceCode *SourceCodeIntegrations `json:"sourceCode,omitempty"`
-
-	// +optional
-	Telegram *TelegramIntegration `json:"telegram,omitempty"`
 }
 
 // AlertCompatibilityProfile is an explicit platform assertion about the target Sentry
@@ -361,9 +337,6 @@ type SentryConnectionStatus struct {
 	// +optional
 	Capabilities []string `json:"capabilities,omitempty"`
 
-	// +optional
-	RegistrationCommit *RegistrationCommit `json:"registrationCommit,omitempty"`
-
 	// +kubebuilder:validation:MaxLength=63
 	// +optional
 	Region string `json:"region,omitempty"`
@@ -379,18 +352,6 @@ type SentryConnectionStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
-}
-
-// RegistrationCommit is a non-secret, short-lived policy fence written by the system.
-type RegistrationCommit struct {
-	// +kubebuilder:validation:MinLength=64
-	// +kubebuilder:validation:MaxLength=64
-	// +kubebuilder:validation:Pattern=`^[0-9a-f]{64}$`
-	OperationHash string `json:"operationHash"`
-
-	PolicyGeneration int64 `json:"policyGeneration"`
-
-	ExpiresAt metav1.Time `json:"expiresAt"`
 }
 
 // +kubebuilder:object:root=true

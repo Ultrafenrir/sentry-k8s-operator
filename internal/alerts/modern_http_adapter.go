@@ -29,8 +29,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/binding"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/sentryapi"
 )
 
 const ModernMetricIssueAdapter = "modern-metric-issue-v1"
@@ -320,12 +320,6 @@ func (a *ModernHTTPAdapter) actions(names []string) ([]modernActionFilter, error
 		destination, ok := a.Destinations[name]
 		if !ok || destination.State != "Active" {
 			return nil, ErrModernDestinationUnsupported
-		}
-		if destination.Kind == "telegram" {
-			if destination.Telegram == nil || destination.Telegram.RouteKey == "" || destination.Telegram.Target == nil || destination.Telegram.RouteRevoked {
-				return nil, ErrModernDestinationUnsupported
-			}
-			continue
 		}
 		if destination.IntegrationIdentity == "" || destination.ResourceIdentity == "" || destination.ResourceName == "" {
 			return nil, ErrModernDestinationUnsupported

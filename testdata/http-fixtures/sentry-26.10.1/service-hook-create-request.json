@@ -1,8 +1,0 @@
-{
-  "url": "https://telegram-receiver.invalid/events",
-  "events": [
-    "event.alert"
-  ],
-  "version": 0,
-  "isActive": true
-}

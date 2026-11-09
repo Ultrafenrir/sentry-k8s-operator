@@ -17,9 +17,11 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"flag"
+	"net/http"
 	"os"
 	"time"
 
@@ -39,16 +41,12 @@ import (
 	controllermetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	sentryconfigurationv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/audit"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
-	connectionruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/connection"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/controller"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/registration"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryhook"
-	webhookv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/internal/webhook/v1alpha1"
+	sentryconfigurationv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/audit"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/binding"
+	connectionruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/connection"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -64,20 +62,41 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
+// disabledWebhookServer satisfies controller-runtime's manager contract without opening a
+// listener. Validation and defaulting for the shipped API are provided by the CRD schema.
+type disabledWebhookServer struct {
+	mux *http.ServeMux
+}
+
+func newDisabledWebhookServer() *disabledWebhookServer {
+	return &disabledWebhookServer{mux: http.NewServeMux()}
+}
+
+func (*disabledWebhookServer) NeedLeaderElection() bool { return false }
+
+func (*disabledWebhookServer) Register(string, http.Handler) {
+	panic("runtime callback server is disabled")
+}
+
+func (*disabledWebhookServer) Start(ctx context.Context) error {
+	<-ctx.Done()
+	return nil
+}
+
+func (*disabledWebhookServer) StartedChecker() healthz.Checker {
+	return func(*http.Request) error { return nil }
+}
+
+func (s *disabledWebhookServer) WebhookMux() *http.ServeMux { return s.mux }
+
 // nolint:gocyclo
 func main() {
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
-	var webhookCertPath, webhookCertName, webhookCertKey string
-	var webhookPort int
 	var operatorNamespace string
 	var stateNamespace string
-	var hookSourceNamespace string
-	var routingNamespace string
 	var auditNamespace string
 	var managedBy string
-	var challengeGCInterval time.Duration
-	var challengeGCBatch int
 	var auditGCInterval time.Duration
 	var auditRetention time.Duration
 	var auditGCBatch int
@@ -94,11 +113,6 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
-	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
-	flag.StringVar(&webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
-	flag.StringVar(&webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
-	flag.IntVar(&webhookPort, "webhook-port", 9443, "Port the webhook server listens on. "+
-		"Defaults to 9443. Set -1 to disable the webhook server.")
 	defaultOperatorNamespace := os.Getenv("POD_NAMESPACE")
 	if defaultOperatorNamespace == "" {
 		defaultOperatorNamespace = "sentry-kubernetes-operator-system"
@@ -111,28 +125,12 @@ func main() {
 	}
 	flag.StringVar(&stateNamespace, "state-namespace", defaultStateNamespace,
 		"Dedicated namespace for protected binding and operation state Secrets.")
-	defaultHookSourceNamespace := os.Getenv("HOOK_SOURCE_NAMESPACE")
-	if defaultHookSourceNamespace == "" {
-		defaultHookSourceNamespace = "sentry-kubernetes-operator-hook-sources"
-	}
-	flag.StringVar(&hookSourceNamespace, "hook-source-namespace", defaultHookSourceNamespace,
-		"Dedicated namespace for protected Sentry hook source plans.")
-	defaultRoutingNamespace := os.Getenv("ROUTING_NAMESPACE")
-	if defaultRoutingNamespace == "" {
-		defaultRoutingNamespace = "sentry-kubernetes-operator-routing"
-	}
-	flag.StringVar(&routingNamespace, "routing-namespace", defaultRoutingNamespace,
-		"Dedicated namespace for protected routing Secrets.")
 	defaultAuditNamespace := os.Getenv("AUDIT_NAMESPACE")
 	if defaultAuditNamespace == "" {
 		defaultAuditNamespace = "sentry-kubernetes-operator-audit"
 	}
 	flag.StringVar(&auditNamespace, "audit-namespace", defaultAuditNamespace,
 		"Dedicated namespace for immutable mutation audit Secrets.")
-	flag.DurationVar(&challengeGCInterval, "challenge-gc-interval", 5*time.Minute,
-		"Leader-only interval for expired Telegram challenge index collection.")
-	flag.IntVar(&challengeGCBatch, "challenge-gc-batch", 100,
-		"Maximum expired Telegram challenge indexes deleted per sweep.")
 	flag.DurationVar(&auditGCInterval, "audit-gc-interval", 10*time.Minute,
 		"Leader-only interval for durable mutation audit retention.")
 	flag.DurationVar(&auditRetention, "audit-retention", 30*24*time.Hour,
@@ -146,7 +144,7 @@ func main() {
 	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
-		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+		"If set, HTTP/2 will be enabled for a secure metrics server")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -154,8 +152,8 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
-	if stateNamespace == "" || hookSourceNamespace == "" || routingNamespace == "" || auditNamespace == "" || stateNamespace == operatorNamespace || hookSourceNamespace == operatorNamespace || routingNamespace == operatorNamespace || auditNamespace == operatorNamespace || hookSourceNamespace == stateNamespace || hookSourceNamespace == routingNamespace || hookSourceNamespace == auditNamespace || routingNamespace == stateNamespace || auditNamespace == stateNamespace || auditNamespace == routingNamespace || challengeGCInterval <= 0 || challengeGCBatch <= 0 || auditGCInterval <= 0 || auditRetention <= 0 || auditGCBatch <= 0 {
-		setupLog.Error(errors.New("namespace isolation is required"), "State, routing and audit namespaces must be non-empty and mutually separate from operator credentials")
+	if stateNamespace == "" || auditNamespace == "" || stateNamespace == operatorNamespace || auditNamespace == operatorNamespace || auditNamespace == stateNamespace || auditGCInterval <= 0 || auditRetention <= 0 || auditGCBatch <= 0 {
+		setupLog.Error(errors.New("namespace isolation is required"), "State and audit namespaces must be non-empty and separate from operator credentials")
 		os.Exit(1)
 	}
 
@@ -173,24 +171,6 @@ func main() {
 	if !enableHTTP2 {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
-
-	// Initial webhook TLS options
-	webhookTLSOpts := tlsOpts
-	webhookServerOptions := webhook.Options{
-		TLSOpts: webhookTLSOpts,
-		Port:    webhookPort,
-	}
-
-	if len(webhookCertPath) > 0 {
-		setupLog.Info("Initializing webhook certificate watcher using provided certificates",
-			"webhook-cert-path", webhookCertPath, "webhook-cert-name", webhookCertName, "webhook-cert-key", webhookCertKey)
-
-		webhookServerOptions.CertDir = webhookCertPath
-		webhookServerOptions.CertName = webhookCertName
-		webhookServerOptions.KeyName = webhookCertKey
-	}
-
-	webhookServer := webhook.NewServer(webhookServerOptions)
 
 	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
 	// More info:
@@ -210,14 +190,7 @@ func main() {
 		metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
 	}
 
-	// If the certificate is not specified, controller-runtime will automatically
-	// generate self-signed certificates for the metrics server. While convenient for development and testing,
-	// this setup is not recommended for production.
-	//
-	// TODO(user): If you enable certManager, uncomment the following lines:
-	// - [METRICS-WITH-CERTS] at config/default/kustomization.yaml to generate and use certificates
-	// managed by cert-manager for the metrics server.
-	// - [PROMETHEUS-WITH-CERTS] at config/prometheus/kustomization.yaml for TLS certification.
+	// A custom certificate remains available for non-default secure metrics deployments.
 	if len(metricsCertPath) > 0 {
 		setupLog.Info("Initializing metrics certificate watcher using provided certificates",
 			"metrics-cert-path", metricsCertPath, "metrics-cert-name", metricsCertName, "metrics-cert-key", metricsCertKey)
@@ -238,7 +211,7 @@ func main() {
 			&corev1.Secret{}: {Namespaces: secretNamespaces},
 		}},
 		Metrics:                metricsServerOptions,
-		WebhookServer:          webhookServer,
+		WebhookServer:          newDisabledWebhookServer(),
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "c4d7095e.io",
@@ -275,20 +248,8 @@ func main() {
 		setupLog.Error(err, "Failed to create uncached output Secret client")
 		os.Exit(1)
 	}
-	registrationState := &binding.Store{Client: outputSecretClient, Namespace: stateNamespace}
-	hookSources := &sentryhook.SourceStore{Client: outputSecretClient, Namespace: hookSourceNamespace}
-	hookVerifier := &sentryhook.VerifierStore{Client: outputSecretClient, Namespace: operatorNamespace}
-	registrationRoutes := &registration.RouteStore{Client: outputSecretClient, Namespace: routingNamespace}
-	registrationIndexes := &registration.ChallengeIndexStore{Client: outputSecretClient, Namespace: stateNamespace}
-	registrationAudit := &audit.KubernetesStore{Client: outputSecretClient, Namespace: auditNamespace, Logger: ctrl.Log.WithName("registration-mutation-audit")}
 	projectAudit := &audit.KubernetesStore{Client: outputSecretClient, Namespace: auditNamespace, Logger: ctrl.Log.WithName("project-mutation-audit")}
 	destinationAudit := &audit.KubernetesStore{Client: outputSecretClient, Namespace: auditNamespace, Logger: ctrl.Log.WithName("destination-mutation-audit")}
-	registrationRecovery := &registration.Service{
-		Store:     registrationState,
-		Publisher: registrationRoutes,
-		Fences:    &registration.FenceCoordinator{Client: outputSecretClient},
-		Audit:     registrationAudit,
-	}
 	if err := mgr.Add(&audit.RetentionJanitor{
 		Store:    &audit.KubernetesStore{Client: outputSecretClient, Namespace: auditNamespace},
 		Interval: auditGCInterval, Retention: auditRetention, Batch: auditGCBatch,
@@ -297,25 +258,6 @@ func main() {
 		},
 	}); err != nil {
 		setupLog.Error(err, "Failed to add durable mutation audit retention")
-		os.Exit(1)
-	}
-	if err := mgr.Add(&registration.ChallengeJanitor{
-		Store: registrationIndexes, Interval: challengeGCInterval, Batch: challengeGCBatch,
-		OnError: func(err error) {
-			setupLog.Error(err, "Expired Telegram challenge index collection failed")
-		},
-	}); err != nil {
-		setupLog.Error(err, "Failed to add Telegram challenge index collector")
-		os.Exit(1)
-	}
-	if err := mgr.Add(&registration.RouteMigrator{
-		Routes: registrationRoutes, SourceNamespace: stateNamespace,
-		Interval: challengeGCInterval, Batch: challengeGCBatch,
-		OnError: func(err error) {
-			setupLog.Error(err, "Legacy Telegram route migration failed")
-		},
-	}); err != nil {
-		setupLog.Error(err, "Failed to add legacy Telegram route migrator")
 		os.Exit(1)
 	}
 	if err := (&controller.SentryConnectionReconciler{
@@ -337,44 +279,19 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.SentryProjectReconciler{
-		Client:               mgr.GetClient(),
-		Scheme:               mgr.GetScheme(),
-		Registry:             connectionRegistry,
-		Bindings:             bindingStore,
-		OutputSecrets:        outputSecretClient,
-		ManagedBy:            managedBy,
-		RegistrationRecovery: registrationRecovery,
-		RegistrationRoutes:   registrationRoutes,
-		RegistrationIndexes:  registrationIndexes,
-		HookSources:          hookSources,
-		HookVerifier:         hookVerifier,
-		Recorder:             mgr.GetEventRecorder("sentryproject-controller"),
-		Metrics:              controllerMetrics,
-		Audit:                projectAudit,
-		DestinationAudit:     destinationAudit,
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		Registry:         connectionRegistry,
+		Bindings:         bindingStore,
+		OutputSecrets:    outputSecretClient,
+		ManagedBy:        managedBy,
+		Recorder:         mgr.GetEventRecorder("sentryproject-controller"),
+		Metrics:          controllerMetrics,
+		Audit:            projectAudit,
+		DestinationAudit: destinationAudit,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "sentryproject")
 		os.Exit(1)
-	}
-	// nolint:goconst
-	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err := webhookv1alpha1.SetupSentryConnectionWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "Failed to create webhook", "webhook", "SentryConnection")
-			os.Exit(1)
-		}
-	}
-	// nolint:goconst
-	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err := webhookv1alpha1.SetupSentryAlertPolicyWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "Failed to create webhook", "webhook", "SentryAlertPolicy")
-			os.Exit(1)
-		}
-	}
-	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err := webhookv1alpha1.SetupSentryProjectWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "Failed to create webhook", "webhook", "SentryProject")
-			os.Exit(1)
-		}
 	}
 	// +kubebuilder:scaffold:builder
 

@@ -21,8 +21,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/ownership"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/binding"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/ownership"
 )
 
 func TestManagedNameExactRoundTripAndBudget(t *testing.T) {

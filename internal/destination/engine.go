@@ -25,19 +25,17 @@ import (
 	"errors"
 	"sort"
 
-	sentryv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/policy"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/resolver"
+	sentryv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/binding"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/policy"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/resolver"
 )
 
 const (
-	StateActive               = "Active"
-	StateRegistrationRequired = "RegistrationRequired"
-	StateRestorePending       = "RestorePending"
-	StateRevoked              = "Revoked"
-	StateCleanupPending       = "CleanupPending"
-	StateUnresolved           = "Unresolved"
+	StateActive         = "Active"
+	StateRevoked        = "Revoked"
+	StateCleanupPending = "CleanupPending"
+	StateUnresolved     = "Unresolved"
 )
 
 var (
@@ -199,8 +197,7 @@ func (e *Engine) Reconcile(ctx context.Context, input Input) Result {
 		}
 		// Preserve the pinned identity until every alert which references the
 		// destination has been successfully updated or deleted in Sentry.  This
-		// applies to provider integrations as well as operator-owned Telegram
-		// routes: dropping a Slack/PagerDuty binding early would make a failed
+		// applies to both provider integrations: dropping a binding early would make a failed
 		// alert cleanup impossible to authorize and retry safely.
 		current.State = StateCleanupPending
 		current.Reason = "DestinationRemoved"
@@ -216,8 +213,6 @@ func destinationKind(desired sentryv1alpha1.DestinationSpec) string {
 		return "slack"
 	case desired.PagerDuty != nil:
 		return "pagerduty"
-	case desired.Telegram != nil:
-		return "telegram"
 	default:
 		return ""
 	}
@@ -230,32 +225,6 @@ func (e *Engine) resolveOne(ctx context.Context, connection sentryv1alpha1.Sentr
 		return binding.DestinationBinding{}, status, err
 	}
 	hash := selectorHash(kind, integrationName, resourceName)
-	if kind == "telegram" {
-		if found && current.Kind == kind && current.SelectorHash == hash {
-			if current.State == StateRevoked && current.Telegram != nil && current.Telegram.Target != nil && current.Telegram.RouteKey != "" && current.Telegram.RouteRevoked {
-				current.State = StateRestorePending
-				current.Reason = "DestinationAccessRestored"
-			}
-			if current.State == StateCleanupPending && current.Reason == "DestinationChanged" && current.Telegram != nil && current.Telegram.Target != nil && current.Telegram.RouteKey != "" && current.Telegram.RouteRevoked {
-				current.State = StateRestorePending
-				current.Reason = "DestinationChangeReverted"
-			}
-			return current, Status{Kind: kind, State: current.State, Reason: current.Reason}, nil
-		}
-		if found && current.Kind == kind && current.Telegram != nil && current.Telegram.Target != nil {
-			if current.State == StateCleanupPending && current.Telegram.RouteRevoked {
-				// The old numeric target has been proven disconnected; a new selector
-				// may now start a fresh one-time registration.
-			} else {
-				current.State = StateCleanupPending
-				current.Reason = "DestinationChanged"
-				return current, Status{Kind: kind, State: current.State, Reason: current.Reason}, nil
-			}
-		}
-		next := binding.DestinationBinding{Owner: owner, Kind: kind, SelectorHash: hash, ResourceName: resourceName, State: StateRegistrationRequired, Reason: "TelegramRegistrationRequired"}
-		return next, Status{Kind: kind, State: next.State, Reason: next.Reason}, nil
-	}
-
 	provider := kind
 	integrations, err := e.Catalog.ListIntegrations(ctx, connection.Organization, provider)
 	if err != nil {
@@ -302,20 +271,18 @@ func (e *Engine) resolveOne(ctx context.Context, connection sentryv1alpha1.Sentr
 
 func selector(connection sentryv1alpha1.SentryConnectionSpec, desired sentryv1alpha1.DestinationSpec) (string, string, string, error) {
 	switch {
-	case desired.Slack != nil && desired.PagerDuty == nil && desired.Telegram == nil:
+	case desired.Slack != nil && desired.PagerDuty == nil:
 		workspace := desired.Slack.Workspace
 		if workspace == "" || desired.Slack.Channel == "" {
 			return "slack", "", "", ErrInvalidDestination
 		}
 		return "slack", workspace, resolver.SlackChannelName(desired.Slack.Channel), nil
-	case desired.Slack == nil && desired.PagerDuty != nil && desired.Telegram == nil:
+	case desired.Slack == nil && desired.PagerDuty != nil:
 		account := desired.PagerDuty.Account
 		if account == "" || desired.PagerDuty.Service == "" {
 			return "pagerduty", "", "", ErrInvalidDestination
 		}
 		return "pagerduty", account, desired.PagerDuty.Service, nil
-	case desired.Slack == nil && desired.PagerDuty == nil && desired.Telegram != nil && desired.Telegram.Target != "":
-		return "telegram", "", desired.Telegram.Target, nil
 	default:
 		return "", "", "", ErrInvalidDestination
 	}
@@ -356,9 +323,7 @@ func selectorHash(kind, integration, resource string) string {
 	return hex.EncodeToString(digest[:])
 }
 
-// SelectorFingerprint returns the canonical kind and protected selector hash for one
-// destination. Registration writers use it to prove that the live destination still
-// matches the challenge without exposing external or Telegram identities in status.
+// SelectorFingerprint returns the canonical kind and protected selector hash for one destination.
 func SelectorFingerprint(connection sentryv1alpha1.SentryConnectionSpec, desired sentryv1alpha1.DestinationSpec) (string, string, error) {
 	kind, integration, resource, err := selector(connection, desired)
 	if err != nil {

@@ -24,15 +24,15 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	sentryv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/alerts"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
-	connectionruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/connection"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/destination"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/dsn"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/ownership"
-	projectruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/project"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
+	sentryv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/alerts"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/binding"
+	connectionruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/connection"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/destination"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/dsn"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/ownership"
+	projectruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/project"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/sentryapi"
 )
 
 func TestPolicyConsumerRolloutRequiresPolicyChildrenToBeReady(t *testing.T) {

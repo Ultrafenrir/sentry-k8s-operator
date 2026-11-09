@@ -1,189 +1,48 @@
-# Service-owner quick start
+# Quickstart
 
-This path requires exactly one namespaced `SentryProject` from the service owner. It does
-not install Sentry or create platform credentials.
+The chart installs a `SentryConnection`, but applications own their `SentryProject` and
+`SentryAlertPolicy` resources and should ship them in their own charts.
 
-## Platform prerequisites
-
-Before the service owner starts, a platform administrator must have:
-
-- installed the operator, CRDs, admission webhooks and cert-manager dependency;
-- created a Ready `SentryConnection` with a valid API token;
-- granted this namespace the readable team slug in `spec.access` with `allowCreate: true`;
-- verified that the target Sentry installation supports managed project creation with
-  default-rule suppression and an automatically available active client key.
-
-To manage alerts, the administrator must also set an explicit target contract on the
-connection. This is never inferred from a version string:
-
-```yaml
-spec:
-  compatibility:
-    alerts: legacy-24.7.1 # or modern-26.10.1
-```
-
-The last capability is deliberately fail-closed. Without evidence from the target Sentry,
-the resource reports `ManagedCreateUnsupported`; source fixtures are not live evidence.
-
-Sentry connections use verified HTTPS by default. A local development installation may
-explicitly permit plain HTTP:
-
-```yaml
-spec:
-  url: http://host.docker.internal:26101
-  transport:
-    allowInsecureHTTP: true
-```
-
-For self-signed HTTPS, use `transport.insecureSkipTLSVerify: true` instead. That keeps TLS
-encryption but disables certificate and hostname verification, and it is mutually exclusive
-with `credentials.caBundleSecretRef`. Prefer a CA bundle whenever one is available; neither
-insecure option should be used for production credentials.
-
-## Create the project
-
-Create the application namespace if the platform has not already provisioned it:
-
-```sh
-kubectl create namespace checkout-prod
-```
-
-Apply one resource. `team` is the readable Sentry team slug allowed by the platform policy;
-there is no external identifier to look up or copy. The managed Sentry project slug is
-always `metadata.name`. The operator derives the Sentry display name internally and adds
-the ownership marker required for safe recovery and guarded deletion.
+The connection access rule must allow the project namespace, owner, and Sentry team. An alert
+also requires an installed Slack or PagerDuty integration declared by the connection and granted
+by the access rule. This example uses Slack:
 
 ```yaml
 apiVersion: sentryconfiguration.io/v1alpha1
-kind: SentryProject
+kind: SentryAlertPolicy
 metadata:
-  name: checkout
-  namespace: checkout-prod
-spec:
-  sentry: company-sentry
-  project:
-    create:
-      team: payments
-```
-
-To grant additional Sentry teams access to the managed project, use exact team slugs that
-the same connection access rule allows. The primary create team is already attached and
-must not be repeated:
-
-```yaml
-spec:
-  grantAccess:
-    teams:
-      - platform-observability
-      - security
-```
-
-The operator manages only teams declared through `grantAccess`. It preserves unrelated
-teams, pins each managed team's Sentry identity in protected state, and revokes a previously
-managed team when it is removed from the list. User membership is intentionally outside the
-alpha API.
-
-To adopt a project that already has the same slug, use this `project.create` shape with an
-explicitly Active owned connection and set the connection's
-`projectManagement.unmanagedProjects` to `Adopt`. Do not switch to `project.use`: that selector
-is permanently read-only and intentionally forbids managed components.
-
-```sh
-kubectl apply -f sentryproject.yaml
-kubectl -n checkout-prod wait sentryproject/checkout \
-  --for=condition=Ready --timeout=5m
-kubectl -n checkout-prod get sentryproject/checkout
-kubectl -n checkout-prod get secret checkout-sentry
-```
-
-Do not print or commit the Secret data. A managed project publishes the public DSN under
-key `SENTRY_DSN` in `checkout-sentry` automatically; the CR does not need a `dsn` block.
-
-## Start the workload only when the Secret exists
-
-Reference the Secret as required input. Kubernetes keeps the container in
-`CreateContainerConfigError` until the operator has published it.
-
-```yaml
-env:
-  - name: SENTRY_DSN
-    valueFrom:
-      secretKeyRef:
-        name: checkout-sentry
-        key: SENTRY_DSN
-        optional: false
-```
-
-The complete Deployment form is in
-[`config/samples/workload_with_sentry_dsn.yaml`](../config/samples/workload_with_sentry_dsn.yaml).
-
-## Add typed alerts
-
-Alerts refer to canonical readable notification target names. Legacy 24.7.1 supports enabled
-first-seen, regression, event-count, and user-count rules; it deliberately rejects
-`enabled: false` because its DELETE operation is not a pause. The modern 26.10.1 profile
-supports event-count and user-count.
-
-```yaml
+  name: backend-alerts
 spec:
   sentry: company-sentry
   notificationTargets:
     slack:
       company-slack:
-        - payments-alerts
+        - backend-alerts
   alerts:
     new-errors:
       trigger: first-seen
-      notify: [slack/payments-alerts]
-    error-volume:
-      trigger: event-count
-      windowMinutes: 5
-      threshold: 200
-      notify: [slack/payments-alerts]
-    affected-users:
-      trigger: user-count
-      windowMinutes: 10
-      threshold: 50
-      notify: [slack/payments-alerts]
+      notify:
+        - slack/backend-alerts
+---
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryProject
+metadata:
+  name: checkout
+  namespace: payments
+spec:
+  sentry: company-sentry
+  alertPolicy: backend-alerts
+  project:
+    create:
+      team: payments
+  lifecycle:
+    onDelete: Retain
 ```
 
-Omitting `spec.alerts` leaves existing alerts unmanaged. Setting `spec.alerts: {}` removes
-only alerts whose protected ownership marker matches this project.
-
-## Diagnose without Sentry API knowledge
-
-Use the published conditions; they do not require reading protected bindings or Sentry
-response bodies:
+Apply the resources only after the connection reports `Ready=True`:
 
 ```sh
-kubectl -n checkout-prod describe sentryproject checkout
+kubectl get sentryconnection company-sentry
+kubectl apply -f policy-and-project.yaml
+kubectl -n payments get sentryproject checkout -o yaml
 ```
-
-- `ConnectionNotReady`: the platform connection or credential reload is not ready.
-- `AccessDenied`: the namespace/team is outside the platform-owned access rule.
-- `ManagedCreateUnsupported`: the target installation has not proved the safe create
-  capabilities; the platform administrator must resolve this.
-- `ReferenceNotFound` or `ReferenceAmbiguous`: correct or uniquely name the readable team
-  slug. Do not substitute an internal identifier.
-- `CreationOutcomeUnknown`: an interrupted create cannot be proven safe to retry; follow
-  the administrator recovery runbook rather than creating a second project.
-
-The complete condition/action reference is in
-[`docs/troubleshooting.md`](troubleshooting.md). The controller emits transition-only Events
-from the same redacted conditions, so status remains the source of truth for current
-resource health. The separate immutable mutation trail is available to authorized
-administrators through `kubectl sentry audit-export`; see
-[`docs/admin-recovery.txt`](admin-recovery.txt).
-
-Deleting this CR uses the default `Retain` policy: the Sentry project remains, while the
-operator removes its owned child configuration, verified remote ownership marker, and
-protected state. The Kubernetes-owned DSN Secret is removed with the CR. External project
-deletion requires an explicit guarded lifecycle choice and is intentionally not part of
-this quick start.
-
-## Evidence boundary
-
-`make verify-samples` validates this minimal shape through generated CRDs and live admission
-webhooks on envtest Kubernetes 1.35/1.36. `make verify-t04-kind` proves the required Secret
-startup behavior in kind. Project creation and DSN usability still require acceptance
-against the actual Sentry installation and are not claimed by those local tests.

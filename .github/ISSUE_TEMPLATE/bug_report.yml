@@ -30,7 +30,6 @@ body:
         - SentryAlertPolicy
         - Admission or CRD schema
         - Helm or Kustomize packaging
-        - Telegram registration or delivery-plane component
         - kubectl-sentry plugin
         - Metrics, events, audit, or recovery
         - Documentation

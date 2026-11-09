@@ -21,7 +21,7 @@ import (
 	"errors"
 	"fmt"
 
-	sentryv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
+	sentryv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
 )
 
 // ErrorKind is a stable authorization failure classification.
@@ -221,9 +221,6 @@ func authorizeDestinations(destinations map[string]sentryv1alpha1.DestinationSpe
 		if destination.PagerDuty != nil {
 			types++
 		}
-		if destination.Telegram != nil {
-			types++
-		}
 		if types != 1 {
 			return &Error{Kind: ErrorDestinationAccessDenied}
 		}
@@ -237,11 +234,6 @@ func authorizeDestinations(destinations map[string]sentryv1alpha1.DestinationSpe
 		case destination.PagerDuty != nil:
 			account := destination.PagerDuty.Account
 			allowed := rule.NotificationTargets != nil && contains(rule.NotificationTargets.PagerDutyAccounts, account) && catalogContains(integrations, "pagerduty", account)
-			if !allowed {
-				return &Error{Kind: ErrorDestinationAccessDenied}
-			}
-		case destination.Telegram != nil:
-			allowed := rule.NotificationTargets != nil && contains(rule.NotificationTargets.TelegramTargets, destination.Telegram.Target)
 			if !allowed {
 				return &Error{Kind: ErrorDestinationAccessDenied}
 			}

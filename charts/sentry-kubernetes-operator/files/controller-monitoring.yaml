@@ -51,19 +51,11 @@ metadata:
   namespace: sentry-kubernetes-operator-system
 spec:
   endpoints:
-  - bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
-    interval: 30s
+  - interval: 30s
     path: /metrics
-    port: https
-    scheme: https
+    port: http
+    scheme: http
     scrapeTimeout: 10s
-    tlsConfig:
-      ca:
-        secret:
-          key: ca.crt
-          name: metrics-server-cert
-      insecureSkipVerify: false
-      serverName: sentry-kubernetes-operator-controller-manager-metrics-service.sentry-kubernetes-operator-system.svc.cluster.local
   namespaceSelector:
     matchNames:
     - sentry-kubernetes-operator-system

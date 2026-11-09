@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
-	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -57,20 +56,6 @@ func TestDeploymentManifestContracts(t *testing.T) {
 	if pdb.Spec.MinAvailable == nil || pdb.Spec.MinAvailable.IntVal != 1 {
 		t.Fatalf("PDB minAvailable = %v, want 1", pdb.Spec.MinAvailable)
 	}
-
-	networkPolicy := &networkingv1.NetworkPolicy{}
-	convertManifestObject(t, readManifestObjects(t, "../../config/network-policy/allow-webhook-traffic.yaml")[0], networkPolicy)
-	if len(networkPolicy.Spec.PolicyTypes) != 1 || networkPolicy.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
-		t.Fatalf("network policy types = %v, want [Ingress]", networkPolicy.Spec.PolicyTypes)
-	}
-	for _, ingress := range networkPolicy.Spec.Ingress {
-		for _, port := range ingress.Ports {
-			if port.Port != nil && port.Port.IntVal == 9443 {
-				return
-			}
-		}
-	}
-	t.Fatal("webhook network policy must allow pod port 9443")
 }
 
 func readManifestObjects(t *testing.T, path string) []unstructured.Unstructured {

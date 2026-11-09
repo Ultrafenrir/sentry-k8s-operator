@@ -20,8 +20,8 @@ import (
 	"errors"
 	"testing"
 
-	sentryv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
-	codemappingruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/codemapping"
+	sentryv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
+	codemappingruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/codemapping"
 )
 
 func TestCodeMappingDesiredResolvesOnlyConnectionOwnedAliases(t *testing.T) {

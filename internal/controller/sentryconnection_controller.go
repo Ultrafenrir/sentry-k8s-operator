@@ -33,8 +33,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	sentryconfigurationv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
-	connectionruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/connection"
+	sentryconfigurationv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
+	connectionruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/connection"
 )
 
 // SentryConnectionReconciler reconciles a SentryConnection object

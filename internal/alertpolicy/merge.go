@@ -16,8 +16,8 @@ import (
 	"maps"
 	"slices"
 
-	sentryv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
+	sentryv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/binding"
 )
 
 var (
@@ -139,7 +139,6 @@ func mergeTargets(first, second *sentryv1alpha1.NotificationTargets) *sentryv1al
 	if second != nil {
 		result.Slack = copyProvider(result.Slack, second.Slack)
 		result.PagerDuty = copyProvider(result.PagerDuty, second.PagerDuty)
-		result.Telegram = append(result.Telegram, second.Telegram...)
 	}
 	return result
 }
@@ -148,7 +147,7 @@ func cloneTargets(input *sentryv1alpha1.NotificationTargets) *sentryv1alpha1.Not
 	if input == nil {
 		return nil
 	}
-	result := &sentryv1alpha1.NotificationTargets{Slack: map[string][]string{}, PagerDuty: map[string][]string{}, Telegram: slices.Clone(input.Telegram)}
+	result := &sentryv1alpha1.NotificationTargets{Slack: map[string][]string{}, PagerDuty: map[string][]string{}}
 	for key, value := range input.Slack {
 		result.Slack[key] = slices.Clone(value)
 	}

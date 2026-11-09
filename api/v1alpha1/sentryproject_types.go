@@ -581,14 +581,7 @@ type PagerDutyDestination struct {
 	Service string `json:"service"`
 }
 
-// TelegramDestination selects a logical Telegram target; numeric IDs stay internal.
-type TelegramDestination struct {
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=100
-	Target string `json:"target"`
-}
-
-// +kubebuilder:validation:XValidation:rule="(has(self.slack) && !has(self.pagerDuty) && !has(self.telegram)) || (!has(self.slack) && has(self.pagerDuty) && !has(self.telegram)) || (!has(self.slack) && !has(self.pagerDuty) && has(self.telegram))",message="exactly one destination type is required"
+// +kubebuilder:validation:XValidation:rule="(has(self.slack) && !has(self.pagerDuty)) || (!has(self.slack) && has(self.pagerDuty))",message="exactly one destination type is required"
 // DestinationSpec contains exactly one adapter-neutral destination selector.
 type DestinationSpec struct {
 	// +optional
@@ -596,9 +589,6 @@ type DestinationSpec struct {
 
 	// +optional
 	PagerDuty *PagerDutyDestination `json:"pagerDuty,omitempty"`
-
-	// +optional
-	Telegram *TelegramDestination `json:"telegram,omitempty"`
 }
 
 // NotificationTargets selects readable resources inside platform-declared integrations.
@@ -614,12 +604,6 @@ type NotificationTargets struct {
 	// +kubebuilder:validation:MaxProperties=20
 	// +optional
 	PagerDuty map[string][]string `json:"pagerDuty,omitempty"`
-
-	// Telegram contains registered readable targets.
-	// +kubebuilder:validation:MaxItems=100
-	// +listType=set
-	// +optional
-	Telegram []string `json:"telegram,omitempty"`
 }
 
 // Flatten returns canonical readable references without inventing local identifiers.
@@ -649,15 +633,6 @@ func (t *NotificationTargets) Flatten() (map[string]DestinationSpec, error) {
 			seenPagerDuty[service] = true
 			result["pagerDuty/"+service] = DestinationSpec{PagerDuty: &PagerDutyDestination{Account: account, Service: service}}
 		}
-	}
-	seenTelegram := map[string]bool{}
-	for _, target := range t.Telegram {
-		target = strings.TrimSpace(target)
-		if target == "" || seenTelegram[target] {
-			return nil, ErrAmbiguousNotificationTarget
-		}
-		seenTelegram[target] = true
-		result["telegram/"+target] = DestinationSpec{Telegram: &TelegramDestination{Target: target}}
 	}
 	return result, nil
 }
@@ -705,8 +680,6 @@ type AlertSpec struct {
 	// +kubebuilder:validation:MaxItems=20
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=211
-	// Telegram destinations are registration-only until an authenticated alert-firing source
-	// can preserve trigger semantics end to end.
 	// +kubebuilder:validation:items:Pattern=`^(slack|pagerDuty)/[^/[:space:]][^/]*$`
 	// +listType=set
 	Notify []string `json:"notify"`
@@ -876,7 +849,7 @@ type SentryProjectStatus struct {
 	CodeMappings map[string]CodeMappingStatus `json:"codeMappings,omitempty"`
 
 	// NotificationTargets exposes only local names and safe lifecycle state. External
-	// integration, channel, service and Telegram identities remain protected.
+	// integration, channel, and service identities remain protected.
 	// +mapType=granular
 	// +optional
 	NotificationTargets map[string]DestinationStatus `json:"notificationTargets,omitempty"`
@@ -925,7 +898,7 @@ type CodeMappingStatus struct {
 
 // DestinationStatus is the safe status for one canonical notification target key.
 type DestinationStatus struct {
-	// +kubebuilder:validation:Enum=slack;pagerduty;telegram
+	// +kubebuilder:validation:Enum=slack;pagerduty
 	Type string `json:"type"`
 
 	// +kubebuilder:validation:MaxLength=64
@@ -933,11 +906,6 @@ type DestinationStatus struct {
 
 	// +kubebuilder:validation:MaxLength=64
 	Reason string `json:"reason"`
-
-	// RegistrationCommit is a short-lived, non-secret fence used by the
-	// authenticated Telegram registration writer.
-	// +optional
-	RegistrationCommit *RegistrationCommit `json:"registrationCommit,omitempty"`
 }
 
 // AlertStatus is the safe status of one local alert key.

@@ -109,12 +109,6 @@ spec:
                           maxItems: 100
                           type: array
                           x-kubernetes-list-type: set
-                        telegramTargets:
-                          items:
-                            type: string
-                          maxItems: 100
-                          type: array
-                          x-kubernetes-list-type: set
                       type: object
                     owner:
                       maxLength: 63
@@ -324,46 +318,6 @@ spec:
                         - name
                         x-kubernetes-list-type: map
                     type: object
-                  telegram:
-                    description: TelegramIntegration configures the platform-owned
-                      Telegram delivery route.
-                    properties:
-                      botTokenSecretRef:
-                        description: |-
-                          SecretKeyReference identifies one key in a Secret. The containing resource determines
-                          the lookup namespace: connection credentials use the fixed operator namespace, while
-                          namespaced project children use their SentryProject namespace. Namespace is never
-                          user-configurable.
-                        properties:
-                          key:
-                            maxLength: 253
-                            minLength: 1
-                            type: string
-                          name:
-                            maxLength: 253
-                            minLength: 1
-                            type: string
-                        required:
-                        - key
-                        - name
-                        type: object
-                      receiverURL:
-                        maxLength: 2048
-                        minLength: 9
-                        pattern: ^https://[^[:space:]]+$
-                        type: string
-                      serviceHookRevision:
-                        default: 1
-                        description: |-
-                          ServiceHookRevision is a platform-controlled monotonic trigger for replacing the
-                          Sentry-generated hook secret without placing that secret in the public API.
-                        format: int64
-                        minimum: 1
-                        type: integer
-                    required:
-                    - botTokenSecretRef
-                    - receiverURL
-                    type: object
                 type: object
               organization:
                 maxLength: 64
@@ -541,26 +495,6 @@ spec:
               region:
                 maxLength: 63
                 type: string
-              registrationCommit:
-                description: RegistrationCommit is a non-secret, short-lived policy
-                  fence written by the system.
-                properties:
-                  expiresAt:
-                    format: date-time
-                    type: string
-                  operationHash:
-                    maxLength: 64
-                    minLength: 64
-                    pattern: ^[0-9a-f]{64}$
-                    type: string
-                  policyGeneration:
-                    format: int64
-                    type: integer
-                required:
-                - expiresAt
-                - operationHash
-                - policyGeneration
-                type: object
               serverVersion:
                 maxLength: 64
                 type: string

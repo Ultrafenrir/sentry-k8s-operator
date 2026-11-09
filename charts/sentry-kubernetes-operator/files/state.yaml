@@ -15,39 +15,6 @@ metadata:
   annotations:
     helm.sh/resource-policy: keep
   labels:
-    app.kubernetes.io/component: protected-delivery-queue
-    app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: sentry-kubernetes-operator
-  name: sentry-kubernetes-operator-delivery
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  annotations:
-    helm.sh/resource-policy: keep
-  labels:
-    app.kubernetes.io/component: protected-hook-sources
-    app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: sentry-kubernetes-operator
-  name: sentry-kubernetes-operator-hook-sources
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  annotations:
-    helm.sh/resource-policy: keep
-  labels:
-    app.kubernetes.io/component: protected-routing
-    app.kubernetes.io/managed-by: kustomize
-    app.kubernetes.io/name: sentry-kubernetes-operator
-  name: sentry-kubernetes-operator-routing
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  annotations:
-    helm.sh/resource-policy: keep
-  labels:
     app.kubernetes.io/component: protected-state
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: sentry-kubernetes-operator
@@ -85,40 +52,6 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: sentry-kubernetes-operator-protected-hook-source-manager
-  namespace: sentry-kubernetes-operator-hook-sources
-rules:
-- apiGroups:
-  - ""
-  resources:
-  - secrets
-  verbs:
-  - get
-  - list
-  - watch
-  - create
-  - update
-  - patch
-  - delete
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: sentry-kubernetes-operator-protected-routing-manager
-  namespace: sentry-kubernetes-operator-routing
-rules:
-- apiGroups:
-  - ""
-  resources:
-  - secrets
-  verbs:
-  - get
-  - create
-  - delete
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
   name: sentry-kubernetes-operator-protected-state-manager
   namespace: sentry-kubernetes-operator-state
 rules:
@@ -152,34 +85,6 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: sentry-kubernetes-operator-protected-hook-source-manager-rolebinding
-  namespace: sentry-kubernetes-operator-hook-sources
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: sentry-kubernetes-operator-protected-hook-source-manager
-subjects:
-- kind: ServiceAccount
-  name: sentry-kubernetes-operator-controller-manager
-  namespace: sentry-kubernetes-operator-system
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: sentry-kubernetes-operator-protected-routing-manager-rolebinding
-  namespace: sentry-kubernetes-operator-routing
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: sentry-kubernetes-operator-protected-routing-manager
-subjects:
-- kind: ServiceAccount
-  name: sentry-kubernetes-operator-controller-manager
-  namespace: sentry-kubernetes-operator-system
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
   name: sentry-kubernetes-operator-protected-state-manager-rolebinding
   namespace: sentry-kubernetes-operator-state
 roleRef:
@@ -190,41 +95,3 @@ subjects:
 - kind: ServiceAccount
   name: sentry-kubernetes-operator-controller-manager
   namespace: sentry-kubernetes-operator-system
----
-apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingAdmissionPolicy
-metadata:
-  name: sentry-kubernetes-operator-immutable-audit
-spec:
-  failurePolicy: Fail
-  matchConditions:
-  - expression: has(oldObject.metadata.labels) && oldObject.metadata.labels['sentryconfiguration.io/record-type']
-      == 'mutation-audit'
-    name: immutable-audit-record
-  matchConstraints:
-    resourceRules:
-    - apiGroups:
-      - ""
-      apiVersions:
-      - v1
-      operations:
-      - UPDATE
-      resources:
-      - secrets
-      scope: Namespaced
-  validations:
-  - expression: "false"
-    message: mutation audit records are append-only and cannot be updated
----
-apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingAdmissionPolicyBinding
-metadata:
-  name: sentry-kubernetes-operator-immutable-audit
-spec:
-  matchResources:
-    namespaceSelector:
-      matchLabels:
-        app.kubernetes.io/component: protected-audit
-  policyName: sentry-kubernetes-operator-immutable-audit
-  validationActions:
-  - Deny

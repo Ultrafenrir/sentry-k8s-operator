@@ -23,7 +23,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/binding"
 )
 
 const LegacyCombinedAdapter = "legacy-alerts-24.7.1"

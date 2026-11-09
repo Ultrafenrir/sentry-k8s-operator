@@ -27,8 +27,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/binding"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/sentryapi"
 )
 
 func TestKeyReaderCollectsEverySentryPage(t *testing.T) {

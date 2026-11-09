@@ -26,8 +26,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/binding"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/sentryapi"
 )
 
 const (
@@ -348,12 +348,6 @@ func (a *LegacyHTTPAdapter) destinationActions(adapter string, names []string) (
 		destination, ok := a.Destinations[name]
 		if !ok || destination.State != "Active" {
 			return nil, ErrLegacyDestinationUnsupported
-		}
-		if destination.Kind == "telegram" {
-			if destination.Telegram == nil || destination.Telegram.RouteKey == "" || destination.Telegram.Target == nil || destination.Telegram.RouteRevoked {
-				return nil, ErrLegacyDestinationUnsupported
-			}
-			continue
 		}
 		if !numericIdentityPattern.MatchString(destination.IntegrationIdentity) || destination.ResourceIdentity == "" {
 			return nil, ErrLegacyDestinationUnsupported

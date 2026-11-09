@@ -24,7 +24,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/sentryapi"
 )
 
 func TestHTTPAdapterUsesPublicProjectTeamEndpoints(t *testing.T) {

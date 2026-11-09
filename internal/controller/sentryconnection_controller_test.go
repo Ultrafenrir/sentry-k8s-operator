@@ -33,8 +33,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	sentryconfigurationv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
-	connectionruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/connection"
+	sentryconfigurationv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
+	connectionruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/connection"
 )
 
 var _ = Describe("SentryConnection Controller", func() {

@@ -1,6 +1,6 @@
 apiVersion: v2
 name: sentry-kubernetes-operator
-description: Alpha Sentry configuration operator with optional isolated Telegram components
+description: Kubernetes operator for Sentry projects and alert policies
 type: application
 version: 0.1.0-alpha.1
 appVersion: "0.1.0-alpha.1"

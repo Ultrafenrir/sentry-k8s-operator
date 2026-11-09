@@ -15,16 +15,8 @@ spec:
     matchNames:
     - sentry-kubernetes-operator-system
   endpoints:
-  - port: https
+  - port: http
     path: /metrics
-    scheme: https
+    scheme: http
     interval: 30s
     scrapeTimeout: 10s
-    bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
-    tlsConfig:
-      serverName: sentry-kubernetes-operator-controller-manager-metrics-service.sentry-kubernetes-operator-system.svc.cluster.local
-      insecureSkipVerify: false
-      ca:
-        secret:
-          name: metrics-server-cert
-          key: ca.crt

@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -32,8 +31,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/ownership"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/ownership"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/sentryapi"
 )
 
 const (
@@ -425,9 +424,6 @@ func validateBinding(binding ProjectBinding) error {
 	if err := validateAlertBindings(binding); err != nil {
 		return err
 	}
-	if err := validateServiceHookBinding(binding); err != nil {
-		return err
-	}
 	if err := validateClientKeyBindings(binding); err != nil {
 		return err
 	}
@@ -530,59 +526,6 @@ func validateClientKeyBindings(project ProjectBinding) error {
 	return nil
 }
 
-func validateServiceHookBinding(project ProjectBinding) error {
-	value := project.ServiceHook
-	if value == nil {
-		return nil
-	}
-	if project.Origin != OriginManaged || value.SourceBindingKey == "" || value.EndpointURL == "" || value.Revision < 1 {
-		return ErrInvalidRecord
-	}
-	if digest, err := hex.DecodeString(value.SourceBindingKey); err != nil || len(digest) != 32 {
-		return ErrInvalidRecord
-	}
-	parsed, err := url.Parse(value.EndpointURL)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Path != "/events/"+value.SourceBindingKey || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return ErrInvalidRecord
-	}
-	if value.ExternalIdentity == "" {
-		if value.SecretHash != "" || value.Pending == nil || value.Pending.Kind != "CreateServiceHook" || value.ReplacementIdentity != "" || value.TargetEndpointURL != "" || value.TargetRevision != 0 {
-			return ErrInvalidRecord
-		}
-		return nil
-	}
-	if len(value.ExternalIdentity) > 512 || strings.ContainsAny(value.ExternalIdentity, "\r\n\x00") {
-		return ErrInvalidRecord
-	}
-	if value.Pending == nil {
-		if value.ReplacementIdentity != "" || value.TargetEndpointURL != "" || value.TargetRevision != 0 {
-			return ErrInvalidRecord
-		}
-	} else {
-		switch value.Pending.Kind {
-		case "DeleteServiceHook":
-			if value.ReplacementIdentity != "" || value.TargetEndpointURL != "" || value.TargetRevision != 0 {
-				return ErrInvalidRecord
-			}
-		case "RotateServiceHook":
-			if value.TargetRevision <= value.Revision || value.TargetEndpointURL == "" || !validServiceHookBindingEndpoint(value.TargetEndpointURL, value.SourceBindingKey) || len(value.ReplacementIdentity) > 512 || strings.ContainsAny(value.ReplacementIdentity, "\r\n\x00") {
-				return ErrInvalidRecord
-			}
-		default:
-			return ErrInvalidRecord
-		}
-	}
-	if digest, err := hex.DecodeString(value.SecretHash); err != nil || len(digest) != 32 {
-		return ErrInvalidRecord
-	}
-	return nil
-}
-
-func validServiceHookBindingEndpoint(value, sourceBindingKey string) bool {
-	parsed, err := url.Parse(value)
-	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.Path == "/events/"+sourceBindingKey && parsed.RawPath == "" && parsed.RawQuery == "" && parsed.Fragment == ""
-}
-
 // ValidateProjectBinding validates decoded protected state without performing a Kubernetes
 // read or write. Backup and recovery tooling uses it to reject checksum-valid corruption.
 func ValidateProjectBinding(value ProjectBinding) error {
@@ -620,13 +563,13 @@ func validateAlertBindings(project ProjectBinding) error {
 }
 
 // ValidNotificationTargetKey validates the canonical provider/readable-name key used by
-// protected bindings and registration requests.
+// protected bindings.
 func ValidNotificationTargetKey(value string) bool {
 	provider, name, found := strings.Cut(value, "/")
 	if !found || name == "" || len(value) > 211 || strings.TrimSpace(name) != name || strings.ContainsAny(name, "/\r\n\x00") {
 		return false
 	}
-	return provider == "slack" || provider == "pagerDuty" || provider == "telegram"
+	return provider == "slack" || provider == "pagerDuty"
 }
 
 func validateClaim(claim ManagerClaim) error {

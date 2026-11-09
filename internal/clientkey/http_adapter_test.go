@@ -26,7 +26,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/sentryapi"
 )
 
 func TestHTTPAdapterUsesPublicLifecycleContractAndDropsSecrets(t *testing.T) {

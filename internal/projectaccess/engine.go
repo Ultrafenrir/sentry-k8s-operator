@@ -26,7 +26,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/validation"
 
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/audit"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/audit"
 )
 
 var (

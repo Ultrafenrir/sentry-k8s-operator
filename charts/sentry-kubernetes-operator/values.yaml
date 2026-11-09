@@ -1,38 +1,23 @@
-# Production mode requires image.digest and renders an immutable image reference.
-production: false
-
 image:
-  # Repository must not include a tag or digest.
-  repository: example.com/sentry-kubernetes-operator
-  # Used for development renders when digest is empty.
+  repository: ultrafenrir/sentry-k8s-operator
   tag: dev
-  # Required in production; use the form sha256:<64 lowercase hexadecimal characters>.
-  digest: ""
   pullPolicy: IfNotPresent
 
-registration:
-  # Opt in to isolated registration/receiver/queue/worker components. This does not enable
-  # Telegram alert-source wiring.
-  enabled: false
-
-registrationGateway:
-  # Render two Gateway API v1 TLSRoutes for an existing TLS/Passthrough listener.
-  enabled: false
-  gatewayName: ""
-  gatewayNamespace: ""
-  listenerName: ""
-  telegramHostname: ""
-  sentryHostname: ""
-
-registrationMonitoring:
-  # Requires registration and Prometheus Operator CRDs.
-  enabled: false
+# The chart always creates this cluster-scoped connection. Create the referenced Secret
+# in sentry-kubernetes-operator-system before or immediately after installing the chart.
+sentryConnection:
+  name: default
+  spec:
+    url: https://sentry.example.com
+    organization: example
+    credentials:
+      tokenSecretRef:
+        name: sentry-api-token
+        key: token
+    projectManagement:
+      unmanagedProjects: Reject
+    access: []
 
 controllerMonitoring:
-  # Requires Prometheus Operator CRDs.
+  # Requires Prometheus Operator CRDs. Metrics are served over plain HTTP.
   enabled: false
-  access:
-    # Bind one exact Prometheus ServiceAccount to the authenticated metrics endpoint.
-    enabled: false
-    serviceAccountName: ""
-    serviceAccountNamespace: ""

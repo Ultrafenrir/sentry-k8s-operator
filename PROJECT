@@ -7,7 +7,7 @@ domain: io
 layout:
 - go.kubebuilder.io/v4
 projectName: sentry-kubernetes-operator
-repo: github.com/artemantipov/sentry-kubernetes-operator
+repo: github.com/Ultrafenrir/sentry-kubernetes-operator
 resources:
 - api:
     crdVersion: v1
@@ -15,12 +15,8 @@ resources:
   domain: io
   group: sentryconfiguration
   kind: SentryConnection
-  path: github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1
+  path: github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1
   version: v1alpha1
-  webhooks:
-    defaulting: true
-    validation: true
-    webhookVersion: v1
 - api:
     crdVersion: v1
     namespaced: true
@@ -28,10 +24,6 @@ resources:
   domain: io
   group: sentryconfiguration
   kind: SentryProject
-  path: github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1
+  path: github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1
   version: v1alpha1
-  webhooks:
-    defaulting: true
-    validation: true
-    webhookVersion: v1
 version: "3"

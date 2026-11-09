@@ -10,7 +10,7 @@ package destination
 import (
 	"context"
 
-	sentryv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
+	sentryv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
 )
 
 // AliasCatalog exposes only platform-declared local integration names while preserving the

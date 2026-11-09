@@ -21,8 +21,8 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/ownership"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/ownership"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/sentryapi"
 )
 
 // HTTPAdapter implements the source-confirmed public project endpoints.

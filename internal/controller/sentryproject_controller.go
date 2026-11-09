@@ -36,27 +36,25 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	sentryconfigurationv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
-	alertpolicyruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/alertpolicy"
-	alertsruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/alerts"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/audit"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
-	clientkeyruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/clientkey"
-	codemappingruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/codemapping"
-	connectionruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/connection"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/destination"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/dsn"
-	issueownershipruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/issueownership"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/ownership"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/policy"
-	projectruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/project"
-	projectaccessruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/projectaccess"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/registration"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/resolver"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryhook"
-	settingsruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/settings"
-	symbolsourceruntime "github.com/artemantipov/sentry-kubernetes-operator/internal/symbolsource"
+	sentryconfigurationv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
+	alertpolicyruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/alertpolicy"
+	alertsruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/alerts"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/audit"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/binding"
+	clientkeyruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/clientkey"
+	codemappingruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/codemapping"
+	connectionruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/connection"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/destination"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/dsn"
+	issueownershipruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/issueownership"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/ownership"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/policy"
+	projectruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/project"
+	projectaccessruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/projectaccess"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/resolver"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/sentryapi"
+	settingsruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/settings"
+	symbolsourceruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/symbolsource"
 )
 
 const sentryProjectFinalizer = "sentryconfiguration.io/project-protection"
@@ -81,8 +79,6 @@ type DestinationCatalogFactory func(*sentryapi.Client) destination.Catalog
 
 type AlertAdapterFactory func(*sentryapi.Client, map[string]binding.DestinationBinding) alertsruntime.Adapter
 
-type ServiceHookAdapterFactory func(*sentryapi.Client) sentryhook.ServiceHookAdapter
-
 // SentryProjectReconciler reconciles a SentryProject object.
 type SentryProjectReconciler struct {
 	client.Client
@@ -103,18 +99,10 @@ type SentryProjectReconciler struct {
 	NewProjectAccessAdapter  ProjectAccessAdapterFactory
 	NewDestinationCatalog    DestinationCatalogFactory
 	NewAlertAdapter          AlertAdapterFactory
-	NewServiceHookAdapter    ServiceHookAdapterFactory
-	HookSources              sentryhook.SourcePublicationStore
-	HookVerifier             sentryhook.LifecycleVerifierStore
-	// RegistrationRecovery uses a direct uncached client. It completes a durable
-	// Telegram publish/fence release before any Sentry API dependency is needed.
-	RegistrationRecovery *registration.Service
-	RegistrationRoutes   registration.RouteManager
-	RegistrationIndexes  *registration.ChallengeIndexStore
-	Recorder             events.EventRecorder
-	Metrics              *Metrics
-	Audit                audit.Sink
-	DestinationAudit     audit.Sink
+	Recorder                 events.EventRecorder
+	Metrics                  *Metrics
+	Audit                    audit.Sink
+	DestinationAudit         audit.Sink
 }
 
 const projectDriftReconcileInterval = 30 * time.Second
@@ -139,15 +127,6 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if r.Registry == nil || r.Bindings == nil || r.ManagedBy == "" {
 		return ctrl.Result{}, fmt.Errorf("project runtime is not configured")
 	}
-	if attempted, recoveryErr := r.resumePendingRegistration(ctx, resource); attempted {
-		if recoveryErr != nil {
-			return ctrl.Result{RequeueAfter: jitterDuration(5 * time.Second)}, nil
-		}
-		// Let the Secret informer observe the direct-client CAS before ordinary
-		// destination reconciliation reads or writes the same binding.
-		return ctrl.Result{Requeue: true}, nil
-	}
-
 	if !resource.DeletionTimestamp.IsZero() {
 		if !containsString(resource.Finalizers, sentryProjectFinalizer) {
 			return ctrl.Result{}, nil
@@ -231,8 +210,7 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		destinationResult.PolicyErr = errors.Join(destinationResult.PolicyErr, err)
 	}
 	destinationErr := destinationResult.Err()
-	hookErr := r.reconcileServiceHook(ctx, effectiveResource, connection, apiClient)
-	alertErr := errors.Join(alertResult.Err(), hookErr)
+	alertErr := alertResult.Err()
 	base := statusBase
 	resource.Status.ObservedGeneration = resource.Generation
 	resource.Status.Origin = string(result.Origin)
@@ -366,32 +344,6 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{RequeueAfter: jitterDuration(projectDriftReconcileInterval)}, nil
 }
 
-func (r *SentryProjectReconciler) resumePendingRegistration(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject) (bool, error) {
-	service := r.RegistrationRecovery
-	if service == nil || service.Store == nil || resource == nil || resource.UID == "" {
-		return false, nil
-	}
-	record, err := service.Store.GetBinding(ctx, string(resource.UID))
-	if errors.Is(err, binding.ErrNotFound) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	attempted := false
-	for name, destinationBinding := range record.Binding.Destinations {
-		if destinationBinding.Telegram == nil ||
-			(destinationBinding.Telegram.Phase != registration.PhasePendingPublish && destinationBinding.Telegram.Phase != registration.PhasePendingFenceRelease) {
-			continue
-		}
-		attempted = true
-		if err := service.Resume(ctx, string(resource.UID), name); err != nil {
-			return true, err
-		}
-	}
-	return attempted, nil
-}
-
 func dsnCondition(applicable bool, phase dsn.Phase, externalNameChanged bool, err error) (metav1.ConditionStatus, string, string) {
 	if !applicable {
 		return metav1.ConditionUnknown, "NotApplicable", "DSN publication was not requested for this read-only project."
@@ -517,9 +469,6 @@ func destinationCondition(applicable bool, result destination.Result, err error)
 		return metav1.ConditionFalse, reasonForError(err), "One or more destinations could not be safely resolved; pinned identities were preserved."
 	}
 	for _, status := range result.Statuses {
-		if status.State == destination.StateRegistrationRequired {
-			return metav1.ConditionFalse, "TelegramRegistrationRequired", "Telegram destination registration is required."
-		}
 		if status.State == destination.StateCleanupPending {
 			return metav1.ConditionFalse, "DestinationCleanupPending", "Removed destination routing cleanup is pending."
 		}
@@ -1099,10 +1048,6 @@ func (r *SentryProjectReconciler) reconcileDestinations(ctx context.Context, res
 		result.PolicyErr = err
 		return result
 	}
-	if err := r.reconcileTelegramRoutes(ctx, resource, record.Binding.Destinations, &result, nil); err != nil {
-		result.PolicyErr = err
-		return result
-	}
 	next := record.Binding
 	next.Destinations = result.Bindings
 	next.AlertPolicy = appliedPolicyBinding(application)
@@ -1309,8 +1254,7 @@ func destinationCleanupKeys(result destination.Result) []string {
 
 // finalizeDestinationCleanup releases protected destination identities only after
 // the alert engine has proven that no desired or still-bound Sentry alert refers
-// to them. Telegram additionally requires a verified route revoke before the
-// protected binding can be removed.
+// to them.
 func (r *SentryProjectReconciler) finalizeDestinationCleanup(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, result *destination.Result, releasable []string) error {
 	if result == nil || len(releasable) == 0 {
 		return nil
@@ -1330,19 +1274,11 @@ func (r *SentryProjectReconciler) finalizeDestinationCleanup(ctx context.Context
 	if err := r.destinationAuthorizer(resource, connection, record.Binding, *result)(ctx); err != nil {
 		return err
 	}
-	if err := r.reconcileTelegramRoutes(ctx, resource, record.Binding.Destinations, result, allowed); err != nil {
-		return err
-	}
-
 	nextDestinations := make(map[string]binding.DestinationBinding, len(result.Bindings))
 	for name, current := range result.Bindings {
 		nextDestinations[name] = current
 	}
 	for _, name := range releasable {
-		current := nextDestinations[name]
-		if current.Kind == "telegram" && (current.Telegram == nil || !current.Telegram.RouteRevoked) {
-			return registration.ErrPublishPending
-		}
 		delete(nextDestinations, name)
 	}
 	next := record.Binding
@@ -1353,118 +1289,6 @@ func (r *SentryProjectReconciler) finalizeDestinationCleanup(ctx context.Context
 	for _, name := range releasable {
 		delete(result.Bindings, name)
 		delete(result.Statuses, name)
-	}
-	return nil
-}
-
-func (r *SentryProjectReconciler) reconcileTelegramRoutes(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, current map[string]binding.DestinationBinding, result *destination.Result, cleanupAllowed map[string]bool) error {
-	if result == nil {
-		return nil
-	}
-	for name, previous := range current {
-		if previous.Kind != "telegram" || previous.Telegram == nil || previous.Telegram.Challenge == nil {
-			continue
-		}
-		next, found := result.Bindings[name]
-		if found && next.Telegram != nil && next.Telegram.Challenge != nil && next.Telegram.Challenge.CodeHash == previous.Telegram.Challenge.CodeHash && next.State == destination.StateRegistrationRequired {
-			continue
-		}
-		if r.RegistrationIndexes == nil {
-			return registration.ErrChallengeIndexInvalid
-		}
-		challenge := previous.Telegram.Challenge
-		index := registration.ChallengeIndex{
-			Version: binding.CurrentVersion, CodeHash: challenge.CodeHash, ProjectUID: challenge.Project.UID,
-			Destination: challenge.Destination, ExpiresAt: challenge.ExpiresAt,
-		}
-		if err := r.RegistrationIndexes.DeleteExact(ctx, index); err != nil {
-			return err
-		}
-		if found && next.Telegram != nil && next.Telegram.Challenge != nil && next.Telegram.Challenge.CodeHash == challenge.CodeHash {
-			telegram := cloneTelegramBinding(next.Telegram)
-			telegram.Challenge = nil
-			next.Telegram = telegram
-			result.Bindings[name] = next
-		}
-	}
-	for name, next := range result.Bindings {
-		if next.Kind != "telegram" || next.Telegram == nil {
-			continue
-		}
-		telegram := cloneTelegramBinding(next.Telegram)
-		switch next.State {
-		case destination.StateActive:
-			if telegram.RouteKey == "" || telegram.Target == nil || telegram.RouteRevoked || r.RegistrationRoutes == nil {
-				return registration.ErrRouteIdentityLost
-			}
-			// Idempotent verification repairs the crash window where the route
-			// mutation succeeded but the protected binding CAS did not.
-			if err := r.RegistrationRoutes.PublishTelegramRoute(ctx, telegram.RouteKey, *telegram.Target); err != nil {
-				return err
-			}
-		case destination.StateRevoked, destination.StateCleanupPending:
-			if next.State == destination.StateCleanupPending && !cleanupAllowed[name] {
-				continue
-			}
-			if telegram.RouteRevoked {
-				continue
-			}
-			if telegram.RouteKey == "" {
-				if telegram.Target != nil {
-					return registration.ErrRouteIdentityLost
-				}
-				continue
-			}
-			if r.RegistrationRoutes == nil {
-				return registration.ErrPublishPending
-			}
-			if telegram.Target == nil {
-				return registration.ErrRouteIdentityLost
-			}
-			if observer, ok := r.RegistrationRoutes.(registration.RouteObserver); ok {
-				observed, err := observer.GetTelegramRoute(ctx, telegram.RouteKey)
-				if apierrors.IsNotFound(err) {
-					if err := r.recordDestinationCleanupAudit(ctx, resource, name, audit.OutcomeRecovered, audit.ReasonResultRecovered); err != nil {
-						return err
-					}
-					telegram.RouteRevoked = true
-					next.Telegram = telegram
-					result.Bindings[name] = next
-					continue
-				}
-				if err != nil {
-					return err
-				}
-				if observed != *telegram.Target {
-					return registration.ErrRouteConflict
-				}
-			}
-			if err := r.recordDestinationCleanupAudit(ctx, resource, name, audit.OutcomeStarted, audit.ReasonCleanupAuthorized); err != nil {
-				return err
-			}
-			if err := r.RegistrationRoutes.RevokeTelegramRoute(ctx, telegram.RouteKey, *telegram.Target); err != nil {
-				return errors.Join(err, r.recordDestinationCleanupAudit(ctx, resource, name, audit.OutcomeFailed, audit.ReasonApply))
-			}
-			if err := r.recordDestinationCleanupAudit(ctx, resource, name, audit.OutcomeSucceeded, audit.ReasonMutationVerified); err != nil {
-				return err
-			}
-			telegram.RouteRevoked = true
-			next.Telegram = telegram
-			result.Bindings[name] = next
-		case destination.StateRestorePending:
-			if telegram.RouteKey == "" || telegram.Target == nil || !telegram.RouteRevoked || r.RegistrationRoutes == nil {
-				return registration.ErrPublishPending
-			}
-			if err := r.RegistrationRoutes.PublishTelegramRoute(ctx, telegram.RouteKey, *telegram.Target); err != nil {
-				return err
-			}
-			telegram.RouteRevoked = false
-			next.Telegram = telegram
-			next.State = destination.StateActive
-			next.Reason = "TelegramReady"
-			result.Bindings[name] = next
-			result.Statuses[name] = destination.Status{Kind: "telegram", State: destination.StateActive, Reason: "TelegramReady"}
-		}
 	}
 	return nil
 }
@@ -1485,22 +1309,6 @@ func (r *SentryProjectReconciler) recordDestinationCleanupAudit(ctx context.Cont
 		return errDestinationAuditUnavailable
 	}
 	return nil
-}
-
-func cloneTelegramBinding(input *binding.TelegramBinding) *binding.TelegramBinding {
-	if input == nil {
-		return nil
-	}
-	result := *input
-	if input.Challenge != nil {
-		challenge := *input.Challenge
-		result.Challenge = &challenge
-	}
-	if input.Target != nil {
-		target := *input.Target
-		result.Target = &target
-	}
-	return &result
 }
 
 func (r *SentryProjectReconciler) destinationAuthorizer(original *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, expected binding.ProjectBinding, result destination.Result) dsn.Authorization {
@@ -1623,11 +1431,7 @@ func safeDestinationStatuses(statuses map[string]destination.Status, existing ma
 		if status.Err != nil {
 			reason = reasonForError(status.Err)
 		}
-		next := sentryconfigurationv1alpha1.DestinationStatus{Type: status.Kind, State: status.State, Reason: reason}
-		if current, found := existing[name]; found && current.RegistrationCommit != nil {
-			next.RegistrationCommit = current.RegistrationCommit.DeepCopy()
-		}
-		result[name] = next
+		result[name] = sentryconfigurationv1alpha1.DestinationStatus{Type: status.Kind, State: status.State, Reason: reason}
 	}
 	return result
 }
@@ -1809,9 +1613,6 @@ func (r *SentryProjectReconciler) revokeDestinationsIfDenied(ctx context.Context
 	if err != nil || latestRecord.Binding.ExternalIdentity != record.Binding.ExternalIdentity || latestRecord.Binding.Connection != record.Binding.Connection || !reflect.DeepEqual(latestRecord.Binding.Destinations, expected) {
 		return destination.Result{}, false, dsn.ErrAuthorization
 	}
-	if err := r.reconcileTelegramRoutes(ctx, latest, latestRecord.Binding.Destinations, &result, nil); err != nil {
-		return destination.Result{}, false, err
-	}
 	next := latestRecord.Binding
 	next.Destinations = result.Bindings
 	if _, err := r.Bindings.UpdateBinding(ctx, latestRecord, next); err != nil {
@@ -1902,9 +1703,6 @@ func (r *SentryProjectReconciler) reconcileRetainCleanup(ctx context.Context, re
 	if record.Binding.AccessMode == binding.AccessReadOnly && !managedStandby {
 		return nil
 	}
-	if err := r.removeServiceHook(ctx, resource, connection, apiClient, record); err != nil {
-		return err
-	}
 	cleanup := resource.DeepCopy()
 	emptyAlerts := map[string]sentryconfigurationv1alpha1.AlertSpec{}
 	cleanup.Spec.Alerts = &emptyAlerts
@@ -1936,40 +1734,6 @@ func (r *SentryProjectReconciler) reconcileRetainCleanup(ctx context.Context, re
 		destinationResult.PolicyErr = errors.Join(destinationResult.PolicyErr, err)
 	}
 	return errors.Join(accessErr, clientKeyErr, symbolSourceErr, codeMappingResult.Err(), destinationResult.Err(), alertResult.Err())
-}
-
-func (r *SentryProjectReconciler) reconcileServiceHook(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, apiClient *sentryapi.Client) error {
-	record, err := r.Bindings.GetBinding(ctx, string(resource.UID))
-	if err != nil {
-		return err
-	}
-	// A project event hook does not identify a fired Sentry alert and cannot preserve
-	// first-seen, regression, event-count, or user-count semantics. Remove any alpha hook
-	// created by an earlier controller instead of fanning every raw event out to every route.
-	if record.Binding.ServiceHook == nil {
-		return nil
-	}
-	return r.removeServiceHook(ctx, resource, connection, apiClient, record)
-}
-
-func (r *SentryProjectReconciler) removeServiceHook(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, apiClient *sentryapi.Client, record binding.BindingRecord) error {
-	if record.Binding.ServiceHook == nil {
-		return nil
-	}
-	if r.HookSources == nil || r.HookVerifier == nil {
-		return sentryhook.ErrServiceHookLifecycle
-	}
-	receiverBase := strings.TrimSuffix(record.Binding.ServiceHook.EndpointURL, "/"+record.Binding.ServiceHook.SourceBindingKey)
-	adapter := sentryhook.ServiceHookAdapter(&sentryhook.HTTPServiceHookAdapter{Client: apiClient})
-	if r.NewServiceHookAdapter != nil {
-		adapter = r.NewServiceHookAdapter(apiClient)
-	}
-	_, err := (&sentryhook.LifecycleEngine{Bindings: r.Bindings, Adapter: adapter, Sources: r.HookSources, Verifier: r.HookVerifier}).Remove(ctx, sentryhook.LifecycleInput{
-		Binding: record, ConnectionUID: string(connection.UID), ReceiverBase: receiverBase,
-		Organization: record.Binding.Organization, ProjectSlug: record.Binding.Slug, Revision: record.Binding.ServiceHook.Revision,
-		Authorize: r.dsnAuthorizer(resource, connection, record.Binding),
-	})
-	return err
 }
 
 func (r *SentryProjectReconciler) engine(apiClient *sentryapi.Client) *projectruntime.Engine {

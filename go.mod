@@ -1,8 +1,9 @@
-module github.com/artemantipov/sentry-kubernetes-operator
+module github.com/Ultrafenrir/sentry-kubernetes-operator
 
 go 1.26.0
 
 require (
+	github.com/go-logr/logr v1.4.3
 	github.com/onsi/ginkgo/v2 v2.27.4
 	github.com/onsi/gomega v1.39.0
 	github.com/prometheus/client_golang v1.23.2
@@ -11,7 +12,6 @@ require (
 	k8s.io/apimachinery v0.36.0
 	k8s.io/client-go v0.36.0
 	sigs.k8s.io/controller-runtime v0.24.1
-	sigs.k8s.io/yaml v1.6.0
 )
 
 require (
@@ -28,7 +28,6 @@ require (
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
-	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-logr/zapr v1.3.0 // indirect
 	github.com/go-openapi/jsonpointer v0.21.0 // indirect
@@ -97,4 +96,5 @@ require (
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.2 // indirect
+	sigs.k8s.io/yaml v1.6.0 // indirect
 )

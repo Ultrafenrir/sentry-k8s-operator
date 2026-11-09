@@ -59,9 +59,6 @@ spec:
                       default: true
                       type: boolean
                     notify:
-                      description: |-
-                        Telegram destinations are registration-only until an authenticated alert-firing source
-                        can preserve trigger semantics end to end.
                       items:
                         maxLength: 211
                         minLength: 1
@@ -124,13 +121,6 @@ spec:
                       channel names.
                     maxProperties: 20
                     type: object
-                  telegram:
-                    description: Telegram contains registered readable targets.
-                    items:
-                      type: string
-                    maxItems: 100
-                    type: array
-                    x-kubernetes-list-type: set
                 type: object
               sentry:
                 description: Sentry names one cluster-scoped SentryConnection.

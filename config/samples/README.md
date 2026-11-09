@@ -1,7 +1,7 @@
 # Configuration samples
 
 These manifests demonstrate the public `sentryconfiguration.io/v1alpha1` API. They are
-validated by `make verify-samples` against the generated CRD schemas and admission webhooks.
+validated by `make verify-samples` against the generated CRD schemas.
 They are not a ready-to-run environment: the URLs use the reserved `.invalid` domain and
 the referenced Secrets contain no values in this repository.
 

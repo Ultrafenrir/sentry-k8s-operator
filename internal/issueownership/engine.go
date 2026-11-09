@@ -28,7 +28,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/validation"
 
-	sentryv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
+	sentryv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
 )
 
 var (

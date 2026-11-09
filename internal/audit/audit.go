@@ -35,38 +35,27 @@ type Reason string
 
 const (
 	ComponentAlerts       Component = "alerts"
-	ComponentDelivery     Component = "delivery"
 	ComponentDestinations Component = "destinations"
 	ComponentProjects     Component = "projects"
-	ComponentRegistration Component = "registration"
 
-	ActionCreate   Action = "create"
-	ActionEnsure   Action = "ensure"
-	ActionUpdate   Action = "update"
-	ActionToggle   Action = "toggle"
-	ActionDelete   Action = "delete"
-	ActionDeliver  Action = "deliver"
-	ActionRegister Action = "register"
+	ActionCreate Action = "create"
+	ActionEnsure Action = "ensure"
+	ActionUpdate Action = "update"
+	ActionToggle Action = "toggle"
+	ActionDelete Action = "delete"
 
 	OutcomeStarted   Outcome = "started"
 	OutcomeSucceeded Outcome = "succeeded"
 	OutcomeRecovered Outcome = "recovered"
 	OutcomeFailed    Outcome = "failed"
 
-	ReasonJournalSubmitted       Reason = "JournalSubmitted"
-	ReasonResumeRetry            Reason = "ResumeRetry"
-	ReasonResultRecovered        Reason = "ResultRecovered"
-	ReasonMutationVerified       Reason = "MutationVerified"
-	ReasonAuthorization          Reason = "AuthorizationDenied"
-	ReasonApply                  Reason = "ApplyFailed"
-	ReasonVerification           Reason = "VerificationFailed"
-	ReasonDeliveryClaimed        Reason = "DeliveryClaimed"
-	ReasonDeliveryAccepted       Reason = "DeliveryAccepted"
-	ReasonDeliveryFailed         Reason = "DeliveryFailed"
-	ReasonRetentionExpired       Reason = "RetentionExpired"
-	ReasonRouteUnavailable       Reason = "RouteUnavailable"
-	ReasonRegistrationAuthorized Reason = "RegistrationAuthorized"
-	ReasonCleanupAuthorized      Reason = "CleanupAuthorized"
+	ReasonJournalSubmitted Reason = "JournalSubmitted"
+	ReasonResumeRetry      Reason = "ResumeRetry"
+	ReasonResultRecovered  Reason = "ResultRecovered"
+	ReasonMutationVerified Reason = "MutationVerified"
+	ReasonAuthorization    Reason = "AuthorizationDenied"
+	ReasonApply            Reason = "ApplyFailed"
+	ReasonVerification     Reason = "VerificationFailed"
 )
 
 var ErrInvalidEvent = errors.New("audit event is invalid")
@@ -128,26 +117,22 @@ func validComponentAction(component Component, action Action) bool {
 	switch component {
 	case ComponentAlerts:
 		return action == ActionEnsure || action == ActionUpdate || action == ActionToggle || action == ActionDelete
-	case ComponentDelivery:
-		return action == ActionDeliver || action == ActionDelete
 	case ComponentDestinations:
 		return action == ActionDelete
 	case ComponentProjects:
 		return action == ActionCreate || action == ActionUpdate || action == ActionDelete
-	case ComponentRegistration:
-		return action == ActionRegister
 	default:
 		return false
 	}
 }
 
 func validComponent(value Component) bool {
-	return value == ComponentAlerts || value == ComponentDelivery || value == ComponentDestinations || value == ComponentProjects || value == ComponentRegistration
+	return value == ComponentAlerts || value == ComponentDestinations || value == ComponentProjects
 }
 
 func validAction(value Action) bool {
 	switch value {
-	case ActionCreate, ActionEnsure, ActionUpdate, ActionToggle, ActionDelete, ActionDeliver, ActionRegister:
+	case ActionCreate, ActionEnsure, ActionUpdate, ActionToggle, ActionDelete:
 		return true
 	default:
 		return false
@@ -165,8 +150,7 @@ func validOutcome(value Outcome) bool {
 
 func validReason(value Reason) bool {
 	switch value {
-	case ReasonJournalSubmitted, ReasonResumeRetry, ReasonResultRecovered, ReasonMutationVerified, ReasonAuthorization, ReasonApply, ReasonVerification,
-		ReasonDeliveryClaimed, ReasonDeliveryAccepted, ReasonDeliveryFailed, ReasonRetentionExpired, ReasonRouteUnavailable, ReasonRegistrationAuthorized, ReasonCleanupAuthorized:
+	case ReasonJournalSubmitted, ReasonResumeRetry, ReasonResultRecovered, ReasonMutationVerified, ReasonAuthorization, ReasonApply, ReasonVerification:
 		return true
 	default:
 		return false

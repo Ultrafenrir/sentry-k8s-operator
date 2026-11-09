@@ -24,7 +24,7 @@ import (
 	"net/url"
 	"sync"
 
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/sentryapi"
 )
 
 var ErrCatalogUnsupported = errors.New("destination catalog route is not supported by the proven adapter")

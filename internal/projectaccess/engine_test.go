@@ -21,7 +21,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/audit"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/audit"
 )
 
 func TestEngineGrantsAndRevokesOnlyManagedTeams(t *testing.T) {

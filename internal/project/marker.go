@@ -24,8 +24,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/binding"
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/ownership"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/binding"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/ownership"
 )
 
 const sentryProjectNameMaxRunes = 50

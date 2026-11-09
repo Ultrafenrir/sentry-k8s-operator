@@ -17,11 +17,7 @@ limitations under the License.
 // Package binding stores protected external identity and manager claims.
 package binding
 
-import (
-	"time"
-
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/ownership"
-)
+import "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/ownership"
 
 const CurrentVersion = "v2"
 
@@ -116,19 +112,17 @@ type CodeMappingBinding struct {
 }
 
 // DestinationBinding pins external identities for one local destination key.
-// Numeric Telegram identities are stored by the registration subsystem, never here as
-// public status. SelectorHash prevents silent same-name rebinding.
+// SelectorHash prevents silent same-name rebinding.
 type DestinationBinding struct {
-	Owner               ChildOwner       `json:"owner"`
-	Kind                string           `json:"kind"`
-	SelectorHash        string           `json:"selectorHash"`
-	IntegrationIdentity string           `json:"integrationIdentity,omitempty"`
-	IntegrationName     string           `json:"integrationName,omitempty"`
-	ResourceIdentity    string           `json:"resourceIdentity,omitempty"`
-	ResourceName        string           `json:"resourceName"`
-	State               string           `json:"state"`
-	Reason              string           `json:"reason,omitempty"`
-	Telegram            *TelegramBinding `json:"telegram,omitempty"`
+	Owner               ChildOwner `json:"owner"`
+	Kind                string     `json:"kind"`
+	SelectorHash        string     `json:"selectorHash"`
+	IntegrationIdentity string     `json:"integrationIdentity,omitempty"`
+	IntegrationName     string     `json:"integrationName,omitempty"`
+	ResourceIdentity    string     `json:"resourceIdentity,omitempty"`
+	ResourceName        string     `json:"resourceName"`
+	State               string     `json:"state"`
+	Reason              string     `json:"reason,omitempty"`
 }
 
 // AlertBinding pins one operator-owned external alert child. The public API never exposes
@@ -142,21 +136,6 @@ type AlertBinding struct {
 	Enabled          bool       `json:"enabled"`
 	Destinations     []string   `json:"destinations"`
 	Marker           Marker     `json:"marker"`
-}
-
-// ServiceHookBinding pins the operator-owned Sentry hook and its protected receiver source.
-// Only a one-way secret fingerprint is retained; verifier material stays in its isolated
-// aggregate Secret.
-type ServiceHookBinding struct {
-	SourceBindingKey    string          `json:"sourceBindingKey"`
-	ExternalIdentity    string          `json:"externalIdentity,omitempty"`
-	EndpointURL         string          `json:"endpointURL"`
-	SecretHash          string          `json:"secretHash,omitempty"`
-	Revision            int64           `json:"revision"`
-	ReplacementIdentity string          `json:"replacementIdentity,omitempty"`
-	TargetEndpointURL   string          `json:"targetEndpointURL,omitempty"`
-	TargetRevision      int64           `json:"targetRevision,omitempty"`
-	Pending             *OperationState `json:"pending,omitempty"`
 }
 
 const (
@@ -174,35 +153,6 @@ type ChildOwner struct {
 
 func (o ChildOwner) Valid() bool {
 	return (o.Kind == ChildOwnerProject || o.Kind == ChildOwnerPolicy) && o.Name != "" && o.UID != ""
-}
-
-// TelegramBinding is protected registration/outbox state. Numeric identities and
-// challenge hashes must never be copied to public API status.
-type TelegramBinding struct {
-	Challenge    *TelegramChallenge `json:"challenge,omitempty"`
-	Target       *TelegramTarget    `json:"target,omitempty"`
-	Phase        string             `json:"phase,omitempty"`
-	OutboxKey    string             `json:"outboxKey,omitempty"`
-	FenceHash    string             `json:"fenceHash,omitempty"`
-	RouteKey     string             `json:"routeKey,omitempty"`
-	RouteRevoked bool               `json:"routeRevoked,omitempty"`
-}
-
-type TelegramChallenge struct {
-	CodeHash              string           `json:"codeHash"`
-	Project               ProjectReference `json:"project"`
-	Destination           string           `json:"destination"`
-	SelectorHash          string           `json:"selectorHash"`
-	Owner                 string           `json:"owner"`
-	Connection            string           `json:"connection"`
-	PolicyGeneration      int64            `json:"policyGeneration"`
-	PolicyResourceVersion string           `json:"policyResourceVersion"`
-	ExpiresAt             time.Time        `json:"expiresAt"`
-}
-
-type TelegramTarget struct {
-	ChatIdentity  string `json:"chatIdentity"`
-	TopicIdentity string `json:"topicIdentity,omitempty"`
 }
 
 // ProjectBinding is the protected record for one SentryProject incarnation.
@@ -234,7 +184,6 @@ type ProjectBinding struct {
 	Destinations      map[string]DestinationBinding  `json:"destinations,omitempty"`
 	Alerts            map[string]AlertBinding        `json:"alerts,omitempty"`
 	AlertPolicy       *AppliedAlertPolicy            `json:"alertPolicy,omitempty"`
-	ServiceHook       *ServiceHookBinding            `json:"serviceHook,omitempty"`
 }
 
 type AppliedAlertPolicy struct {

@@ -56,5 +56,3 @@ spec:
           - company-slack
         pagerDutyAccounts:
           - company-pagerduty
-        telegramTargets:
-          - payments-alerts

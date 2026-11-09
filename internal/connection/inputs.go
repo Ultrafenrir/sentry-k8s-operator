@@ -20,21 +20,19 @@ package connection
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	sentryv1alpha1 "github.com/artemantipov/sentry-kubernetes-operator/api/v1alpha1"
+	sentryv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
 )
 
 // SecretInputs contains in-memory secret material. It must never be logged or written to status.
 type SecretInputs struct {
 	Token                 []byte
 	CABundle              []byte
-	BotToken              []byte
 	AllowInsecureHTTP     bool
 	InsecureSkipTLSVerify bool
 }
@@ -58,14 +56,6 @@ func LoadSecretInputs(ctx context.Context, reader client.Reader, namespace strin
 			return SecretInputs{}, err
 		}
 	}
-	if spec.Integrations != nil && spec.Integrations.Telegram != nil {
-		if err := validateReceiverURL(spec.Integrations.Telegram.ReceiverURL); err != nil {
-			return SecretInputs{}, err
-		}
-		if inputs.BotToken, err = loadSecretKey(ctx, reader, namespace, spec.Integrations.Telegram.BotTokenSecretRef); err != nil {
-			return SecretInputs{}, err
-		}
-	}
 	return inputs, nil
 }
 
@@ -76,9 +66,6 @@ func SecretNames(spec sentryv1alpha1.SentryConnectionSpec) []string {
 	add(spec.Credentials.TokenSecretRef)
 	if spec.Credentials.CABundleSecretRef != nil {
 		add(*spec.Credentials.CABundleSecretRef)
-	}
-	if spec.Integrations != nil && spec.Integrations.Telegram != nil {
-		add(spec.Integrations.Telegram.BotTokenSecretRef)
 	}
 	names := make([]string, 0, len(seen))
 	for name := range seen {
@@ -98,13 +85,4 @@ func loadSecretKey(ctx context.Context, reader client.Reader, namespace string, 
 		return nil, fmt.Errorf("referenced Secret %q has no non-empty key %q", ref.Name, ref.Key)
 	}
 	return append([]byte(nil), value...), nil
-}
-
-func validateReceiverURL(raw string) error {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Path != "/events" ||
-		parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return fmt.Errorf("Telegram Sentry-hook receiver URL must be exact absolute HTTPS /events base")
-	}
-	return nil
 }

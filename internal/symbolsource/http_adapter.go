@@ -23,7 +23,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/artemantipov/sentry-kubernetes-operator/internal/sentryapi"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/sentryapi"
 )
 
 type Layout struct {
