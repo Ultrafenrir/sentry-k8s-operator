@@ -8,7 +8,9 @@ regenerates files into a temporary chart and compares exact bytes.
 
 Safety boundaries:
 
-- Kubernetes support is encoded as >=1.35 and <1.37 and rendered in both versions.
+- The chart does not enforce a Kubernetes version range. Rendering is verified without a
+  chart-level version gate, while runtime compatibility evidence remains limited to the
+  Kubernetes 1.35/1.36 matrix documented separately.
 - production=true requires a canonical sha256 image digest; development tags remain
   available only when production=false.
 - registration is off by default; monitoring and public Gateway routes cannot be enabled

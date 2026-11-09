@@ -308,7 +308,7 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 helm-generate: manifests generate ## Regenerate chart CRDs and manifest payloads from canonical Kustomize sources.
 	sh hack/update-helm-chart.sh
 
-verify-helm: manifests generate ## Verify chart drift, schema, supported Kubernetes versions and opt-in rendering.
+verify-helm: manifests generate ## Verify chart drift, schema, unrestricted version rendering and opt-in components.
 	sh hack/verify-helm.sh
 
 helm-package: verify-helm ## Package the verified alpha chart into dist/.

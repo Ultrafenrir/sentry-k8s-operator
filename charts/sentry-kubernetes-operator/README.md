@@ -9,7 +9,8 @@ integrations, public DNS, certificates for public receivers, or credential Secre
 
 ## Support and prerequisites
 
-- Kubernetes `>=1.35.0-0` and `<1.37.0-0`;
+- a Kubernetes cluster; the chart does not enforce a Kubernetes version range, while the
+  verified compatibility baseline remains Kubernetes 1.35 and 1.36;
 - Helm 3;
 - cert-manager installed and Ready before the operator;
 - one operator installation per cluster.
@@ -265,6 +266,6 @@ make helm-generate
 make verify-helm
 ```
 
-`make verify-helm` checks generated drift, chart schema, both supported Kubernetes versions,
-CRD inclusion, default and all-feature renders, negative value gates, production digest
-rendering, and chart packaging.
+`make verify-helm` checks generated drift, chart schema, the absence of a chart-level
+Kubernetes version gate, the verified compatibility versions, CRD inclusion, default and
+all-feature renders, negative value gates, production digest rendering, and chart packaging.

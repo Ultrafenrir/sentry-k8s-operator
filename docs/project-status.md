@@ -35,6 +35,10 @@ The project is not production-ready. The public API is `v1alpha1`, several end-t
 external integrations remain unverified, and upgrade/release operations still need hosted
 evidence.
 
+The Helm chart does not enforce a Kubernetes version range. Runtime compatibility evidence
+remains limited to the Kubernetes 1.35/1.36 matrix; accepting a chart render on another
+version is not a compatibility claim.
+
 ## Live local evidence
 
 Verified against disposable self-hosted Sentry:

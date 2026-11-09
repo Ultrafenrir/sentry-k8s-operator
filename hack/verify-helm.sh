@@ -31,8 +31,10 @@ test "$(rg -c 'image: registry.example/operator:verify' "$tmp_dir/render-registr
 
 "$helm_bin" lint "$chart_dir" --kube-version 1.35.0 >/dev/null
 "$helm_bin" lint "$chart_dir" --kube-version 1.36.0 >/dev/null
+! rg -q '^kubeVersion:' "$chart_dir/Chart.yaml"
 "$helm_bin" template sentry-operator "$chart_dir" --kube-version 1.35.0 --include-crds >"$tmp_dir/default.yaml"
 "$helm_bin" template sentry-operator "$chart_dir" --kube-version 1.36.0 --include-crds >"$tmp_dir/upper.yaml"
+"$helm_bin" template sentry-operator "$chart_dir" --kube-version 1.34.0 >/dev/null
 "$helm_bin" template sentry-operator "$chart_dir" --kube-version 1.35.0 \
   --set registration.enabled=true \
   --set registrationGateway.enabled=true \
@@ -136,11 +138,6 @@ if "$helm_bin" template sentry-operator "$chart_dir" --kube-version 1.35.0 \
   echo 'Gateway routes accepted ambiguous duplicate SNI hostname' >&2
   exit 1
 fi
-if "$helm_bin" template sentry-operator "$chart_dir" --kube-version 1.34.9 >"$tmp_dir/negative.log" 2>&1; then
-  echo 'chart accepted unsupported Kubernetes 1.34' >&2
-  exit 1
-fi
-
 "$helm_bin" package "$chart_dir" --destination "$tmp_dir" >/dev/null
 test -f "$tmp_dir/sentry-kubernetes-operator-0.1.0-alpha.1.tgz"
 tar -tzf "$tmp_dir/sentry-kubernetes-operator-0.1.0-alpha.1.tgz" \
@@ -148,4 +145,4 @@ tar -tzf "$tmp_dir/sentry-kubernetes-operator-0.1.0-alpha.1.tgz" \
 tar -tzf "$tmp_dir/sentry-kubernetes-operator-0.1.0-alpha.1.tgz" \
   | rg -q '^sentry-kubernetes-operator/NOTICE$'
 
-echo 'Helm chart drift, non-mutating image render, schema, Kubernetes 1.35/1.36, CRD, opt-in and immutable-image contracts verified'
+echo 'Helm chart drift, non-mutating image render, schema, version-unrestricted rendering, CRD, opt-in and immutable-image contracts verified'
