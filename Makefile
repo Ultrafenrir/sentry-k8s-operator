@@ -60,14 +60,15 @@ helm-lint: ## Lint and render the Helm chart.
 	$(HELM) template helm-contract charts/sentry-kubernetes-operator --namespace helm-contract-ns --include-crds \
 		--set sentryConnection.spec.credentials.tokenSecretRef.name=helm-contract-token \
 		--set sentryConnection.spec.credentials.tokenSecretRef.key=api-token >.cache/helm/rendered.yaml
-	@rg -q '^  name: helm-contract-controller$$' .cache/helm/rendered.yaml
-	@rg -q '^  namespace: helm-contract-ns$$' .cache/helm/rendered.yaml
-	@rg -q '^      name: helm-contract-token$$' .cache/helm/rendered.yaml
-	@rg -q '^      key: api-token$$' .cache/helm/rendered.yaml
-	@if rg -q '^kind: Namespace$$|sentry-kubernetes-operator-system|sentry-kubernetes-operator-state|sentry-kubernetes-operator-audit' .cache/helm/rendered.yaml; then echo 'Helm render contains fixed namespaces'; exit 1; fi
+	@grep -q '^  name: helm-contract-controller$$' .cache/helm/rendered.yaml
+	@grep -q '^  namespace: helm-contract-ns$$' .cache/helm/rendered.yaml
+	@grep -q '^      name: helm-contract-token$$' .cache/helm/rendered.yaml
+	@grep -q '^      key: api-token$$' .cache/helm/rendered.yaml
+	@awk 'BEGIN { core = 0; found = 0 } /apiGroups: \[""\]/ { core = 1; next } core && /resources: \["events"\]/ { found = 1 } /^  - apiGroups:/ { core = 0 } END { exit found ? 0 : 1 }' .cache/helm/rendered.yaml
+	@if grep -Eq '^kind: Namespace$$|sentry-kubernetes-operator-system|sentry-kubernetes-operator-state|sentry-kubernetes-operator-audit' .cache/helm/rendered.yaml; then echo 'Helm render contains fixed namespaces'; exit 1; fi
 
 verify-english: ## Reject Cyrillic text in repository files.
-	@if rg -n -P '[\x{0400}-\x{04FF}]' --glob '!.git/**' .; then echo 'Repository text must be English.'; exit 1; fi
+	@if git grep -n -I -P '[\x{0400}-\x{04FF}]' -- .; then echo 'Repository text must be English.'; exit 1; fi
 
 clean: ## Remove local build output.
 	rm -f bin/manager

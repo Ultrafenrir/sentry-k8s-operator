@@ -137,6 +137,13 @@ func (r *SentryConnectionReconciler) setCredentialCondition(ctx context.Context,
 		Reason:             reason,
 		Message:            message,
 	})
+	meta.SetStatusCondition(&connection.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             status,
+		ObservedGeneration: connection.Generation,
+		Reason:             reason,
+		Message:            message,
+	})
 	if err := r.Status().Patch(ctx, connection, client.MergeFrom(base)); err != nil {
 		return err
 	}

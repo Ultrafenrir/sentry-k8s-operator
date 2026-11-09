@@ -106,6 +106,11 @@ var _ = Describe("SentryConnection Controller", func() {
 				HaveField("Status", metav1.ConditionFalse),
 				HaveField("Reason", "SecretInputInvalid"),
 			)))
+			Expect(resource.Status.Conditions).To(ContainElement(And(
+				HaveField("Type", "Ready"),
+				HaveField("Status", metav1.ConditionFalse),
+				HaveField("Reason", "SecretInputInvalid"),
+			)))
 		}
 		reconcileMetric := &dto.Metric{}
 		Expect(metrics.reconciles.WithLabelValues(controllerConnection, "requeue").Write(reconcileMetric)).To(Succeed())
@@ -212,6 +217,11 @@ var _ = Describe("SentryConnection Controller", func() {
 			Expect(updated.Status.Conditions).To(ContainElement(And(
 				HaveField("Type", "CredentialsReady"),
 				HaveField("Status", metav1.ConditionTrue),
+			)))
+			Expect(updated.Status.Conditions).To(ContainElement(And(
+				HaveField("Type", "Ready"),
+				HaveField("Status", metav1.ConditionTrue),
+				HaveField("Reason", "SecretInputsLoaded"),
 			)))
 		})
 	})
