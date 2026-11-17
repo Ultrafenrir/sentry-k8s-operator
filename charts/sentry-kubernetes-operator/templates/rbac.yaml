@@ -7,7 +7,12 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["create", "delete", "get", "patch", "update"]
+    resourceNames: ["sentry-dsns"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["sentry-project-inputs"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]

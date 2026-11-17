@@ -4,6 +4,13 @@ CONTROLLER_GEN ?= $(if $(wildcard .tools/bin/controller-gen),$(CURDIR)/.tools/bi
 HELM ?= helm
 ENVTEST_K8S_VERSION ?= 1.35.0
 ENVTEST_ASSETS ?= $(CURDIR)/.tools/envtest/$(ENVTEST_K8S_VERSION)
+SENTRY_VERSION ?= 26.10.1
+SENTRY_PROFILE ?= errors-only
+SENTRY_PORT ?=
+SENTRY_WAIT_TIMEOUT ?= 1800
+SENTRY_SKIP_PULL ?= false
+SENTRY_SELF_HOSTED_CACHE ?= $(CURDIR)/.cache/sentry-self-hosted
+SENTRY_BASH_BIN ?=
 GO_VERSION := $(shell env -u GOROOT $(GO) env GOVERSION)
 GOROOT := $(shell env -u GOROOT $(GO) env GOROOT)
 GOTOOLCHAIN := local
@@ -12,10 +19,31 @@ export GOROOT
 export GOTOOLCHAIN
 export GOCACHE
 
-.PHONY: help generate manifests fmt vet lint test build docker-build docker-push helm-lint verify-english clean
+.PHONY: help generate manifests fmt vet lint test build docker-build docker-push helm-lint verify-english clean verify-sentry-compose sentry-up sentry-bootstrap sentry-smoke sentry-status sentry-logs sentry-down
 
 help: ## Show the available targets.
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage: make <target>\n\n"} /^[a-zA-Z_0-9-]+:.*?##/ {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+verify-sentry-compose: ## Verify the pinned, isolated local Sentry Compose stack.
+	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PROFILE="$(SENTRY_PROFILE)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_WAIT_TIMEOUT="$(SENTRY_WAIT_TIMEOUT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" sh hack/manage-sentry-self-hosted.sh verify
+
+sentry-up: ## Recreate and start only the local Sentry core API and direct data services.
+	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PROFILE="$(SENTRY_PROFILE)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_WAIT_TIMEOUT="$(SENTRY_WAIT_TIMEOUT)" SENTRY_SKIP_PULL="$(SENTRY_SKIP_PULL)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" SENTRY_BASH_BIN="$(SENTRY_BASH_BIN)" sh hack/manage-sentry-self-hosted.sh up
+
+sentry-bootstrap: ## Create a local API user and store its token outside Git.
+	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PROFILE="$(SENTRY_PROFILE)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_WAIT_TIMEOUT="$(SENTRY_WAIT_TIMEOUT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" sh hack/manage-sentry-self-hosted.sh bootstrap
+
+sentry-smoke: ## Check the selected local Sentry health endpoint.
+	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PROFILE="$(SENTRY_PROFILE)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_WAIT_TIMEOUT="$(SENTRY_WAIT_TIMEOUT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" sh hack/manage-sentry-self-hosted.sh smoke
+
+sentry-status: ## Show only the selected local Sentry core containers and volumes.
+	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PROFILE="$(SENTRY_PROFILE)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_WAIT_TIMEOUT="$(SENTRY_WAIT_TIMEOUT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" sh hack/manage-sentry-self-hosted.sh status
+
+sentry-logs: ## Show recent logs for the selected local Sentry core stack.
+	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PROFILE="$(SENTRY_PROFILE)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_WAIT_TIMEOUT="$(SENTRY_WAIT_TIMEOUT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" sh hack/manage-sentry-self-hosted.sh logs
+
+sentry-down: ## Remove the selected local Sentry runtime and managed volumes.
+	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PROFILE="$(SENTRY_PROFILE)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_WAIT_TIMEOUT="$(SENTRY_WAIT_TIMEOUT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" sh hack/manage-sentry-self-hosted.sh down
 
 generate: ## Generate DeepCopy implementations.
 	PATH="$(dir $(GO)):$$PATH" $(CONTROLLER_GEN) object paths=./api/...

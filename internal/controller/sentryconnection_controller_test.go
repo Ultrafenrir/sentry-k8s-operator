@@ -35,6 +35,7 @@ import (
 
 	sentryconfigurationv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
 	connectionruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/connection"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/sentryapi"
 )
 
 var _ = Describe("SentryConnection Controller", func() {
@@ -184,6 +185,9 @@ var _ = Describe("SentryConnection Controller", func() {
 				Scheme:            k8sClient.Scheme(),
 				OperatorNamespace: operatorNamespace,
 				Registry:          registry,
+				ProbeConnection: func(context.Context, *sentryapi.Client, string) (string, error) {
+					return "company", nil
+				},
 			}
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -221,7 +225,7 @@ var _ = Describe("SentryConnection Controller", func() {
 			Expect(updated.Status.Conditions).To(ContainElement(And(
 				HaveField("Type", "Ready"),
 				HaveField("Status", metav1.ConditionTrue),
-				HaveField("Reason", "SecretInputsLoaded"),
+				HaveField("Reason", "ConnectionVerified"),
 			)))
 		})
 	})

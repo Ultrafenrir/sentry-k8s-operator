@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/url"
 	"sync"
 
@@ -29,9 +30,7 @@ import (
 
 var ErrCatalogUnsupported = errors.New("destination catalog route is not supported by the proven adapter")
 
-// HTTPCatalog implements only source-confirmed public catalog routes. Slack channel
-// enumeration deliberately remains unsupported because 24.7.1 only proves async lookup
-// inside alert creation, not a common list endpoint.
+// HTTPCatalog implements source-confirmed public integration catalog routes.
 type HTTPCatalog struct {
 	Client *sentryapi.Client
 
@@ -51,6 +50,15 @@ type integrationResponse struct {
 			Service string    `json:"service"`
 		} `json:"service_table"`
 	} `json:"configData"`
+}
+
+type channelResponse struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type channelsResponse struct {
+	Results []channelResponse `json:"results"`
 }
 
 // PagerDuty service ids are strings in some supported responses and JSON
@@ -109,8 +117,29 @@ func (c *HTTPCatalog) ListIntegrations(ctx context.Context, organization, provid
 	return result, nil
 }
 
-func (c *HTTPCatalog) ListSlackChannels(context.Context, string, string) ([]Resource, error) {
-	return nil, ErrCatalogUnsupported
+func (c *HTTPCatalog) ListSlackChannels(ctx context.Context, organization, integration string) ([]Resource, error) {
+	if c.Client == nil || organization == "" || integration == "" {
+		return nil, ErrCatalogUnsupported
+	}
+	path := "/api/0/organizations/" + url.PathEscape(organization) + "/integrations/" + url.PathEscape(integration) + "/channels/"
+	var response channelsResponse
+	_, err := c.Client.DoJSON(ctx, sentryapi.Request{
+		Method:    http.MethodGet,
+		Path:      path,
+		RetrySafe: true,
+		Operation: "list-integration-channels",
+	}, &response)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]Resource, 0, len(response.Results))
+	for _, item := range response.Results {
+		if item.ID == "" || item.Name == "" {
+			return nil, ErrCatalogUnsupported
+		}
+		result = append(result, Resource{Identity: item.ID, Name: item.Name})
+	}
+	return result, nil
 }
 
 func (c *HTTPCatalog) ListPagerDutyServices(_ context.Context, _ string, integration string) ([]Resource, error) {

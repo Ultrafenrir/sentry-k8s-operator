@@ -49,3 +49,19 @@ func TestConditionEventsOnlyOnSafeTransitions(t *testing.T) {
 		t.Fatalf("event = %q", event)
 	}
 }
+
+func TestConditionEventsSuppressDefaultRegionalOwnershipNoise(t *testing.T) {
+	recorder := events.NewFakeRecorder(1)
+	resource := &sentryconfigurationv1alpha1.SentryConnection{ObjectMeta: metav1.ObjectMeta{Name: "company"}}
+	after := []metav1.Condition{{
+		Type: "OwnershipReady", Status: metav1.ConditionUnknown, Reason: "NotConfigured",
+		Message: "Regional ownership fencing is not configured.",
+	}}
+
+	emitConditionChanges(recorder, resource, nil, after)
+	select {
+	case event := <-recorder.Events:
+		t.Fatalf("default regional ownership condition emitted event %q", event)
+	default:
+	}
+}

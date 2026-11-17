@@ -204,10 +204,6 @@ spec:
                     minLength: 1
                     pattern: ^[a-z](?:[a-z0-9-]*[a-z0-9])?$
                     type: string
-                  secret:
-                    maxLength: 253
-                    minLength: 1
-                    type: string
                 type: object
               grantAccess:
                 description: |-
@@ -699,7 +695,7 @@ spec:
                     gcs:
                       description: |-
                         GCSSymbolSource fetches symbols from one Google Cloud Storage bucket using a service
-                        account private key held in a namespace-local Secret.
+                        account private key held in the namespace-local sentry-project-inputs Secret.
                       properties:
                         bucket:
                           maxLength: 222
@@ -739,7 +735,8 @@ spec:
                     http:
                       description: |-
                         HTTPSymbolSource fetches symbols over HTTPS. Basic-auth credentials are optional, but a
-                        password can only be supplied through a Secret in the SentryProject namespace.
+                        password can only be supplied through the sentry-project-inputs Secret in the
+                        SentryProject namespace.
                       properties:
                         passwordSecretRef:
                           description: |-
@@ -802,7 +799,8 @@ spec:
                     s3:
                       description: |-
                         S3SymbolSource fetches symbols from one AWS S3 bucket. Both credential values remain in
-                        namespace-local Secrets and never enter status or protected binding state.
+                        the namespace-local sentry-project-inputs Secret and never enter status or
+                        protected binding state.
                       properties:
                         accessKeySecretRef:
                           description: |-

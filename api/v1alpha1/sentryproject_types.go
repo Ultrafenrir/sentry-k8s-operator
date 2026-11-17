@@ -27,10 +27,13 @@ import (
 var ErrAmbiguousNotificationTarget = errors.New("notification target name is ambiguous within its provider")
 
 const (
-	// DefaultDSNSecretSuffix is appended to metadata.name when a custom Secret is not requested.
-	DefaultDSNSecretSuffix = "-sentry"
-	// DefaultDSNSecretKey is the stable key written to every managed DSN output Secret.
-	DefaultDSNSecretKey = "SENTRY_DSN"
+	// DSNSecretName is the only namespace-local Secret that may receive public DSNs.
+	// Application teams create it; the operator only patches the key named after the
+	// SentryProject and never creates or deletes the Secret.
+	DSNSecretName = "sentry-dsns"
+	// ProjectInputSecretName is the only namespace-local Secret from which project
+	// feature credentials may be read.
+	ProjectInputSecretName = "sentry-project-inputs"
 )
 
 // ProjectCreate identifies a new project entirely through readable values.
@@ -58,11 +61,6 @@ type ProjectSelector struct {
 
 // DSNSpec customizes the public DSN output without exposing external IDs.
 type DSNSpec struct {
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	// +optional
-	Secret string `json:"secret,omitempty"`
-
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=100
 	// +optional
@@ -314,7 +312,8 @@ type SymbolSourceLayout struct {
 }
 
 // HTTPSymbolSource fetches symbols over HTTPS. Basic-auth credentials are optional, but a
-// password can only be supplied through a Secret in the SentryProject namespace.
+// password can only be supplied through the sentry-project-inputs Secret in the
+// SentryProject namespace.
 type HTTPSymbolSource struct {
 	// +kubebuilder:validation:MinLength=9
 	// +kubebuilder:validation:MaxLength=2048
@@ -330,7 +329,8 @@ type HTTPSymbolSource struct {
 }
 
 // S3SymbolSource fetches symbols from one AWS S3 bucket. Both credential values remain in
-// namespace-local Secrets and never enter status or protected binding state.
+// the namespace-local sentry-project-inputs Secret and never enter status or
+// protected binding state.
 type S3SymbolSource struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=255
@@ -348,7 +348,7 @@ type S3SymbolSource struct {
 }
 
 // GCSSymbolSource fetches symbols from one Google Cloud Storage bucket using a service
-// account private key held in a namespace-local Secret.
+// account private key held in the namespace-local sentry-project-inputs Secret.
 type GCSSymbolSource struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=222

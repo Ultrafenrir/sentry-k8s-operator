@@ -46,7 +46,7 @@ func emitConditionChangesObserved(recorder events.EventRecorder, observer *Metri
 			continue
 		}
 		observer.ObserveCondition(controller, condition.Type, condition.Status)
-		if recorder == nil {
+		if recorder == nil || suppressConditionEvent(condition) {
 			continue
 		}
 		eventType := corev1.EventTypeNormal
@@ -55,4 +55,10 @@ func emitConditionChangesObserved(recorder events.EventRecorder, observer *Metri
 		}
 		recorder.Eventf(object, nil, eventType, condition.Reason, "ConditionChanged", "%s", condition.Message)
 	}
+}
+
+// OwnershipReady/NotConfigured is useful bounded status, but emitting it as an
+// event on every new connection only adds noise for the default non-regional mode.
+func suppressConditionEvent(condition metav1.Condition) bool {
+	return condition.Type == "OwnershipReady" && condition.Status == metav1.ConditionUnknown && condition.Reason == "NotConfigured"
 }

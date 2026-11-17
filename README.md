@@ -61,6 +61,17 @@ helm upgrade --install sentry-operator ./charts/sentry-kubernetes-operator \
   -f values-production.yaml
 ```
 
+Before a namespace uses DSN publication, its application team creates the one fixed output
+Secret. Each `SentryProject` is written to a key with the same name as the project resource:
+
+```sh
+kubectl -n payments create secret generic sentry-dsns
+```
+
+The controller can only read and patch Secrets named `sentry-dsns` outside its own namespace; it
+cannot create, delete, list, or watch application Secrets. Optional symbol-source credentials use
+the separately pre-created, read-only `sentry-project-inputs` Secret.
+
 See [docs/quickstart.md](docs/quickstart.md) for test project and alert policy examples.
 
 ## Development

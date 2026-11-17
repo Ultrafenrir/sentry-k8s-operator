@@ -19,6 +19,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/url"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -35,6 +37,7 @@ import (
 
 	sentryconfigurationv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
 	connectionruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/connection"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/sentryapi"
 )
 
 // SentryConnectionReconciler reconciles a SentryConnection object
@@ -45,6 +48,7 @@ type SentryConnectionReconciler struct {
 	Registry          *connectionruntime.Registry
 	Recorder          events.EventRecorder
 	Metrics           *Metrics
+	ProbeConnection   func(context.Context, *sentryapi.Client, string) (string, error)
 }
 
 // +kubebuilder:rbac:groups=sentryconfiguration.io,resources=sentryconnections,verbs=get;list;watch
@@ -56,11 +60,12 @@ type SentryConnectionReconciler struct {
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1/pkg/reconcile
 func (r *SentryConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (reconcileResult ctrl.Result, reconcileErr error) {
 	started := time.Now()
+	connection := &sentryconfigurationv1alpha1.SentryConnection{}
+	resourceFound := false
 	defer func() {
 		r.Metrics.ObserveReconcile(controllerConnection, reconcileResult, reconcileErr, time.Since(started))
+		logConnectionReconcile(logf.FromContext(ctx), req, connection, resourceFound, r.Registry, reconcileResult, reconcileErr)
 	}()
-	log := logf.FromContext(ctx)
-	connection := &sentryconfigurationv1alpha1.SentryConnection{}
 	if err := r.Get(ctx, req.NamespacedName, connection); err != nil {
 		if apierrors.IsNotFound(err) {
 			if r.Registry != nil {
@@ -70,6 +75,7 @@ func (r *SentryConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 		return ctrl.Result{}, err
 	}
+	resourceFound = true
 	if r.Registry == nil || r.OperatorNamespace == "" {
 		return ctrl.Result{}, fmt.Errorf("connection runtime is not configured")
 	}
@@ -79,19 +85,49 @@ func (r *SentryConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		if statusErr := r.setCredentialCondition(ctx, connection, metav1.ConditionFalse, "SecretInputInvalid", "One or more referenced Secret inputs are unavailable or invalid."); statusErr != nil {
 			return ctrl.Result{}, statusErr
 		}
-		log.Info("Connection credentials are not ready", "connection", connection.Name)
 		return ctrl.Result{RequeueAfter: jitterDuration(30 * time.Second)}, nil
 	}
-	if _, _, err := r.Registry.Apply(connection.Name, connection.Spec.URL, inputs); err != nil {
+	apiClient, _, err := r.Registry.Apply(connection.Name, connection.Spec.URL, inputs)
+	if err != nil {
 		if statusErr := r.setCredentialCondition(ctx, connection, metav1.ConditionFalse, "ClientConfigurationInvalid", "The HTTPS client configuration is invalid."); statusErr != nil {
 			return ctrl.Result{}, statusErr
 		}
 		return ctrl.Result{RequeueAfter: jitterDuration(30 * time.Second)}, nil
 	}
-	if err := r.setCredentialCondition(ctx, connection, metav1.ConditionTrue, "SecretInputsLoaded", "Referenced Secret inputs are loaded and watched for rotation."); err != nil {
+	probe := r.ProbeConnection
+	if probe == nil {
+		probe = probeSentryOrganization
+	}
+	organization, err := probe(ctx, apiClient, connection.Spec.Organization)
+	if err != nil {
+		if statusErr := r.setProbeCondition(ctx, connection, metav1.ConditionFalse, "ConnectionProbeFailed", "The configured Sentry organization could not be verified with the loaded credentials.", ""); statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
+		return ctrl.Result{RequeueAfter: jitterDuration(30 * time.Second)}, nil
+	}
+	if err := r.setProbeCondition(ctx, connection, metav1.ConditionTrue, "ConnectionVerified", "Credentials and organization access were verified against Sentry.", organization); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: jitterDuration(5 * time.Minute)}, nil
+}
+
+func probeSentryOrganization(ctx context.Context, apiClient *sentryapi.Client, organization string) (string, error) {
+	var response struct {
+		Slug string `json:"slug"`
+	}
+	_, err := apiClient.DoJSON(ctx, sentryapi.Request{
+		Method:    http.MethodGet,
+		Path:      "/api/0/organizations/" + url.PathEscape(organization) + "/",
+		RetrySafe: true,
+		Operation: "verify-organization",
+	}, &response)
+	if err != nil {
+		return "", err
+	}
+	if response.Slug != organization {
+		return "", &sentryapi.APIError{Kind: sentryapi.ErrorDecode, StatusCode: http.StatusOK, Operation: "verify-organization"}
+	}
+	return response.Slug, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -143,6 +179,25 @@ func (r *SentryConnectionReconciler) setCredentialCondition(ctx context.Context,
 		ObservedGeneration: connection.Generation,
 		Reason:             reason,
 		Message:            message,
+	})
+	if err := r.Status().Patch(ctx, connection, client.MergeFrom(base)); err != nil {
+		return err
+	}
+	emitConditionChangesObserved(r.Recorder, r.Metrics, controllerConnection, connection, base.Status.Conditions, connection.Status.Conditions)
+	return nil
+}
+
+func (r *SentryConnectionReconciler) setProbeCondition(ctx context.Context, connection *sentryconfigurationv1alpha1.SentryConnection, status metav1.ConditionStatus, reason, message, organization string) error {
+	base := connection.DeepCopy()
+	connection.Status.ObservedGeneration = connection.Generation
+	connection.Status.Organization = organization
+	setConnectionOwnershipStatus(connection)
+	meta.SetStatusCondition(&connection.Status.Conditions, metav1.Condition{
+		Type: "CredentialsReady", Status: metav1.ConditionTrue, ObservedGeneration: connection.Generation,
+		Reason: "SecretInputsLoaded", Message: "Referenced Secret inputs are loaded and watched for rotation.",
+	})
+	meta.SetStatusCondition(&connection.Status.Conditions, metav1.Condition{
+		Type: "Ready", Status: status, ObservedGeneration: connection.Generation, Reason: reason, Message: message,
 	})
 	if err := r.Status().Patch(ctx, connection, client.MergeFrom(base)); err != nil {
 		return err

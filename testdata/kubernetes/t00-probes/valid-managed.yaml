@@ -1,9 +1,0 @@
-apiVersion: t00.sentry-operator.dev/v1alpha1
-kind: SentryProjectProbe
-metadata:
-  name: managed
-  namespace: sentry-operator-t00-probe
-spec:
-  project:
-    create:
-      team: payments

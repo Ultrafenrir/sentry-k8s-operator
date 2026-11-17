@@ -58,8 +58,8 @@ type OperationState struct {
 	DesiredHash string `json:"desiredHash"`
 }
 
-// DSNBinding pins a client key and tracks a two-phase output Secret cutover.
-// It never stores the DSN value.
+// DSNBinding pins a client key and the fixed namespace-local output Secret. It never
+// stores the DSN value. PendingSecret remains for decoding pre-migration protected state.
 type DSNBinding struct {
 	KeyIdentity   string `json:"keyIdentity"`
 	KeyName       string `json:"keyName"`

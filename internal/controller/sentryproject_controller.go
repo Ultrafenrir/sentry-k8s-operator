@@ -34,6 +34,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	sentryconfigurationv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
@@ -115,16 +116,19 @@ const projectDriftReconcileInterval = 30 * time.Second
 
 func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (reconcileResult ctrl.Result, reconcileErr error) {
 	started := time.Now()
+	resource := &sentryconfigurationv1alpha1.SentryProject{}
+	resourceFound := false
 	defer func() {
 		r.Metrics.ObserveReconcile(controllerProject, reconcileResult, reconcileErr, time.Since(started))
+		logProjectReconcile(logf.FromContext(ctx), req, resource, resourceFound, reconcileResult, reconcileErr)
 	}()
-	resource := &sentryconfigurationv1alpha1.SentryProject{}
 	if err := r.Get(ctx, req.NamespacedName, resource); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.Metrics.ForgetProjectSynchronization(req.String())
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	resourceFound = true
 	if r.Registry == nil || r.Bindings == nil || r.ManagedBy == "" {
 		return ctrl.Result{}, fmt.Errorf("project runtime is not configured")
 	}
@@ -169,11 +173,16 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			return r.reportFailure(ctx, resource, reason, message)
 		}
 	}
-	if resource.Spec.Project.Create != nil && !standbyCandidate && !projectruntime.ManagedCreateSupported(connection.Status.Capabilities) {
-		return r.reportFailure(ctx, resource, "ManagedCreateUnsupported", "The connection has not proven atomic default-rule suppression and an automatic active client key.")
-	}
 	apiClient, found := r.Registry.Get(connection.Name)
 	if !found {
+		// On manager startup the project and connection caches can enqueue in either
+		// order. A previously verified connection may therefore be visible before its
+		// in-memory API client has been rebuilt. Preserve the last verified project
+		// status and retry quickly instead of publishing a false outage during every
+		// controller restart.
+		if meta.IsStatusConditionTrue(connection.Status.Conditions, "Ready") {
+			return ctrl.Result{RequeueAfter: jitterDuration(time.Second)}, nil
+		}
 		return r.reportFailure(ctx, resource, "ConnectionNotReady", "The selected SentryConnection has not loaded its credentials yet.")
 	}
 	effectiveResource, appliedPolicy, application, err := r.applyAlertPolicy(ctx, resource, connection)
@@ -232,7 +241,7 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{Type: "AlertPolicyReady", Status: policyStatus, ObservedGeneration: resource.Generation, Reason: policyReason, Message: policyMessage})
 	dsnApplicable := result.AccessMode == binding.AccessManage || resource.Spec.DSN != nil
-	dsnStatus, dsnReason, dsnMessage := dsnCondition(dsnApplicable, dsnResult.Phase, dsnResult.ExternalNameChanged, dsnErr)
+	dsnStatus, dsnReason, dsnMessage := dsnCondition(dsnApplicable, dsnResult.ExternalNameChanged, dsnErr)
 	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
 		Type:               "DSNReady",
 		Status:             dsnStatus,
@@ -345,7 +354,7 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{RequeueAfter: jitterDuration(projectDriftReconcileInterval)}, nil
 }
 
-func dsnCondition(applicable bool, phase dsn.Phase, externalNameChanged bool, err error) (metav1.ConditionStatus, string, string) {
+func dsnCondition(applicable bool, externalNameChanged bool, err error) (metav1.ConditionStatus, string, string) {
 	if !applicable {
 		return metav1.ConditionUnknown, "NotApplicable", "DSN publication was not requested for this read-only project."
 	}
@@ -354,9 +363,6 @@ func dsnCondition(applicable bool, phase dsn.Phase, externalNameChanged bool, er
 			return metav1.ConditionFalse, "DSNKeyRevoked", "The output Secret was removed after the pinned client key was proven missing or inactive."
 		}
 		return metav1.ConditionFalse, reasonForError(err), "DSN reconciliation is safely blocked; an existing working Secret was preserved unless revoke was proven."
-	}
-	if phase == dsn.PhaseCutoverPending {
-		return metav1.ConditionFalse, "DSNCutoverPending", "The new Secret is ready; confirm the cutover annotation before the old Secret is removed."
 	}
 	if externalNameChanged {
 		return metav1.ConditionTrue, "ExternalNameChanged", "The pinned client key was renamed in Sentry; its verified identity and output Secret remain current."
@@ -790,11 +796,11 @@ func (r *SentryProjectReconciler) loadSymbolSourceDesired(ctx context.Context, r
 }
 
 func (r *SentryProjectReconciler) loadProjectSecretKey(ctx context.Context, namespace string, ref sentryconfigurationv1alpha1.SecretKeyReference) (string, error) {
-	if namespace == "" || ref.Name == "" || ref.Key == "" || strings.ContainsAny(ref.Name+ref.Key, "\r\n\x00") {
+	if namespace == "" || ref.Name != sentryconfigurationv1alpha1.ProjectInputSecretName || ref.Key == "" || strings.ContainsAny(ref.Key, "\r\n\x00") {
 		return "", errSymbolSourceSecret
 	}
 	secret := &corev1.Secret{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: ref.Name}, secret); err != nil {
+	if err := r.outputSecrets().Get(ctx, client.ObjectKey{Namespace: namespace, Name: ref.Name}, secret); err != nil {
 		return "", errSymbolSourceSecret
 	}
 	value, found := secret.Data[ref.Key]
@@ -822,10 +828,8 @@ func (r *SentryProjectReconciler) reconcileDSN(ctx context.Context, resource *se
 	}
 	current.Secret = existingSecret(record.Binding.DSN)
 	selector := ""
-	desiredSecret := ""
 	if resource.Spec.DSN != nil {
 		selector = resource.Spec.DSN.ClientKey
-		desiredSecret = resource.Spec.DSN.Secret
 	}
 	allowInsecureHTTP := connection.Spec.Transport != nil && connection.Spec.Transport.AllowInsecureHTTP
 	var selection dsn.Selection
@@ -887,7 +891,7 @@ func (r *SentryProjectReconciler) reconcileDSN(ctx context.Context, resource *se
 		nextDSN.PendingSecret = record.Binding.DSN.PendingSecret
 	}
 	authorize := r.dsnAuthorizer(resource, connection, record.Binding)
-	nextDSN, phase, err := (&dsn.Publisher{Client: r.outputSecrets(), AllowInsecureHTTP: allowInsecureHTTP}).Reconcile(ctx, resource, decision.Owner, desiredSecret, selection.Key.DSN.Public, nextDSN, authorize)
+	nextDSN, phase, err := (&dsn.Publisher{Client: r.outputSecrets(), AllowInsecureHTTP: allowInsecureHTTP}).Reconcile(ctx, resource, selection.Key.DSN.Public, nextDSN, authorize)
 	if err != nil {
 		return current, err
 	}
@@ -1516,7 +1520,7 @@ func existingSecret(state *binding.DSNBinding) string {
 // after the current policy has been re-read and proven to deny project access.
 func (r *SentryProjectReconciler) revokeDSNIfDenied(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject) (bool, error) {
 	record, err := r.Bindings.GetBinding(ctx, string(resource.UID))
-	if apierrors.IsNotFound(err) {
+	if errors.Is(err, binding.ErrNotFound) {
 		return false, nil
 	}
 	if err != nil {
@@ -1676,6 +1680,9 @@ func (r *SentryProjectReconciler) reconcileDelete(ctx context.Context, resource 
 			return r.reportFailure(ctx, resource, reasonForError(err), "Retain release is waiting for exact cleanup of operator-owned child resources.")
 		}
 	}
+	if err := r.revokeDSNForDeletion(ctx, resource, connection); err != nil {
+		return r.reportFailure(ctx, resource, reasonForError(err), "Project release is waiting for exact removal of its DSN output key.")
+	}
 	result, err := r.engine(apiClient).Delete(ctx, projectruntime.Input{
 		Project:        resource,
 		ConnectionName: connection.Name,
@@ -1688,6 +1695,48 @@ func (r *SentryProjectReconciler) reconcileDelete(ctx context.Context, resource 
 		return ctrl.Result{RequeueAfter: jitterDuration(10 * time.Second)}, nil
 	}
 	return ctrl.Result{}, r.removeFinalizer(ctx, resource)
+}
+
+func (r *SentryProjectReconciler) revokeDSNForDeletion(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection) error {
+	record, err := r.Bindings.GetBinding(ctx, string(resource.UID))
+	if errors.Is(err, binding.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if record.Binding.DSN == nil {
+		return nil
+	}
+	expected := *record.Binding.DSN
+	authorize := func(ctx context.Context) error {
+		latest := &sentryconfigurationv1alpha1.SentryProject{}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(resource), latest); err != nil {
+			return err
+		}
+		if latest.UID != resource.UID || latest.Generation != resource.Generation || latest.DeletionTimestamp.IsZero() {
+			return dsn.ErrAuthorization
+		}
+		latestConnection := &sentryconfigurationv1alpha1.SentryConnection{}
+		if err := r.Get(ctx, client.ObjectKey{Name: connection.Name}, latestConnection); err != nil {
+			return err
+		}
+		if _, err := policy.EvaluateProject(latest.Namespace, latest.Spec, latestConnection.Spec); err != nil {
+			return dsn.ErrAuthorization
+		}
+		latestRecord, err := r.Bindings.GetBinding(ctx, string(latest.UID))
+		if err != nil || latestRecord.Binding.ExternalIdentity != record.Binding.ExternalIdentity || latestRecord.Binding.Connection != record.Binding.Connection || !sameDSNBinding(latestRecord.Binding.DSN, &expected) {
+			return dsn.ErrAuthorization
+		}
+		return nil
+	}
+	if err := (&dsn.Publisher{Client: r.outputSecrets()}).Revoke(ctx, resource, expected, authorize); err != nil {
+		return err
+	}
+	next := record.Binding
+	next.DSN = nil
+	_, err = r.Bindings.UpdateBinding(ctx, record, next)
+	return err
 }
 
 func (r *SentryProjectReconciler) reconcileRetainCleanup(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection, apiClient *sentryapi.Client) error {
@@ -1966,7 +2015,6 @@ func (r *SentryProjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&sentryconfigurationv1alpha1.SentryProject{}).
 		Watches(&sentryconfigurationv1alpha1.SentryConnection{}, handler.EnqueueRequestsFromMapFunc(r.projectsForConnection)).
 		Watches(&sentryconfigurationv1alpha1.SentryAlertPolicy{}, handler.EnqueueRequestsFromMapFunc(r.projectsForAlertPolicy)).
-		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.projectsForSymbolSourceSecret)).
 		Named("sentryproject").
 		Complete(r)
 }
@@ -2019,6 +2067,9 @@ func reasonForError(err error) string {
 	}
 	if errors.Is(err, dsn.ErrSecretConflict) {
 		return "DSNSecretConflict"
+	}
+	if errors.Is(err, dsn.ErrSecretMissing) {
+		return "DSNSecretMissing"
 	}
 	if errors.Is(err, dsn.ErrAuthorization) {
 		return "AuthorizationChanged"

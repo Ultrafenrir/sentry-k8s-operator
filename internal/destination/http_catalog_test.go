@@ -59,9 +59,26 @@ func TestHTTPCatalogReadsVersionPinnedPagerDutyServiceTable(t *testing.T) {
 			if err != nil || len(services) != 2 || services[0].Identity != "2001" || services[0].Name != "Checkout" {
 				t.Fatalf("services=%#v err=%v", services, err)
 			}
-			if _, err := catalog.ListSlackChannels(context.Background(), "company", "1001"); err != ErrCatalogUnsupported {
-				t.Fatalf("Slack catalog error=%v", err)
-			}
 		})
+	}
+}
+
+func TestHTTPCatalogListsSlackChannelsFromSentryResponse(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/0/organizations/company/integrations/1001/channels/" {
+			t.Errorf("request = %s %s", r.Method, r.URL.String())
+			return
+		}
+		_, _ = w.Write([]byte(`{"results":[{"id":"C001","name":"backend-alerts","display":"#backend-alerts","type":"public"},{"id":"C002","name":"incidents","display":"#incidents","type":"private"}]}`))
+	}))
+	defer server.Close()
+	client, err := sentryapi.NewClient(sentryapi.Config{BaseURL: server.URL, CABundle: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	channels, err := (&HTTPCatalog{Client: client}).ListSlackChannels(context.Background(), "company", "1001")
+	if err != nil || len(channels) != 2 || channels[0].Identity != "C001" || channels[0].Name != "backend-alerts" || channels[1].Identity != "C002" {
+		t.Fatalf("channels=%#v err=%v", channels, err)
 	}
 }

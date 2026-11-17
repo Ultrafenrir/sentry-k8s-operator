@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -34,153 +35,142 @@ import (
 
 const testPublicDSN = "https://public@sentry.example/1"
 
-func TestPublisherCreatesRestoresAndUpdatesOwnedSecret(t *testing.T) {
+func TestPublisherPatchesOnlyProjectKeyInPrecreatedSecret(t *testing.T) {
 	t.Parallel()
-
-	publisher, kubeClient := testPublisher(t)
+	publisher, kubeClient := testPublisher(t, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: sentryv1alpha1.DSNSecretName, Namespace: "payments", Labels: map[string]string{"team": "payments"}},
+		Type:       corev1.SecretTypeOpaque,
+		Data:       map[string][]byte{"another-project": []byte("keep")},
+	})
 	project := testProject()
 	authorizations := 0
-	authorize := func(context.Context) error { authorizations++; return nil }
-	state := binding.DSNBinding{KeyIdentity: "key-id", KeyName: "Default", SelectorHash: "hash"}
-	state, phase, err := publisher.Reconcile(context.Background(), project, "payments", "", testPublicDSN, state, authorize)
-	if err != nil || phase != PhaseReady || state.CurrentSecret != "checkout-sentry" || authorizations != 1 {
-		t.Fatalf("initial publish state=%#v phase=%s auth=%d err=%v", state, phase, authorizations, err)
+	state, phase, err := publisher.Reconcile(context.Background(), project, testPublicDSN, binding.DSNBinding{}, func(context.Context) error {
+		authorizations++
+		return nil
+	})
+	if err != nil || phase != PhaseReady || state.CurrentSecret != sentryv1alpha1.DSNSecretName || state.PendingSecret != "" || authorizations != 1 {
+		t.Fatalf("state=%#v phase=%s auth=%d err=%v", state, phase, authorizations, err)
 	}
-	secret := &corev1.Secret{}
-	if err := kubeClient.Get(context.Background(), types.NamespacedName{Namespace: "payments", Name: "checkout-sentry"}, secret); err != nil {
-		t.Fatal(err)
+	secret := loadDSNSecret(t, kubeClient)
+	if string(secret.Data[project.Name]) != testPublicDSN || string(secret.Data["another-project"]) != "keep" || secret.Labels["team"] != "payments" {
+		t.Fatalf("shared Secret was not patched safely: %#v", secret)
 	}
-	if len(secret.Data) != 1 || string(secret.Data[sentryv1alpha1.DefaultDSNSecretKey]) != testPublicDSN || !ownedBy(secret, project) {
-		t.Fatal("published Secret contract is invalid")
-	}
-	if err := kubeClient.Delete(context.Background(), secret); err != nil {
-		t.Fatal(err)
-	}
-	_, phase, err = publisher.Reconcile(context.Background(), project, "payments", "", testPublicDSN, state, authorize)
-	if err != nil || phase != PhaseReady || authorizations != 2 {
-		t.Fatalf("restore phase=%s auth=%d err=%v", phase, authorizations, err)
+	_, _, err = publisher.Reconcile(context.Background(), project, testPublicDSN, state, func(context.Context) error {
+		authorizations++
+		return nil
+	})
+	if err != nil || authorizations != 1 {
+		t.Fatalf("idempotent reconcile authorized a write: auth=%d err=%v", authorizations, err)
 	}
 }
 
-func TestPublisherNeverOverwritesForeignSecret(t *testing.T) {
+func TestPublisherRequiresPrecreatedFixedNameSecret(t *testing.T) {
 	t.Parallel()
-
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-	foreign := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "checkout-sentry", Namespace: "payments"}, Data: map[string][]byte{"foreign": []byte("keep")}}
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(foreign).Build()
-	publisher := &Publisher{Client: kubeClient}
+	publisher, kubeClient := testPublisher(t)
 	called := false
-	_, _, err := publisher.Reconcile(context.Background(), testProject(), "payments", "checkout-sentry", testPublicDSN, binding.DSNBinding{}, func(context.Context) error { called = true; return nil })
-	if !errors.Is(err, ErrSecretConflict) || called {
-		t.Fatalf("foreign conflict err=%v authorizeCalled=%v", err, called)
+	_, _, err := publisher.Reconcile(context.Background(), testProject(), testPublicDSN, binding.DSNBinding{}, func(context.Context) error {
+		called = true
+		return nil
+	})
+	if !errors.Is(err, ErrSecretMissing) || called {
+		t.Fatalf("missing Secret err=%v authorizeCalled=%v", err, called)
 	}
-	loaded := &corev1.Secret{}
-	_ = kubeClient.Get(context.Background(), types.NamespacedName{Namespace: "payments", Name: "checkout-sentry"}, loaded)
-	if string(loaded.Data["foreign"]) != "keep" {
-		t.Fatal("foreign Secret was modified")
-	}
-}
-
-func TestPublisherTwoPhaseCutoverWaitsForExactConfirmation(t *testing.T) {
-	t.Parallel()
-
-	publisher, kubeClient := testPublisher(t)
-	project := testProject()
-	authorize := func(context.Context) error { return nil }
-	state, _, err := publisher.Reconcile(context.Background(), project, "payments", "old-dsn", testPublicDSN, binding.DSNBinding{}, authorize)
-	if err != nil {
-		t.Fatal(err)
-	}
-	state, phase, err := publisher.Reconcile(context.Background(), project, "payments", "new-dsn", testPublicDSN, state, authorize)
-	if err != nil || phase != PhaseCutoverPending || state.CurrentSecret != "old-dsn" || state.PendingSecret != "new-dsn" {
-		t.Fatalf("pending state=%#v phase=%s err=%v", state, phase, err)
-	}
-	for _, name := range []string{"old-dsn", "new-dsn"} {
-		if err := kubeClient.Get(context.Background(), types.NamespacedName{Namespace: "payments", Name: name}, &corev1.Secret{}); err != nil {
-			t.Fatalf("%s missing during cutover: %v", name, err)
-		}
-	}
-	project.Annotations = map[string]string{ConfirmCutoverAnnotation: "wrong-name"}
-	state, phase, err = publisher.Reconcile(context.Background(), project, "payments", "new-dsn", testPublicDSN, state, authorize)
-	if err != nil || phase != PhaseCutoverPending {
-		t.Fatalf("wrong confirmation phase=%s err=%v", phase, err)
-	}
-	project.Annotations[ConfirmCutoverAnnotation] = "new-dsn"
-	state, phase, err = publisher.Reconcile(context.Background(), project, "payments", "new-dsn", testPublicDSN, state, authorize)
-	if err != nil || phase != PhaseReady || state.CurrentSecret != "new-dsn" || state.PendingSecret != "" {
-		t.Fatalf("confirmed state=%#v phase=%s err=%v", state, phase, err)
-	}
-	if err := kubeClient.Get(context.Background(), types.NamespacedName{Namespace: "payments", Name: "old-dsn"}, &corev1.Secret{}); err == nil {
-		t.Fatal("old Secret remains after confirmation")
+	secrets := &corev1.SecretList{}
+	if err := kubeClient.List(context.Background(), secrets); err != nil || len(secrets.Items) != 0 {
+		t.Fatalf("publisher created a Secret: items=%d err=%v", len(secrets.Items), err)
 	}
 }
 
-func TestPublisherReauthorizesEveryWriteAndPreservesWorkingSecretOnDenial(t *testing.T) {
+func TestPublisherPreservesWorkingValueWhenAuthorizationChanges(t *testing.T) {
 	t.Parallel()
-
-	publisher, kubeClient := testPublisher(t)
+	publisher, kubeClient := testPublisher(t, emptyDSNSecret())
 	project := testProject()
-	state, _, err := publisher.Reconcile(context.Background(), project, "payments", "old-dsn", testPublicDSN, binding.DSNBinding{}, func(context.Context) error { return nil })
+	state, _, err := publisher.Reconcile(context.Background(), project, testPublicDSN, binding.DSNBinding{}, func(context.Context) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = publisher.Reconcile(context.Background(), project, "payments", "new-dsn", testPublicDSN, state, func(context.Context) error { return errors.New("policy changed") })
+	_, _, err = publisher.Reconcile(context.Background(), project, "https://replacement@sentry.example/1", state, func(context.Context) error {
+		return errors.New("policy changed")
+	})
 	if !errors.Is(err, ErrAuthorization) {
 		t.Fatalf("authorization change error = %v", err)
 	}
-	if err := kubeClient.Get(context.Background(), types.NamespacedName{Namespace: "payments", Name: "old-dsn"}, &corev1.Secret{}); err != nil {
-		t.Fatalf("working Secret was removed: %v", err)
-	}
-	if err := kubeClient.Get(context.Background(), types.NamespacedName{Namespace: "payments", Name: "new-dsn"}, &corev1.Secret{}); err == nil {
-		t.Fatal("new Secret was written after authorization changed")
+	if got := string(loadDSNSecret(t, kubeClient).Data[project.Name]); got != testPublicDSN {
+		t.Fatalf("working DSN changed to %q", got)
 	}
 }
 
-func TestPublisherRevokesOnlyExactBoundSecrets(t *testing.T) {
+func TestPublisherRevokesOnlyProjectKey(t *testing.T) {
 	t.Parallel()
-
-	publisher, kubeClient := testPublisher(t)
-	project := testProject()
-	authorize := func(context.Context) error { return nil }
-	state, _, err := publisher.Reconcile(context.Background(), project, "payments", "old-dsn", testPublicDSN, binding.DSNBinding{}, authorize)
-	if err != nil {
-		t.Fatal(err)
-	}
-	state, phase, err := publisher.Reconcile(context.Background(), project, "payments", "new-dsn", testPublicDSN, state, authorize)
-	if err != nil || phase != PhaseCutoverPending {
-		t.Fatalf("pending state=%#v phase=%s err=%v", state, phase, err)
-	}
-	foreign := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: project.Namespace}, Data: map[string][]byte{"keep": []byte("true")}}
-	if err := kubeClient.Create(context.Background(), foreign); err != nil {
-		t.Fatal(err)
-	}
+	publisher, kubeClient := testPublisher(t, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: sentryv1alpha1.DSNSecretName, Namespace: "payments"},
+		Type:       corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"checkout":        []byte(testPublicDSN),
+			"another-project": []byte("keep"),
+		},
+	})
+	state := binding.DSNBinding{CurrentSecret: sentryv1alpha1.DSNSecretName}
 	authorizations := 0
-	if err := publisher.Revoke(context.Background(), project, state, func(context.Context) error { authorizations++; return nil }); err != nil {
+	if err := publisher.Revoke(context.Background(), testProject(), state, func(context.Context) error {
+		authorizations++
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if authorizations != 2 {
-		t.Fatalf("authorization checks = %d, want 2", authorizations)
+	secret := loadDSNSecret(t, kubeClient)
+	if _, found := secret.Data["checkout"]; found || string(secret.Data["another-project"]) != "keep" || authorizations != 1 {
+		t.Fatalf("shared Secret revoke was unsafe: data=%#v auth=%d", secret.Data, authorizations)
 	}
-	for _, name := range []string{"old-dsn", "new-dsn"} {
-		err := kubeClient.Get(context.Background(), types.NamespacedName{Namespace: project.Namespace, Name: name}, &corev1.Secret{})
-		if err == nil {
-			t.Fatalf("bound Secret %q remains after revoke", name)
-		}
-	}
-	if err := kubeClient.Get(context.Background(), types.NamespacedName{Namespace: project.Namespace, Name: "unrelated"}, &corev1.Secret{}); err != nil {
-		t.Fatalf("unrelated Secret was affected: %v", err)
+	if err := publisher.Revoke(context.Background(), testProject(), state, func(context.Context) error {
+		authorizations++
+		return nil
+	}); err != nil || authorizations != 1 {
+		t.Fatalf("idempotent revoke authorized a write: auth=%d err=%v", authorizations, err)
 	}
 }
 
-func testPublisher(t *testing.T) (*Publisher, client.Client) {
+func TestPublisherDoesNotRecreateMissingSharedSecretDuringRevoke(t *testing.T) {
+	t.Parallel()
+	publisher, kubeClient := testPublisher(t, emptyDSNSecret())
+	if err := kubeClient.Delete(context.Background(), loadDSNSecret(t, kubeClient)); err != nil {
+		t.Fatal(err)
+	}
+	state := binding.DSNBinding{CurrentSecret: sentryv1alpha1.DSNSecretName}
+	if err := publisher.Revoke(context.Background(), testProject(), state, func(context.Context) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	err := kubeClient.Get(context.Background(), types.NamespacedName{Namespace: "payments", Name: sentryv1alpha1.DSNSecretName}, &corev1.Secret{})
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("shared Secret unexpectedly recreated: %v", err)
+	}
+}
+
+func testPublisher(t *testing.T, objects ...client.Object) (*Publisher, client.Client) {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
 	return &Publisher{Client: kubeClient}, kubeClient
+}
+
+func emptyDSNSecret() *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: sentryv1alpha1.DSNSecretName, Namespace: "payments"},
+		Type:       corev1.SecretTypeOpaque,
+		Data:       map[string][]byte{},
+	}
+}
+
+func loadDSNSecret(t *testing.T, kubeClient client.Client) *corev1.Secret {
+	t.Helper()
+	secret := &corev1.Secret{}
+	if err := kubeClient.Get(context.Background(), types.NamespacedName{Namespace: "payments", Name: sentryv1alpha1.DSNSecretName}, secret); err != nil {
+		t.Fatal(err)
+	}
+	return secret
 }
 
 func testProject() *sentryv1alpha1.SentryProject {

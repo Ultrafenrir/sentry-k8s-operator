@@ -20,7 +20,9 @@ spec:
         - backend-alerts
   alerts:
     new-errors:
-      trigger: first-seen
+      trigger: event-count
+      windowMinutes: 5
+      threshold: 1
       notify:
         - slack/backend-alerts
 ---
@@ -43,6 +45,8 @@ Apply the resources only after the connection reports `Ready=True`:
 
 ```sh
 kubectl get sentryconnection company-sentry
+kubectl -n payments create secret generic sentry-dsns
 kubectl apply -f policy-and-project.yaml
 kubectl -n payments get sentryproject checkout -o yaml
+kubectl -n payments get secret sentry-dsns -o jsonpath='{.data.checkout}' | base64 --decode
 ```

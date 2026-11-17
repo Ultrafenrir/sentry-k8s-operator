@@ -14,8 +14,15 @@ version; the Helm chart does not block installation based on the Kubernetes serv
 Generated CRDs intentionally avoid CEL `x-kubernetes-validations` so older API servers can install
 them. Cross-field errors are reported by controller reconciliation instead of CRD CEL admission.
 
-Live event ingestion and third-party notification delivery are outside the evidence provided by
-unit tests and rendered manifests.
+Project, destination, and alert compatibility claims require repeatable end-to-end evidence
+against the declared Sentry versions. The operator does not ingest events or deliver third-party
+notifications; those are Sentry responsibilities, not additional project components.
+
+The local acceptance workflow covers both pinned alert API families. It verifies the remote
+project and alert objects through Sentry's API, controller restart reconciliation without CR
+changes, credential and Sentry outages, shared DSN Secret preservation, and `Retain` versus
+`DeleteProject` lifecycle behavior. Legacy acceptance includes both an issue alert rule and a
+metric alert rule; a ready Kubernetes condition alone is not considered sufficient evidence.
 
 CI runs `make lint` and the complete `make test` suite. The test target includes unit tests for
 project authorization, protected state, destination resolution, alert adapters, and audit state,

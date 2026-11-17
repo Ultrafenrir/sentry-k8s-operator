@@ -53,7 +53,7 @@ spec:
         url: https://symbols.example.invalid
         username: reader
         passwordSecretRef:
-          name: symbol-credentials
+          name: sentry-project-inputs
           key: http-password
     s3-symbols:
       layout:
@@ -64,10 +64,10 @@ spec:
         region: eu-west-1
         prefix: native/
         accessKeySecretRef:
-          name: symbol-credentials
+          name: sentry-project-inputs
           key: s3-access-key
         secretKeySecretRef:
-          name: symbol-credentials
+          name: sentry-project-inputs
           key: s3-secret-key
     gcs-symbols:
       layout:
@@ -78,7 +78,7 @@ spec:
         clientEmail: symbols@example.invalid
         prefix: debug/
         privateKeySecretRef:
-          name: symbol-credentials
+          name: sentry-project-inputs
           key: gcs-private-key
   dsn:
     managedClientKey: ingest
