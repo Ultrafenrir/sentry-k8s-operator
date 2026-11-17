@@ -80,25 +80,29 @@ type legacyIssueResponse struct {
 }
 
 type legacyIssueAction struct {
-	ID        string `json:"id"`
-	Workspace string `json:"workspace,omitempty"`
-	Channel   string `json:"channel,omitempty"`
-	ChannelID string `json:"channel_id,omitempty"`
-	Tags      string `json:"tags,omitempty"`
-	Notes     string `json:"notes,omitempty"`
-	Account   string `json:"account,omitempty"`
-	Service   string `json:"service,omitempty"`
-	Severity  string `json:"severity,omitempty"`
+	ID               string `json:"id"`
+	Workspace        string `json:"workspace,omitempty"`
+	Channel          string `json:"channel,omitempty"`
+	ChannelID        string `json:"channel_id,omitempty"`
+	Tags             string `json:"tags,omitempty"`
+	Notes            string `json:"notes,omitempty"`
+	Account          string `json:"account,omitempty"`
+	Service          string `json:"service,omitempty"`
+	Severity         string `json:"severity,omitempty"`
+	TargetType       string `json:"targetType,omitempty"`
+	TargetIdentifier any    `json:"targetIdentifier,omitempty"`
 }
 
 type legacyIssuePayload struct {
 	Name        string              `json:"name"`
 	ActionMatch string              `json:"actionMatch"`
 	FilterMatch string              `json:"filterMatch"`
-	Conditions  []map[string]string `json:"conditions"`
-	Filters     []any               `json:"filters"`
+	Conditions  []map[string]any    `json:"conditions"`
+	Filters     []map[string]any    `json:"filters"`
 	Actions     []legacyIssueAction `json:"actions"`
 	Frequency   int                 `json:"frequency"`
+	Environment string              `json:"environment,omitempty"`
+	Owner       string              `json:"owner,omitempty"`
 }
 
 type legacyMetricResponse struct {
@@ -114,6 +118,7 @@ type legacyMetricAction struct {
 	TargetIdentifier any    `json:"targetIdentifier"`
 	IntegrationID    int64  `json:"integrationId"`
 	InputChannelID   string `json:"inputChannelId,omitempty"`
+	Severity         string `json:"severity,omitempty"`
 }
 
 type legacyMetricTrigger struct {
@@ -129,12 +134,17 @@ type legacyMetricPayload struct {
 	Aggregate        string                `json:"aggregate"`
 	Query            string                `json:"query"`
 	TimeWindow       int                   `json:"timeWindow"`
-	ResolveThreshold int64                 `json:"resolveThreshold"`
+	ResolveThreshold float64               `json:"resolveThreshold"`
 	ThresholdType    int                   `json:"thresholdType"`
 	ThresholdPeriod  int                   `json:"thresholdPeriod"`
 	Projects         []string              `json:"projects"`
 	EventTypes       []string              `json:"eventTypes"`
 	Triggers         []legacyMetricTrigger `json:"triggers"`
+	Environment      *string               `json:"environment"`
+	Owner            string                `json:"owner,omitempty"`
+	ComparisonDelta  int32                 `json:"comparisonDelta,omitempty"`
+	DetectionType    string                `json:"detectionType,omitempty"`
+	Description      string                `json:"description,omitempty"`
 }
 
 func (a *LegacyHTTPAdapter) Ensure(ctx context.Context, adapter, organization, projectSlug, key string, desired Desired, marker binding.Marker) (Observed, error) {
@@ -209,7 +219,7 @@ func (a *LegacyHTTPAdapter) Update(ctx context.Context, adapter, organization, p
 	if err != nil {
 		return Observed{}, ErrLegacyInvalidState
 	}
-	body, err := a.payload(adapter, projectSlug, name, desired)
+	body, err := a.payloadContext(ctx, adapter, organization, projectSlug, name, desired)
 	if err != nil {
 		return Observed{}, err
 	}
@@ -305,19 +315,42 @@ func (a *LegacyHTTPAdapter) validate(adapter, projectSlug, key string, desired D
 	if a.Client == nil || !legacyAdapter(adapter) || !dnsLabel(projectSlug) || !dnsLabel(key) || !desired.Enabled {
 		return ErrLegacyInvalidState
 	}
-	if adapter == LegacyIssueAdapter && desired.Trigger != TriggerFirstSeen && desired.Trigger != TriggerRegression {
-		return ErrLegacyInvalidState
-	}
-	if adapter == LegacyMetricAdapter {
-		if _, ok := metricAggregate(desired.Trigger); !ok || desired.WindowMinutes < 1 || desired.WindowMinutes > 1440 || desired.Threshold <= 0 {
+	if adapter == LegacyIssueAdapter {
+		if desired.Issue == nil && desired.Trigger != TriggerFirstSeen && desired.Trigger != TriggerRegression {
 			return ErrLegacyInvalidState
 		}
 	}
-	_, err := a.destinationActions(adapter, desired.Notify)
-	return err
+	if adapter == LegacyMetricAdapter {
+		if desired.Metric == nil {
+			if _, ok := metricAggregate(desired.Trigger); !ok || desired.WindowMinutes < 1 || desired.WindowMinutes > 1440 || desired.Threshold <= 0 {
+				return ErrLegacyInvalidState
+			}
+		} else if desired.Metric.Detection.Kind == "dynamic" {
+			return ErrLegacyInvalidState
+		}
+	}
+	if _, err := a.destinationActions(adapter, desired.Notify); err != nil {
+		return err
+	}
+	for _, action := range desired.Actions {
+		if action.Status == "resolved" || action.EmailTarget != "" {
+			continue
+		}
+		if _, err := a.destinationActions(adapter, []string{action.Destination}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a *LegacyHTTPAdapter) payload(adapter, projectSlug, name string, desired Desired) (any, error) {
+	return a.payloadContext(context.Background(), adapter, "", projectSlug, name, desired)
+}
+
+func (a *LegacyHTTPAdapter) payloadContext(ctx context.Context, adapter, organization, projectSlug, name string, desired Desired) (any, error) {
+	if desired.Issue != nil || desired.Metric != nil || len(desired.Actions) != 0 {
+		return a.typedLegacyPayload(ctx, adapter, organization, projectSlug, name, desired)
+	}
 	actions, err := a.destinationActions(adapter, desired.Notify)
 	if err != nil {
 		return nil, err
@@ -327,7 +360,7 @@ func (a *LegacyHTTPAdapter) payload(adapter, projectSlug, name string, desired D
 		if desired.Trigger == TriggerRegression {
 			condition = "sentry.rules.conditions.regression_event.RegressionEventCondition"
 		}
-		return legacyIssuePayload{Name: name, ActionMatch: "all", FilterMatch: "all", Conditions: []map[string]string{{"id": condition}}, Filters: []any{}, Actions: actions.([]legacyIssueAction), Frequency: 30}, nil
+		return legacyIssuePayload{Name: name, ActionMatch: "all", FilterMatch: "all", Conditions: []map[string]any{{"id": condition}}, Filters: []map[string]any{}, Actions: actions.([]legacyIssueAction), Frequency: 30}, nil
 	}
 	aggregate, ok := metricAggregate(desired.Trigger)
 	if !ok {
@@ -381,7 +414,7 @@ func (a *LegacyHTTPAdapter) destinationActions(adapter string, names []string) (
 }
 
 func (a *LegacyHTTPAdapter) create(ctx context.Context, adapter, organization, projectSlug, name string, desired Desired) (string, error) {
-	body, err := a.payload(adapter, projectSlug, name, desired)
+	body, err := a.payloadContext(ctx, adapter, organization, projectSlug, name, desired)
 	if err != nil {
 		return "", err
 	}

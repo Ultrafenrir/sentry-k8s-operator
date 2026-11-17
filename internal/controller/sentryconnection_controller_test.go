@@ -228,5 +228,39 @@ var _ = Describe("SentryConnection Controller", func() {
 				HaveField("Reason", "ConnectionVerified"),
 			)))
 		})
+		It("rejects invalid cross-field configuration before creating or probing a client", func() {
+			resource := &sentryconfigurationv1alpha1.SentryConnection{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
+			resource.Spec.URL = "http://sentry.example.test"
+			Expect(k8sClient.Update(ctx, resource)).To(Succeed())
+
+			probes := 0
+			registry := connectionruntime.NewRegistry()
+			_, _, err := registry.Apply(resourceName, "https://sentry.example.test", connectionruntime.SecretInputs{Token: []byte("test")})
+			Expect(err).NotTo(HaveOccurred())
+			_, found := registry.Get(resourceName)
+			Expect(found).To(BeTrue())
+			reconciler := &SentryConnectionReconciler{
+				Client: k8sClient, Scheme: k8sClient.Scheme(), OperatorNamespace: operatorNamespace, Registry: registry,
+				ProbeConnection: func(context.Context, *sentryapi.Client, string) (string, error) {
+					probes++
+					return "company", nil
+				},
+			}
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+			Expect(probes).To(Equal(0))
+			_, found = registry.Get(resourceName)
+			Expect(found).To(BeFalse())
+
+			updated := &sentryconfigurationv1alpha1.SentryConnection{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+			Expect(updated.Status.Conditions).To(ContainElement(And(
+				HaveField("Type", "Ready"),
+				HaveField("Status", metav1.ConditionFalse),
+				HaveField("Reason", "SpecInvalid"),
+			)))
+		})
 	})
 })

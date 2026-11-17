@@ -160,6 +160,44 @@ func TestLegacyHTTPAdapterRendersUserCountAggregate(t *testing.T) {
 	}
 }
 
+func TestLegacyHTTPAdapterRendersTypedIssueAndChangeMetricRules(t *testing.T) {
+	t.Parallel()
+	adapter := &LegacyHTTPAdapter{Client: &sentryapi.Client{}, Destinations: map[string]binding.DestinationBinding{
+		"page": {Kind: "pagerduty", State: "Active", IntegrationIdentity: "34", ResourceIdentity: "567", ResourceName: "checkout"},
+	}}
+	issue := Desired{
+		Trigger: TriggerFirstSeen, Enabled: true,
+		Issue:   &IssueDesired{TriggerMatch: "any", FilterMatch: "all", Triggers: []IssueTriggerDesired{{Type: TriggerFirstSeen}, {Type: TriggerEventCount, WindowMinutes: 5, Threshold: 20}}, Filters: []IssueFilterDesired{{Type: "level", Operator: "eq", Value: "fatal"}}},
+		Actions: []ActionDesired{{Destination: "page", PagerDutySeverity: "critical"}}, ThrottleMinutes: 30,
+	}
+	payloadValue, err := adapter.typedLegacyPayload(context.Background(), LegacyIssueAdapter, "", "checkout", "issue", issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := payloadValue.(legacyIssuePayload)
+	if len(payload.Conditions) != 2 || payload.Frequency != 30 || len(payload.Filters) != 1 || len(payload.Actions) != 1 || payload.Actions[0].Severity != "critical" {
+		t.Fatalf("issue payload=%#v", payload)
+	}
+	if payload.Filters[0]["match"] != "eq" || payload.Filters[0]["level"] != "50" {
+		t.Fatalf("legacy level filter=%#v", payload.Filters[0])
+	}
+
+	medium, resolve := float64(20), float64(10)
+	metric := Desired{
+		Trigger: TriggerDuration, Enabled: true,
+		Metric:  &MetricDesired{Preset: "duration", IntervalMinutes: 60, Detection: DetectionDesired{Kind: "change", Direction: "above", High: 40, Medium: &medium, Resolve: &resolve, CompareMinutes: 10080}},
+		Actions: []ActionDesired{{Destination: "page", Status: "high", PagerDutySeverity: "critical"}, {Destination: "page", Status: "medium", PagerDutySeverity: "warning"}},
+	}
+	metricValue, err := adapter.typedLegacyPayload(context.Background(), LegacyMetricAdapter, "", "checkout", "metric", metric)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metricPayload := metricValue.(legacyMetricPayload)
+	if metricPayload.QueryType != 1 || metricPayload.Dataset != "transactions" || metricPayload.Aggregate != "p95(transaction.duration)" || metricPayload.ComparisonDelta != 604800 || len(metricPayload.Triggers) != 2 || metricPayload.Triggers[1].Actions[0].Severity != "warning" {
+		t.Fatalf("metric payload=%#v", metricPayload)
+	}
+}
+
 func TestLegacyRouterSupportsMixedIssueAndMetricIdentities(t *testing.T) {
 	t.Parallel()
 	remote := &legacyTestRemote{}

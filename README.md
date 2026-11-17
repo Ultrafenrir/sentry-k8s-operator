@@ -3,7 +3,7 @@
 This operator manages Sentry projects and alert rules through Kubernetes custom resources.
 Its public interface consists of three CRDs:
 
-- `SentryConnection` defines the Sentry API endpoint, credentials, access policy, and optional integration catalogs.
+- `SentryConnection` defines the Sentry API endpoint, credentials, and optional integration catalogs.
 - `SentryProject` creates or observes a Sentry project and manages its configuration.
 - `SentryAlertPolicy` defines reusable alert rules consumed by projects.
 
@@ -34,13 +34,6 @@ sentryConnection:
       alerts: modern-26.10.1
     projectManagement:
       unmanagedProjects: Reject
-    access:
-      - owner: payments
-        namespaces:
-          matchNames: [payments]
-        teams: [payments]
-        allowCreate: true
-
 controllerMonitoring:
   enabled: false
 ```
@@ -72,7 +65,13 @@ The controller can only read and patch Secrets named `sentry-dsns` outside its o
 cannot create, delete, list, or watch application Secrets. Optional symbol-source credentials use
 the separately pre-created, read-only `sentry-project-inputs` Secret.
 
-See [docs/quickstart.md](docs/quickstart.md) for test project and alert policy examples.
+Kubernetes RBAC on namespaced `SentryProject` resources controls who may select Sentry projects
+and teams through the shared connection. Team selection is declared on each project, not on the
+connection.
+
+See [docs/quickstart.md](docs/quickstart.md) for a first project and policy, then use the complete
+[CRD configuration reference](docs/configuration.md) for every supported field, version
+compatibility, ownership semantics, and status reason.
 
 ## Development
 

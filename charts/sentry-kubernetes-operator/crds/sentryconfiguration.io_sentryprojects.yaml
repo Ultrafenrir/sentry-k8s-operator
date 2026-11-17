@@ -61,9 +61,269 @@ spec:
                   description: AlertSpec is adapter-neutral and references notification
                     destinations only by local key.
                   properties:
+                    actions:
+                      items:
+                        properties:
+                          destination:
+                            description: Destination references one flattened notification
+                              target such as pagerDuty/on-call.
+                            maxLength: 211
+                            type: string
+                          email:
+                            properties:
+                              target:
+                                description: EmailTarget is restricted to ownership-aware
+                                  recipients.
+                                enum:
+                                - suggested-assignees
+                                - team
+                                type: string
+                              team:
+                                maxLength: 63
+                                type: string
+                            required:
+                            - target
+                            type: object
+                          pagerDutySeverity:
+                            description: PagerDutySeverity is explicit so modern and
+                              legacy adapters cannot invent different defaults.
+                            enum:
+                            - default
+                            - critical
+                            - warning
+                            - error
+                            - info
+                            type: string
+                          status:
+                            default: triggered
+                            description: AlertActionStatus selects the detector state
+                              that invokes an action.
+                            enum:
+                            - triggered
+                            - high
+                            - medium
+                            - resolved
+                            type: string
+                        type: object
+                      maxItems: 20
+                      type: array
+                      x-kubernetes-list-type: atomic
+                    description:
+                      maxLength: 1024
+                      type: string
                     enabled:
                       default: true
                       type: boolean
+                    issue:
+                      properties:
+                        environment:
+                          maxLength: 64
+                          type: string
+                        filterMatch:
+                          default: all
+                          description: MatchMode controls boolean composition of typed
+                            triggers and filters.
+                          enum:
+                          - all
+                          - any
+                          type: string
+                        filters:
+                          items:
+                            properties:
+                              key:
+                                maxLength: 64
+                                type: string
+                              operator:
+                                description: FilterOperator is shared by bounded numeric
+                                  and textual issue filters.
+                                enum:
+                                - eq
+                                - neq
+                                - gt
+                                - gte
+                                - lt
+                                - lte
+                                - contains
+                                type: string
+                              type:
+                                description: IssueFilterType is deliberately bounded;
+                                  raw Sentry condition identifiers are excluded.
+                                enum:
+                                - age
+                                - assignment
+                                - category
+                                - frequency
+                                - priority
+                                - type
+                                - event-attribute
+                                - tag
+                                - latest-release
+                                - release-age
+                                - level
+                                type: string
+                              value:
+                                maxLength: 256
+                                type: string
+                            required:
+                            - operator
+                            - type
+                            - value
+                            type: object
+                          maxItems: 16
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        triggerMatch:
+                          default: any
+                          description: MatchMode controls boolean composition of typed
+                            triggers and filters.
+                          enum:
+                          - all
+                          - any
+                          type: string
+                        triggers:
+                          items:
+                            properties:
+                              threshold:
+                                description: Required for event-count, user-count,
+                                  and session-percentage.
+                                format: int64
+                                minimum: 1
+                                type: integer
+                              type:
+                                description: IssueTriggerType selects one issue-state
+                                  transition supported by at least one adapter.
+                                enum:
+                                - first-seen
+                                - regression
+                                - resolved
+                                - escalation
+                                - event-count
+                                - user-count
+                                - session-percentage
+                                type: string
+                              windowMinutes:
+                                description: Required for event-count, user-count,
+                                  and session-percentage.
+                                format: int32
+                                maximum: 10080
+                                minimum: 1
+                                type: integer
+                            required:
+                            - type
+                            type: object
+                          maxItems: 16
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-map-keys:
+                          - type
+                          x-kubernetes-list-type: map
+                      required:
+                      - triggers
+                      type: object
+                    metric:
+                      properties:
+                        detection:
+                          properties:
+                            change:
+                              properties:
+                                compareMinutes:
+                                  format: int32
+                                  maximum: 10080
+                                  minimum: 1
+                                  type: integer
+                                direction:
+                                  description: ThresholdDirection selects the side
+                                    of the boundary that opens an issue.
+                                  enum:
+                                  - above
+                                  - below
+                                  type: string
+                                highPercent:
+                                  format: int64
+                                  type: integer
+                                mediumPercent:
+                                  format: int64
+                                  type: integer
+                                resolvePercent:
+                                  format: int64
+                                  type: integer
+                              required:
+                              - compareMinutes
+                              - direction
+                              - highPercent
+                              type: object
+                            dynamic:
+                              properties:
+                                direction:
+                                  description: DynamicDirection controls which anomaly
+                                    movement is detected.
+                                  enum:
+                                  - above
+                                  - below
+                                  - both
+                                  type: string
+                                responsiveness:
+                                  description: DynamicResponsiveness controls modern
+                                    anomaly sensitivity.
+                                  enum:
+                                  - high
+                                  - medium
+                                  - low
+                                  type: string
+                              required:
+                              - direction
+                              - responsiveness
+                              type: object
+                            static:
+                              properties:
+                                direction:
+                                  description: ThresholdDirection selects the side
+                                    of the boundary that opens an issue.
+                                  enum:
+                                  - above
+                                  - below
+                                  type: string
+                                high:
+                                  format: int64
+                                  type: integer
+                                medium:
+                                  format: int64
+                                  type: integer
+                                resolve:
+                                  format: int64
+                                  type: integer
+                              required:
+                              - direction
+                              - high
+                              type: object
+                          type: object
+                        environment:
+                          maxLength: 64
+                          type: string
+                        intervalMinutes:
+                          format: int32
+                          maximum: 1440
+                          minimum: 1
+                          type: integer
+                        preset:
+                          description: MetricPreset selects a known Sentry aggregate
+                            without exposing arbitrary query syntax.
+                          enum:
+                          - error-count
+                          - affected-users
+                          - crash-free-sessions
+                          - crash-free-users
+                          - throughput
+                          - duration
+                          - failure-rate
+                          - largest-contentful-paint
+                          - logs
+                          type: string
+                      required:
+                      - detection
+                      - intervalMinutes
+                      - preset
+                      type: object
                     notify:
                       items:
                         maxLength: 211
@@ -74,13 +334,23 @@ spec:
                       minItems: 1
                       type: array
                       x-kubernetes-list-type: set
+                    ownerTeam:
+                      maxLength: 63
+                      type: string
                     threshold:
                       format: int64
                       minimum: 1
                       type: integer
+                    throttleMinutes:
+                      description: Zero means notify on every trigger.
+                      format: int32
+                      maximum: 43200
+                      minimum: 0
+                      type: integer
                     trigger:
-                      description: AlertTrigger is the portable alert condition exposed
-                        by the operator.
+                      description: |-
+                        Trigger, windowMinutes, threshold, and notify are the compact compatibility form.
+                        New manifests should select exactly one typed issue or metric block.
                       enum:
                       - first-seen
                       - regression
@@ -92,9 +362,6 @@ spec:
                       maximum: 1440
                       minimum: 1
                       type: integer
-                  required:
-                  - notify
-                  - trigger
                   type: object
                 description: |-
                   An absent alerts field leaves existing alert children unmanaged. An explicit empty map
@@ -110,6 +377,22 @@ spec:
                     active:
                       default: true
                       type: boolean
+                    loader:
+                      description: |-
+                        ClientKeyLoaderSpec owns the bounded JavaScript loader switches associated with a
+                        managed client key. DSNs and OTLP endpoints are derived outputs, not desired state.
+                      properties:
+                        debug:
+                          type: boolean
+                        logsAndMetrics:
+                          type: boolean
+                        replay:
+                          type: boolean
+                        tracing:
+                          type: boolean
+                        userFeedback:
+                          type: boolean
+                      type: object
                     rateLimit:
                       description: |-
                         ClientKeyRateLimit caps accepted errors for one managed client key. A missing rateLimit
@@ -207,8 +490,8 @@ spec:
                 type: object
               grantAccess:
                 description: |-
-                  GrantAccess manages additional team access for a managed project. The connection access
-                  rule must authorize every team slug.
+                  GrantAccess manages additional team access for a managed project. Kubernetes RBAC on the
+                  namespaced SentryProject is the authorization boundary for selecting team slugs.
                 properties:
                   teams:
                     items:
@@ -352,6 +635,12 @@ spec:
                     description: ProjectCreate identifies a new project entirely through
                       readable values.
                     properties:
+                      displayName:
+                        description: |-
+                          DisplayName is the human-facing Sentry project name. The Kubernetes name remains
+                          the stable project slug and ownership key.
+                        maxLength: 64
+                        type: string
                       platform:
                         maxLength: 64
                         minLength: 1
@@ -426,6 +715,8 @@ spec:
                         maxLength: 64
                         pattern: ^[^\n\r\f/]*$
                         type: string
+                      releaseAutoCreation:
+                        type: boolean
                       scrapeJavaScript:
                         description: ScrapeJavaScript permits Sentry to fetch JavaScript
                           source files and source maps.
@@ -436,10 +727,35 @@ spec:
                       FilterSettings contains the source-confirmed inbound filters. A nil field is unmanaged;
                       an explicitly empty legacyBrowsers set disables every managed browser subfilter.
                     properties:
+                      applicationMetrics:
+                        items:
+                          maxLength: 200
+                          type: string
+                        maxItems: 100
+                        type: array
+                        x-kubernetes-list-type: set
                       browserExtensions:
                         type: boolean
+                      chunkLoadErrors:
+                        type: boolean
+                      errorMessages:
+                        items:
+                          maxLength: 200
+                          type: string
+                        maxItems: 100
+                        type: array
+                        x-kubernetes-list-type: set
                       filteredTransactions:
                         type: boolean
+                      hydrationErrors:
+                        type: boolean
+                      ipAddresses:
+                        items:
+                          maxLength: 128
+                          type: string
+                        maxItems: 100
+                        type: array
+                        x-kubernetes-list-type: set
                       legacyBrowsers:
                         items:
                           description: LegacyBrowserFilter selects one standard Sentry
@@ -459,6 +775,23 @@ spec:
                         x-kubernetes-list-type: set
                       localhost:
                         type: boolean
+                      logMessages:
+                        description: |-
+                          Modern-only filters. Compatibility validation rejects them before external I/O on
+                          legacy connections.
+                        items:
+                          maxLength: 200
+                          type: string
+                        maxItems: 100
+                        type: array
+                        x-kubernetes-list-type: set
+                      releases:
+                        items:
+                          maxLength: 200
+                          type: string
+                        maxItems: 100
+                        type: array
+                        x-kubernetes-list-type: set
                       webCrawlers:
                         type: boolean
                     type: object
@@ -551,6 +884,27 @@ spec:
                         maxItems: 100
                         type: array
                     type: object
+                  notifications:
+                    description: ProjectNotificationSettings contains project-wide
+                      email formatting and digest defaults.
+                    properties:
+                      maximumDigestMinutes:
+                        format: int32
+                        maximum: 60
+                        minimum: 1
+                        type: integer
+                      minimumDigestMinutes:
+                        format: int32
+                        maximum: 60
+                        minimum: 1
+                        type: integer
+                      subjectPrefix:
+                        maxLength: 200
+                        type: string
+                      subjectTemplate:
+                        maxLength: 200
+                        type: string
+                    type: object
                   pii:
                     description: PIISettings contains the source-confirmed, adapter-neutral
                       data scrubbing fields.
@@ -591,6 +945,8 @@ spec:
                                     - contexts
                                     - tags
                                     - breadcrumbs
+                                    - log-body
+                                    - metric-attribute
                                     type: string
                                 required:
                                 - root
@@ -599,6 +955,14 @@ spec:
                               minItems: 1
                               type: array
                               x-kubernetes-list-type: atomic
+                            dataset:
+                              description: Dataset defaults to events for compatibility
+                                with existing manifests.
+                              enum:
+                              - events
+                              - logs
+                              - application-metrics
+                              type: string
                             redaction:
                               description: AdvancedPIIRedaction selects the bounded
                                 redaction applied after a detector matches.

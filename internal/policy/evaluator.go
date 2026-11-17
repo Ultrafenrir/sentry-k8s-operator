@@ -14,7 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package policy evaluates trusted SentryConnection policy before any external lookup.
+// Package policy derives project capabilities from the SentryProject and validates references
+// to connection-owned integration catalogs before any external lookup.
 package policy
 
 import (
@@ -24,13 +25,12 @@ import (
 	sentryv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
 )
 
-// ErrorKind is a stable authorization failure classification.
+// ErrorKind is a stable project capability or catalog failure classification.
 type ErrorKind string
 
 const (
-	ErrorAccessDenied            ErrorKind = "AccessDenied"
-	ErrorPolicyAmbiguous         ErrorKind = "PolicyAmbiguous"
-	ErrorDestinationAccessDenied ErrorKind = "DestinationAccessDenied"
+	ErrorProjectInvalid         ErrorKind = "ProjectInvalid"
+	ErrorDestinationUnavailable ErrorKind = "DestinationUnavailable"
 )
 
 // Error deliberately excludes policy contents and external identities.
@@ -38,7 +38,7 @@ type Error struct {
 	Kind ErrorKind
 }
 
-func (e *Error) Error() string { return fmt.Sprintf("Sentry policy: %s", e.Kind) }
+func (e *Error) Error() string { return fmt.Sprintf("Sentry project capability: %s", e.Kind) }
 
 // IsKind reports whether err has a stable policy classification.
 func IsKind(err error, kind ErrorKind) bool {
@@ -48,101 +48,64 @@ func IsKind(err error, kind ErrorKind) bool {
 
 // Decision is the non-secret authorization result consumed by reconciliation.
 type Decision struct {
-	Owner         string
-	AccessMode    string
-	ConsumeDSN    bool
-	PolicyMatched bool
+	Owner      string
+	AccessMode string
+	ConsumeDSN bool
 }
 
-// Evaluate authorizes one SentryProject against the connection's exact namespace rule.
+// Evaluate derives capabilities from the namespaced SentryProject. Kubernetes RBAC is the
+// authorization boundary for creating and updating projects; the connection does not maintain
+// a second namespace or team allowlist.
 func Evaluate(namespace string, project sentryv1alpha1.SentryProjectSpec, connection sentryv1alpha1.SentryConnectionSpec) (Decision, error) {
-	rule, err := ruleForNamespace(namespace, connection.Access)
-	if err != nil {
-		return Decision{}, err
-	}
-	decision := Decision{Owner: rule.Owner, PolicyMatched: true}
 	if project.Project.Create != nil {
-		if !rule.AllowCreate || !contains(rule.Teams, project.Project.Create.Team) {
-			return Decision{}, &Error{Kind: ErrorAccessDenied}
+		if namespace == "" || project.Project.Use != nil || project.Project.Create.Team == "" {
+			return Decision{}, &Error{Kind: ErrorProjectInvalid}
 		}
 		targets, flattenErr := project.NotificationTargets.Flatten()
 		if flattenErr != nil {
-			return Decision{}, &Error{Kind: ErrorDestinationAccessDenied}
+			return Decision{}, &Error{Kind: ErrorDestinationUnavailable}
 		}
-		if err := authorizeDestinations(targets, rule, connection.Integrations); err != nil {
+		if err := authorizeDestinations(targets, connection.Integrations); err != nil {
 			return Decision{}, err
 		}
-		decision.AccessMode = "Manage"
-		decision.ConsumeDSN = true
-		return decision, nil
+		return Decision{Owner: project.Project.Create.Team, AccessMode: "Manage", ConsumeDSN: true}, nil
 	}
-	if project.Project.Use == nil || rule.ExistingProjects == nil || !contains(rule.ExistingProjects.Observe, *project.Project.Use) {
-		return Decision{}, &Error{Kind: ErrorAccessDenied}
+	if project.Project.Use == nil || *project.Project.Use == "" {
+		return Decision{}, &Error{Kind: ErrorProjectInvalid}
 	}
-	decision.Owner = ""
-	decision.AccessMode = "ReadOnly"
-	decision.ConsumeDSN = contains(rule.ExistingProjects.ConsumeDSN, *project.Project.Use)
-	if project.DSN != nil && !decision.ConsumeDSN {
-		return Decision{}, &Error{Kind: ErrorAccessDenied}
-	}
-	return decision, nil
+	return Decision{AccessMode: "ReadOnly", ConsumeDSN: project.DSN != nil}, nil
 }
 
-// EvaluateProject evaluates namespace, owner, project and DSN access while deliberately
-// excluding destination grants. Independent destination denial must not stop project,
-// settings, DSN, or another allowed destination from reconciling.
+// EvaluateProject derives the base project mode while deliberately excluding notification
+// targets. One invalid target must not stop unrelated project components from reconciling.
 func EvaluateProject(namespace string, project sentryv1alpha1.SentryProjectSpec, connection sentryv1alpha1.SentryConnectionSpec) (Decision, error) {
 	project.NotificationTargets = nil
 	project.GrantAccess = nil
 	return Evaluate(namespace, project, connection)
 }
 
-// AuthorizedProjectAccessTeams returns the independently authorized subset so revoked
-// grants can be cleaned up without blocking the project's unrelated components.
-func AuthorizedProjectAccessTeams(namespace string, project sentryv1alpha1.SentryProjectSpec, connection sentryv1alpha1.SentryConnectionSpec) ([]string, error) {
-	decision, err := EvaluateProject(namespace, project, connection)
-	if err != nil {
-		return nil, err
-	}
-	if decision.AccessMode != "Manage" || project.Project.Create == nil {
-		return nil, &Error{Kind: ErrorAccessDenied}
-	}
-	rule, err := ruleForNamespace(namespace, connection.Access)
-	if err != nil {
-		return nil, err
+// ProjectAccessTeams returns the additional teams declared by the project. The
+// primary team must not be repeated because it already owns the project in Sentry.
+func ProjectAccessTeams(project sentryv1alpha1.SentryProjectSpec) ([]string, error) {
+	if project.Project.Create == nil {
+		return nil, &Error{Kind: ErrorProjectInvalid}
 	}
 	if project.GrantAccess == nil {
 		return nil, nil
 	}
-	result := make([]string, 0, len(project.GrantAccess.Teams))
-	denied := false
 	for _, team := range project.GrantAccess.Teams {
-		if team == project.Project.Create.Team || !contains(rule.Teams, team) {
-			denied = true
-			continue
+		if team == project.Project.Create.Team {
+			return nil, &Error{Kind: ErrorProjectInvalid}
 		}
-		result = append(result, team)
 	}
-	if denied {
-		return result, &Error{Kind: ErrorAccessDenied}
-	}
-	return result, nil
+	return append([]string(nil), project.GrantAccess.Teams...), nil
 }
 
-// AuthorizedIssueOwnershipTeams returns the independently authorized team references used
-// by issue ownership rules. A referenced team must be connection-authorized and already be
-// the primary project team or declared through grantAccess.
-func AuthorizedIssueOwnershipTeams(namespace string, project sentryv1alpha1.SentryProjectSpec, connection sentryv1alpha1.SentryConnectionSpec) ([]string, error) {
-	decision, err := EvaluateProject(namespace, project, connection)
-	if err != nil {
-		return nil, err
-	}
-	if decision.AccessMode != "Manage" || project.Project.Create == nil || project.IssueOwnership == nil {
-		return nil, &Error{Kind: ErrorAccessDenied}
-	}
-	rule, err := ruleForNamespace(namespace, connection.Access)
-	if err != nil {
-		return nil, err
+// IssueOwnershipTeams returns team references used by issue ownership rules. Every
+// referenced team must be the primary project team or be declared through grantAccess.
+func IssueOwnershipTeams(project sentryv1alpha1.SentryProjectSpec) ([]string, error) {
+	if project.Project.Create == nil || project.IssueOwnership == nil {
+		return nil, &Error{Kind: ErrorProjectInvalid}
 	}
 	attached := map[string]bool{project.Project.Create.Team: true}
 	if project.GrantAccess != nil {
@@ -155,7 +118,7 @@ func AuthorizedIssueOwnershipTeams(namespace string, project sentryv1alpha1.Sent
 	denied := false
 	for _, ownershipRule := range project.IssueOwnership.Rules {
 		for _, team := range ownershipRule.Teams {
-			if !attached[team] || !contains(rule.Teams, team) {
+			if !attached[team] {
 				denied = true
 				continue
 			}
@@ -166,7 +129,7 @@ func AuthorizedIssueOwnershipTeams(namespace string, project sentryv1alpha1.Sent
 		}
 	}
 	if denied {
-		return result, &Error{Kind: ErrorAccessDenied}
+		return result, &Error{Kind: ErrorProjectInvalid}
 	}
 	return result, nil
 }
@@ -178,40 +141,15 @@ func EvaluateDestination(namespace string, project sentryv1alpha1.SentryProjectS
 	if err != nil {
 		return Decision{}, err
 	}
-	rule, err := ruleForNamespace(namespace, connection.Access)
-	if err != nil {
-		return Decision{}, err
-	}
-	if err := authorizeDestinations(map[string]sentryv1alpha1.DestinationSpec{"target": destination}, rule, connection.Integrations); err != nil {
+	if err := authorizeDestinations(map[string]sentryv1alpha1.DestinationSpec{"target": destination}, connection.Integrations); err != nil {
 		return Decision{}, err
 	}
 	return decision, nil
 }
 
-func ruleForNamespace(namespace string, rules []sentryv1alpha1.AccessRule) (sentryv1alpha1.AccessRule, error) {
-	var match sentryv1alpha1.AccessRule
-	matches := 0
-	for _, rule := range rules {
-		if contains(rule.Namespaces.MatchNames, namespace) {
-			match = rule
-			matches++
-		}
-	}
-	if matches == 0 {
-		return match, &Error{Kind: ErrorAccessDenied}
-	}
-	if matches > 1 {
-		return sentryv1alpha1.AccessRule{}, &Error{Kind: ErrorPolicyAmbiguous}
-	}
-	return match, nil
-}
-
-func authorizeDestinations(destinations map[string]sentryv1alpha1.DestinationSpec, rule sentryv1alpha1.AccessRule, integrations *sentryv1alpha1.ConnectionIntegrations) error {
+func authorizeDestinations(destinations map[string]sentryv1alpha1.DestinationSpec, integrations *sentryv1alpha1.ConnectionIntegrations) error {
 	if len(destinations) == 0 {
 		return nil
-	}
-	if rule.NotificationTargets == nil {
-		return &Error{Kind: ErrorDestinationAccessDenied}
 	}
 	for _, destination := range destinations {
 		types := 0
@@ -222,23 +160,21 @@ func authorizeDestinations(destinations map[string]sentryv1alpha1.DestinationSpe
 			types++
 		}
 		if types != 1 {
-			return &Error{Kind: ErrorDestinationAccessDenied}
+			return &Error{Kind: ErrorDestinationUnavailable}
 		}
 		switch {
 		case destination.Slack != nil:
 			workspace := destination.Slack.Workspace
-			allowed := rule.NotificationTargets != nil && contains(rule.NotificationTargets.SlackWorkspaces, workspace) && catalogContains(integrations, "slack", workspace)
-			if !allowed {
-				return &Error{Kind: ErrorDestinationAccessDenied}
+			if !catalogContains(integrations, "slack", workspace) {
+				return &Error{Kind: ErrorDestinationUnavailable}
 			}
 		case destination.PagerDuty != nil:
 			account := destination.PagerDuty.Account
-			allowed := rule.NotificationTargets != nil && contains(rule.NotificationTargets.PagerDutyAccounts, account) && catalogContains(integrations, "pagerduty", account)
-			if !allowed {
-				return &Error{Kind: ErrorDestinationAccessDenied}
+			if !catalogContains(integrations, "pagerduty", account) {
+				return &Error{Kind: ErrorDestinationUnavailable}
 			}
 		default:
-			return &Error{Kind: ErrorDestinationAccessDenied}
+			return &Error{Kind: ErrorDestinationUnavailable}
 		}
 	}
 	return nil
@@ -257,20 +193,6 @@ func catalogContains(integrations *sentryv1alpha1.ConnectionIntegrations, provid
 	}
 	for _, entry := range entries {
 		if entry.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
-func contains(values []string, wanted string) bool {
-	return containsNormalized(values, wanted, func(value string) string { return value })
-}
-
-func containsNormalized(values []string, wanted string, normalize func(string) string) bool {
-	wanted = normalize(wanted)
-	for _, value := range values {
-		if normalize(value) == wanted {
 			return true
 		}
 	}

@@ -1,6 +1,7 @@
 # Development runbook
 
-Prerequisites are Go 1.26, Make, Docker, kubectl, Helm, and `controller-gen`.
+Prerequisites are Go 1.26, Make, Docker, kubectl, Helm, `controller-gen`, and the custom
+`golangci-lint` binary built from `.custom-gcl.yml` with `golangci-lint custom`.
 Controller tests also need envtest binaries. `make test` uses `KUBEBUILDER_ASSETS`, a local
 `.tools/envtest/1.35.0` installation, or `setup-envtest`, in that order.
 The Makefile keeps the Go build cache separate for every patch version so switching Go toolchains

@@ -22,207 +22,115 @@ import (
 	sentryv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
 )
 
-func TestEvaluateNotificationTargetCatalogDoesNotMaintainChannelAllowlists(t *testing.T) {
+func TestEvaluateDerivesManagedProjectFromNamespace(t *testing.T) {
+	t.Parallel()
+	project := sentryv1alpha1.SentryProjectSpec{Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}}}
+	decision, err := EvaluateProject("checkout-prod", project, sentryv1alpha1.SentryConnectionSpec{})
+	if err != nil || decision.AccessMode != "Manage" || decision.Owner != "payments" || !decision.ConsumeDSN {
+		t.Fatalf("decision=%#v err=%v", decision, err)
+	}
+}
+
+func TestEvaluateExistingProjectUsesProjectDSNIntent(t *testing.T) {
+	t.Parallel()
+	slug := "shared-platform"
+	project := sentryv1alpha1.SentryProjectSpec{Project: sentryv1alpha1.ProjectSelector{Use: &slug}}
+	decision, err := EvaluateProject("checkout-prod", project, sentryv1alpha1.SentryConnectionSpec{})
+	if err != nil || decision.AccessMode != "ReadOnly" || decision.Owner != "" || decision.ConsumeDSN {
+		t.Fatalf("observe decision=%#v err=%v", decision, err)
+	}
+	project.DSN = &sentryv1alpha1.DSNSpec{}
+	decision, err = EvaluateProject("checkout-prod", project, sentryv1alpha1.SentryConnectionSpec{})
+	if err != nil || !decision.ConsumeDSN {
+		t.Fatalf("DSN decision=%#v err=%v", decision, err)
+	}
+}
+
+func TestEvaluateRejectsAmbiguousProjectSelector(t *testing.T) {
+	t.Parallel()
+	slug := "existing"
+	project := sentryv1alpha1.SentryProjectSpec{Project: sentryv1alpha1.ProjectSelector{
+		Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}, Use: &slug,
+	}}
+	if _, err := EvaluateProject("checkout-prod", project, sentryv1alpha1.SentryConnectionSpec{}); !IsKind(err, ErrorProjectInvalid) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestEvaluateNotificationTargetsUseConnectionCatalog(t *testing.T) {
 	t.Parallel()
 	connection := testConnection()
-	connection.Integrations = &sentryv1alpha1.ConnectionIntegrations{
-		Slack:     &sentryv1alpha1.SlackIntegration{Workspaces: []sentryv1alpha1.IntegrationCatalogEntry{{Name: "company", SentryName: "Company Slack"}}},
-		PagerDuty: &sentryv1alpha1.PagerDutyIntegration{Accounts: []sentryv1alpha1.IntegrationCatalogEntry{{Name: "primary", SentryName: "Company PagerDuty"}}},
-	}
-	connection.Access[0].NotificationTargets = &sentryv1alpha1.NotificationTargetAccess{
-		SlackWorkspaces:   []string{"company"},
-		PagerDutyAccounts: []string{"primary"},
-	}
 	project := sentryv1alpha1.SentryProjectSpec{
-		Project:             sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
-		NotificationTargets: &sentryv1alpha1.NotificationTargets{Slack: map[string][]string{"company": {"any-visible-channel"}}, PagerDuty: map[string][]string{"primary": {"Any Visible Service"}}},
+		Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
+		NotificationTargets: &sentryv1alpha1.NotificationTargets{
+			Slack: map[string][]string{"company": {"any-visible-channel"}}, PagerDuty: map[string][]string{"primary": {"Any Visible Service"}},
+		},
 	}
 	if _, err := Evaluate("checkout-prod", project, connection); err != nil {
-		t.Fatalf("catalog target authorization: %v", err)
+		t.Fatalf("catalog target: %v", err)
 	}
 	project.NotificationTargets.Slack = map[string][]string{"undeclared": {"any"}}
-	if _, err := Evaluate("checkout-prod", project, connection); !IsKind(err, ErrorDestinationAccessDenied) {
+	if _, err := Evaluate("checkout-prod", project, connection); !IsKind(err, ErrorDestinationUnavailable) {
 		t.Fatalf("undeclared workspace error=%v", err)
 	}
 }
 
-func TestEvaluateDeniesBeforeDestinationResolution(t *testing.T) {
+func TestEvaluateProjectIsIndependentFromInvalidDestination(t *testing.T) {
 	t.Parallel()
-
-	connection := testConnection()
 	project := sentryv1alpha1.SentryProjectSpec{
 		Project:             sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
-		NotificationTargets: &sentryv1alpha1.NotificationTargets{Slack: map[string][]string{"other": {"payments-alerts"}}},
+		NotificationTargets: &sentryv1alpha1.NotificationTargets{Slack: map[string][]string{"missing": {"alerts"}}},
 	}
-	if _, err := Evaluate("checkout-prod", project, connection); !IsKind(err, ErrorDestinationAccessDenied) {
-		t.Fatalf("error = %v, want destination denied", err)
-	}
-}
-
-func TestEvaluateProjectKeepsBaseAccessIndependentFromDestinationGrant(t *testing.T) {
-	t.Parallel()
-
-	connection := testConnection()
-	project := sentryv1alpha1.SentryProjectSpec{
-		Project:             sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
-		NotificationTargets: &sentryv1alpha1.NotificationTargets{Slack: map[string][]string{"other": {"payments-alerts"}}},
-	}
-	decision, err := EvaluateProject("checkout-prod", project, connection)
-	if err != nil || decision.AccessMode != "Manage" || decision.Owner != "payments" {
+	decision, err := EvaluateProject("checkout-prod", project, testConnection())
+	if err != nil || decision.AccessMode != "Manage" {
 		t.Fatalf("base decision=%#v err=%v", decision, err)
 	}
-	if _, err := EvaluateDestination("checkout-prod", project, connection, sentryv1alpha1.DestinationSpec{Slack: &sentryv1alpha1.SlackDestination{Workspace: "other", Channel: "payments-alerts"}}); !IsKind(err, ErrorDestinationAccessDenied) {
+	if _, err := EvaluateDestination("checkout-prod", project, testConnection(), sentryv1alpha1.DestinationSpec{
+		Slack: &sentryv1alpha1.SlackDestination{Workspace: "missing", Channel: "alerts"},
+	}); !IsKind(err, ErrorDestinationUnavailable) {
 		t.Fatalf("destination error=%v", err)
 	}
 }
 
-func TestEvaluateRejectsAmbiguousReadableTargetNames(t *testing.T) {
+func TestProjectAccessTeamsComeFromProject(t *testing.T) {
 	t.Parallel()
-
-	connection := testConnection()
-	project := sentryv1alpha1.SentryProjectSpec{
-		Project:             sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
-		NotificationTargets: &sentryv1alpha1.NotificationTargets{Slack: map[string][]string{"company": {"incidents"}, "other": {"incidents"}}},
-	}
-	if _, err := Evaluate("checkout-prod", project, connection); !IsKind(err, ErrorDestinationAccessDenied) {
-		t.Fatalf("ambiguous target error = %v", err)
-	}
-}
-
-func TestEvaluateExternalRequiresObserveAndSeparateDSNGrant(t *testing.T) {
-	t.Parallel()
-
-	connection := testConnection()
-	observed := "shared-platform"
-	project := sentryv1alpha1.SentryProjectSpec{Project: sentryv1alpha1.ProjectSelector{Use: &observed}}
-	decision, err := Evaluate("checkout-prod", project, connection)
-	if err != nil {
-		t.Fatalf("observe-only: %v", err)
-	}
-	if decision.AccessMode != "ReadOnly" || decision.Owner != "" || decision.ConsumeDSN {
-		t.Fatalf("observe-only decision = %#v", decision)
-	}
-	project.DSN = &sentryv1alpha1.DSNSpec{}
-	if _, err := Evaluate("checkout-prod", project, connection); !IsKind(err, ErrorAccessDenied) {
-		t.Fatalf("DSN without grant error = %v", err)
-	}
-
-	consumable := "checkout-api"
-	project.Project.Use = &consumable
-	decision, err = Evaluate("checkout-prod", project, connection)
-	if err != nil || !decision.ConsumeDSN {
-		t.Fatalf("consume decision = %#v, %v", decision, err)
-	}
-}
-
-func TestEvaluateRejectsMissingAndAmbiguousNamespacePolicy(t *testing.T) {
-	t.Parallel()
-
-	connection := testConnection()
-	project := sentryv1alpha1.SentryProjectSpec{Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}}}
-	if _, err := Evaluate("unknown", project, connection); !IsKind(err, ErrorAccessDenied) {
-		t.Fatalf("missing rule error = %v", err)
-	}
-	duplicate := connection.Access[0]
-	duplicate.Owner = "other"
-	connection.Access = append(connection.Access, duplicate)
-	if _, err := Evaluate("checkout-prod", project, connection); !IsKind(err, ErrorPolicyAmbiguous) {
-		t.Fatalf("overlapping rule error = %v", err)
-	}
-}
-
-func TestEvaluateRequiresExactTeam(t *testing.T) {
-	t.Parallel()
-
-	connection := testConnection()
-	project := sentryv1alpha1.SentryProjectSpec{Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "Payments"}}}
-	if _, err := Evaluate("checkout-prod", project, connection); !IsKind(err, ErrorAccessDenied) {
-		t.Fatalf("case-insensitive team accepted: %v", err)
-	}
-	project.Project.Create.Team = "pay"
-	if _, err := Evaluate("checkout-prod", project, connection); !IsKind(err, ErrorAccessDenied) {
-		t.Fatalf("partial team accepted: %v", err)
-	}
-}
-
-func TestEvaluateRequiresEveryGrantedTeamToBeAuthorized(t *testing.T) {
-	t.Parallel()
-	connection := testConnection()
-	connection.Access[0].Teams = append(connection.Access[0].Teams, "backend")
 	project := sentryv1alpha1.SentryProjectSpec{
 		Project:     sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
-		GrantAccess: &sentryv1alpha1.ProjectGrantAccess{Teams: []string{"backend"}},
+		GrantAccess: &sentryv1alpha1.ProjectGrantAccess{Teams: []string{"backend", "platform"}},
 	}
-	allowed, err := AuthorizedProjectAccessTeams("checkout-prod", project, connection)
-	if err != nil || len(allowed) != 1 || allowed[0] != "backend" {
-		t.Fatalf("authorized grant rejected: %v", err)
-	}
-	project.GrantAccess.Teams = append(project.GrantAccess.Teams, "security")
-	allowed, err = AuthorizedProjectAccessTeams("checkout-prod", project, connection)
-	if !IsKind(err, ErrorAccessDenied) || len(allowed) != 1 || allowed[0] != "backend" {
-		t.Fatalf("unauthorized grant error=%v", err)
-	}
-	if decision, baseErr := EvaluateProject("checkout-prod", project, connection); baseErr != nil || decision.AccessMode != "Manage" {
-		t.Fatalf("grant denial blocked base project decision=%#v err=%v", decision, baseErr)
+	allowed, err := ProjectAccessTeams(project)
+	if err != nil || len(allowed) != 2 || allowed[0] != "backend" || allowed[1] != "platform" {
+		t.Fatalf("allowed=%v err=%v", allowed, err)
 	}
 	project.GrantAccess.Teams = []string{"payments"}
-	if _, err := AuthorizedProjectAccessTeams("checkout-prod", project, connection); !IsKind(err, ErrorAccessDenied) {
+	if _, err := ProjectAccessTeams(project); !IsKind(err, ErrorProjectInvalid) {
 		t.Fatalf("primary team repetition error=%v", err)
 	}
 }
 
-func TestAuthorizedIssueOwnershipTeamsRequiresAttachedConnectionAuthorizedTeams(t *testing.T) {
+func TestIssueOwnershipTeamsMustBeAttachedByProject(t *testing.T) {
 	t.Parallel()
-
-	connection := testConnection()
-	connection.Access[0].Teams = append(connection.Access[0].Teams, "backend")
 	project := sentryv1alpha1.SentryProjectSpec{
 		Project:     sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
 		GrantAccess: &sentryv1alpha1.ProjectGrantAccess{Teams: []string{"backend"}},
 		IssueOwnership: &sentryv1alpha1.IssueOwnershipSpec{Rules: []sentryv1alpha1.IssueOwnershipRule{{
-			Matcher: sentryv1alpha1.IssueOwnershipMatcher{Type: sentryv1alpha1.IssueOwnershipMatcherPath, Pattern: "src/*"},
-			Teams:   []string{"payments", "backend"},
+			Matcher: sentryv1alpha1.IssueOwnershipMatcher{Type: sentryv1alpha1.IssueOwnershipMatcherPath, Pattern: "src/*"}, Teams: []string{"payments", "backend"},
 		}}},
 	}
-	allowed, err := AuthorizedIssueOwnershipTeams("checkout-prod", project, connection)
-	if err != nil || len(allowed) != 2 || allowed[0] != "payments" || allowed[1] != "backend" {
+	allowed, err := IssueOwnershipTeams(project)
+	if err != nil || len(allowed) != 2 {
 		t.Fatalf("allowed=%v err=%v", allowed, err)
 	}
 	project.IssueOwnership.Rules[0].Teams = append(project.IssueOwnership.Rules[0].Teams, "security")
-	allowed, err = AuthorizedIssueOwnershipTeams("checkout-prod", project, connection)
-	if !IsKind(err, ErrorAccessDenied) || len(allowed) != 2 {
+	allowed, err = IssueOwnershipTeams(project)
+	if !IsKind(err, ErrorProjectInvalid) || len(allowed) != 2 {
 		t.Fatalf("allowed=%v err=%v", allowed, err)
-	}
-	project.GrantAccess.Teams = nil
-	project.IssueOwnership.Rules[0].Teams = []string{"backend"}
-	if _, err := AuthorizedIssueOwnershipTeams("checkout-prod", project, connection); !IsKind(err, ErrorAccessDenied) {
-		t.Fatalf("detached team error=%v", err)
 	}
 }
 
 func testConnection() sentryv1alpha1.SentryConnectionSpec {
-	return sentryv1alpha1.SentryConnectionSpec{
-		Access: []sentryv1alpha1.AccessRule{{
-			Owner:       "payments",
-			Namespaces:  sentryv1alpha1.NamespaceAccess{MatchNames: []string{"checkout-prod"}},
-			Teams:       []string{"payments"},
-			AllowCreate: true,
-			ExistingProjects: &sentryv1alpha1.ExistingProjectAccess{
-				Observe:    []string{"checkout-api", "shared-platform"},
-				ConsumeDSN: []string{"checkout-api"},
-			},
-			NotificationTargets: &sentryv1alpha1.NotificationTargetAccess{
-				SlackWorkspaces:   []string{"company"},
-				PagerDutyAccounts: []string{"primary"},
-			},
-		}},
-		Integrations: &sentryv1alpha1.ConnectionIntegrations{
-			Slack: &sentryv1alpha1.SlackIntegration{Workspaces: []sentryv1alpha1.IntegrationCatalogEntry{{
-				Name: "company", SentryName: "Company Slack",
-			}}},
-			PagerDuty: &sentryv1alpha1.PagerDutyIntegration{Accounts: []sentryv1alpha1.IntegrationCatalogEntry{{
-				Name: "primary", SentryName: "Company PagerDuty",
-			}}},
-		},
-	}
+	return sentryv1alpha1.SentryConnectionSpec{Integrations: &sentryv1alpha1.ConnectionIntegrations{
+		Slack:     &sentryv1alpha1.SlackIntegration{Workspaces: []sentryv1alpha1.IntegrationCatalogEntry{{Name: "company", SentryName: "Company Slack"}}},
+		PagerDuty: &sentryv1alpha1.PagerDutyIntegration{Accounts: []sentryv1alpha1.IntegrationCatalogEntry{{Name: "primary", SentryName: "Company PagerDuty"}}},
+	}}
 }

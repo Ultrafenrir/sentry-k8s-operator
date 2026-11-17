@@ -33,29 +33,6 @@ import (
 	projectruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/project"
 )
 
-func TestRevokeDSNWithoutProtectedBindingIsNotTemporaryFailure(t *testing.T) {
-	t.Parallel()
-	scheme := runtime.NewScheme()
-	if err := corev1.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	if err := sentryv1alpha1.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	reconciler := &SentryProjectReconciler{
-		Client:   kubeClient,
-		Bindings: &binding.Store{Client: kubeClient, Namespace: "operator-state"},
-	}
-	project := &sentryv1alpha1.SentryProject{ObjectMeta: metav1.ObjectMeta{
-		Name: "checkout", Namespace: "payments", UID: types.UID("new-project-uid"),
-	}}
-	revoked, err := reconciler.revokeDSNIfDenied(context.Background(), project)
-	if err != nil || revoked {
-		t.Fatalf("new project DSN revoke: revoked=%v err=%v", revoked, err)
-	}
-}
-
 func TestProjectDeletionRevokesOnlyItsSharedDSNKey(t *testing.T) {
 	t.Parallel()
 	scheme := runtime.NewScheme()
@@ -72,7 +49,6 @@ func TestProjectDeletionRevokesOnlyItsSharedDSNKey(t *testing.T) {
 	}
 	connection := &sentryv1alpha1.SentryConnection{
 		ObjectMeta: metav1.ObjectMeta{Name: "main"},
-		Spec:       sentryv1alpha1.SentryConnectionSpec{Access: []sentryv1alpha1.AccessRule{{Owner: "payments", Namespaces: sentryv1alpha1.NamespaceAccess{MatchNames: []string{"payments"}}, Teams: []string{"payments"}, AllowCreate: true}}},
 	}
 	output := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: sentryv1alpha1.DSNSecretName, Namespace: "payments"}, Type: corev1.SecretTypeOpaque, Data: map[string][]byte{"checkout": []byte("https://public@example.invalid/1"), "other": []byte("preserve")}}
 	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(project, connection, output).Build()

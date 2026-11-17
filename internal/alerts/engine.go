@@ -36,10 +36,20 @@ import (
 type Trigger string
 
 const (
-	TriggerFirstSeen  Trigger = "first-seen"
-	TriggerRegression Trigger = "regression"
-	TriggerEventCount Trigger = "event-count"
-	TriggerUserCount  Trigger = "user-count"
+	TriggerFirstSeen         Trigger = "first-seen"
+	TriggerRegression        Trigger = "regression"
+	TriggerResolved          Trigger = "resolved"
+	TriggerEscalation        Trigger = "escalation"
+	TriggerEventCount        Trigger = "event-count"
+	TriggerUserCount         Trigger = "user-count"
+	TriggerSessions          Trigger = "session-percentage"
+	TriggerCrashFreeSessions Trigger = "crash-free-sessions"
+	TriggerCrashFreeUsers    Trigger = "crash-free-users"
+	TriggerThroughput        Trigger = "throughput"
+	TriggerDuration          Trigger = "duration"
+	TriggerFailureRate       Trigger = "failure-rate"
+	TriggerLCP               Trigger = "largest-contentful-paint"
+	TriggerLogs              Trigger = "logs"
 
 	StateReady   = "Ready"
 	StateDeleted = "Deleted"
@@ -59,12 +69,65 @@ var localKeyPattern = regexp.MustCompile(`^[a-z](?:[a-z0-9-]*[a-z0-9])?$`)
 // Desired is deliberately adapter-neutral. It is internal until the same lifecycle is
 // accepted against every advertised Sentry target.
 type Desired struct {
-	Owner         binding.ChildOwner
-	Trigger       Trigger
-	WindowMinutes int
-	Threshold     int64
-	Enabled       bool
-	Notify        []string
+	Owner           binding.ChildOwner
+	Trigger         Trigger
+	WindowMinutes   int
+	Threshold       int64
+	Enabled         bool
+	Notify          []string
+	Issue           *IssueDesired
+	Metric          *MetricDesired
+	Actions         []ActionDesired
+	OwnerTeam       string
+	Description     string
+	ThrottleMinutes int32
+}
+
+type IssueDesired struct {
+	Triggers     []IssueTriggerDesired
+	TriggerMatch string
+	Filters      []IssueFilterDesired
+	FilterMatch  string
+	Environment  string
+}
+
+type IssueTriggerDesired struct {
+	Type          Trigger
+	WindowMinutes int32
+	Threshold     float64
+}
+
+type IssueFilterDesired struct {
+	Type     string
+	Operator string
+	Key      string
+	Value    string
+}
+
+type MetricDesired struct {
+	Preset          string
+	Environment     string
+	IntervalMinutes int32
+	Detection       DetectionDesired
+}
+
+type DetectionDesired struct {
+	Kind             string
+	Direction        string
+	High             float64
+	Medium           *float64
+	Resolve          *float64
+	CompareMinutes   int32
+	Responsiveness   string
+	AnomalyDirection string
+}
+
+type ActionDesired struct {
+	Destination       string
+	EmailTarget       string
+	EmailTeam         string
+	Status            string
+	PagerDutySeverity string
 }
 
 type Capability struct {
@@ -402,20 +465,42 @@ func selectCapability(input Input, keys []string) (Capability, error) {
 }
 
 func validateDesired(key string, desired Desired, destinations map[string]binding.DestinationBinding, requireOwner bool) error {
-	if len(key) > 63 || !localKeyPattern.MatchString(key) || (requireOwner && !desired.Owner.Valid()) || len(desired.Notify) == 0 || len(desired.Notify) > 20 {
+	if len(key) > 63 || !localKeyPattern.MatchString(key) || (requireOwner && !desired.Owner.Valid()) || len(desired.Notify) > 20 || len(desired.Actions) > 20 {
 		return ErrInvalidInput
 	}
-	switch desired.Trigger {
-	case TriggerFirstSeen, TriggerRegression:
-		if desired.WindowMinutes != 0 || desired.Threshold != 0 {
-			return ErrInvalidInput
-		}
-	case TriggerEventCount, TriggerUserCount:
-		if desired.WindowMinutes < 1 || desired.WindowMinutes > 1440 || desired.Threshold <= 0 {
-			return ErrInvalidInput
-		}
-	default:
+	if len(desired.Notify) == 0 && len(desired.Actions) == 0 {
 		return ErrInvalidInput
+	}
+	if desired.Issue != nil && desired.Metric != nil {
+		return ErrInvalidInput
+	}
+	if desired.Issue != nil {
+		if len(desired.Issue.Triggers) == 0 || desired.WindowMinutes != 0 || desired.Threshold != 0 {
+			return ErrInvalidInput
+		}
+		for _, trigger := range desired.Issue.Triggers {
+			counted := trigger.Type == TriggerEventCount || trigger.Type == TriggerUserCount || trigger.Type == TriggerSessions
+			if trigger.Type == "" || counted != (trigger.WindowMinutes > 0 && trigger.Threshold > 0) {
+				return ErrInvalidInput
+			}
+		}
+	} else if desired.Metric != nil {
+		if desired.Metric.IntervalMinutes < 1 || desired.Metric.IntervalMinutes > 1440 || desired.Metric.Detection.Kind == "" {
+			return ErrInvalidInput
+		}
+	} else {
+		switch desired.Trigger {
+		case TriggerFirstSeen, TriggerRegression:
+			if desired.WindowMinutes != 0 || desired.Threshold != 0 {
+				return ErrInvalidInput
+			}
+		case TriggerEventCount, TriggerUserCount:
+			if desired.WindowMinutes < 1 || desired.WindowMinutes > 1440 || desired.Threshold <= 0 {
+				return ErrInvalidInput
+			}
+		default:
+			return ErrInvalidInput
+		}
 	}
 	seen := make(map[string]struct{}, len(desired.Notify))
 	for _, name := range desired.Notify {
@@ -425,6 +510,16 @@ func validateDesired(key string, desired Desired, destinations map[string]bindin
 		seen[name] = struct{}{}
 		destination, ok := destinations[name]
 		if !ok || destination.State != "Active" {
+			return ErrInvalidInput
+		}
+	}
+	for _, action := range desired.Actions {
+		if action.Destination != "" {
+			destination, ok := destinations[action.Destination]
+			if !ok || destination.State != "Active" {
+				return ErrInvalidInput
+			}
+		} else if action.EmailTarget == "" {
 			return ErrInvalidInput
 		}
 	}
@@ -445,19 +540,30 @@ func metricAggregate(trigger Trigger) (string, bool) {
 func normalize(desired Desired) Desired {
 	desired.Notify = append([]string(nil), desired.Notify...)
 	sort.Strings(desired.Notify)
+	if desired.Issue != nil {
+		copyIssue := *desired.Issue
+		copyIssue.Triggers = append([]IssueTriggerDesired(nil), desired.Issue.Triggers...)
+		sort.Slice(copyIssue.Triggers, func(i, j int) bool {
+			if copyIssue.Triggers[i].Type != copyIssue.Triggers[j].Type {
+				return copyIssue.Triggers[i].Type < copyIssue.Triggers[j].Type
+			}
+			if copyIssue.Triggers[i].WindowMinutes != copyIssue.Triggers[j].WindowMinutes {
+				return copyIssue.Triggers[i].WindowMinutes < copyIssue.Triggers[j].WindowMinutes
+			}
+			return copyIssue.Triggers[i].Threshold < copyIssue.Triggers[j].Threshold
+		})
+		copyIssue.Filters = append([]IssueFilterDesired(nil), desired.Issue.Filters...)
+		desired.Issue = &copyIssue
+	}
+	desired.Actions = append([]ActionDesired(nil), desired.Actions...)
 	return desired
 }
 
 func desiredHash(desired Desired) string {
-	payload, _ := json.Marshal(struct {
-		Trigger       Trigger  `json:"trigger"`
-		WindowMinutes int      `json:"windowMinutes,omitempty"`
-		Threshold     int64    `json:"threshold,omitempty"`
-		Notify        []string `json:"notify"`
-	}{
-		Trigger: desired.Trigger, WindowMinutes: desired.WindowMinutes,
-		Threshold: desired.Threshold, Notify: desired.Notify,
-	})
+	canonical := normalize(desired)
+	canonical.Owner = binding.ChildOwner{}
+	canonical.Enabled = false
+	payload, _ := json.Marshal(canonical)
 	digest := sha256.Sum256(payload)
 	return hex.EncodeToString(digest[:])
 }
@@ -484,7 +590,7 @@ func newBinding(observed Observed, desired Desired) binding.AlertBinding {
 		Owner:   desired.Owner,
 		Adapter: observed.Adapter, ExternalIdentity: observed.Identity, Trigger: string(desired.Trigger),
 		DesiredHash: observed.DesiredHash, Enabled: observed.Enabled,
-		Destinations: append([]string(nil), desired.Notify...), Marker: observed.Marker,
+		Destinations: destinationReferences(desired), Marker: observed.Marker,
 	}
 }
 
@@ -545,7 +651,7 @@ func cloneTombstones(source map[string]bool) map[string]bool {
 func releasableDestinations(input Input, remaining map[string]binding.AlertBinding) []string {
 	referenced := make(map[string]bool)
 	for _, desired := range input.Desired {
-		for _, name := range desired.Notify {
+		for _, name := range destinationReferences(desired) {
 			referenced[name] = true
 		}
 	}
@@ -562,6 +668,26 @@ func releasableDestinations(input Input, remaining map[string]binding.AlertBindi
 	}
 	result := make([]string, 0, len(requested))
 	for name := range requested {
+		result = append(result, name)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func destinationReferences(desired Desired) []string {
+	seen := make(map[string]bool, len(desired.Notify)+len(desired.Actions))
+	for _, name := range desired.Notify {
+		if name != "" {
+			seen[name] = true
+		}
+	}
+	for _, action := range desired.Actions {
+		if action.Destination != "" {
+			seen[action.Destination] = true
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for name := range seen {
 		result = append(result, name)
 	}
 	sort.Strings(result)

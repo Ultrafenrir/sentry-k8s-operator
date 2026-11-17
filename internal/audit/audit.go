@@ -34,9 +34,8 @@ type Outcome string
 type Reason string
 
 const (
-	ComponentAlerts       Component = "alerts"
-	ComponentDestinations Component = "destinations"
-	ComponentProjects     Component = "projects"
+	ComponentAlerts   Component = "alerts"
+	ComponentProjects Component = "projects"
 
 	ActionCreate Action = "create"
 	ActionEnsure Action = "ensure"
@@ -117,8 +116,6 @@ func validComponentAction(component Component, action Action) bool {
 	switch component {
 	case ComponentAlerts:
 		return action == ActionEnsure || action == ActionUpdate || action == ActionToggle || action == ActionDelete
-	case ComponentDestinations:
-		return action == ActionDelete
 	case ComponentProjects:
 		return action == ActionCreate || action == ActionUpdate || action == ActionDelete
 	default:
@@ -127,7 +124,7 @@ func validComponentAction(component Component, action Action) bool {
 }
 
 func validComponent(value Component) bool {
-	return value == ComponentAlerts || value == ComponentDestinations || value == ComponentProjects
+	return value == ComponentAlerts || value == ComponentProjects
 }
 
 func validAction(value Action) bool {

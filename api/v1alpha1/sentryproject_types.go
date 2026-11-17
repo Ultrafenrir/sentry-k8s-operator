@@ -46,6 +46,12 @@ type ProjectCreate struct {
 	// +kubebuilder:validation:MaxLength=64
 	// +optional
 	Platform string `json:"platform,omitempty"`
+
+	// DisplayName is the human-facing Sentry project name. The Kubernetes name remains
+	// the stable project slug and ownership key.
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	DisplayName string `json:"displayName,omitempty"`
 }
 
 // ProjectSelector chooses either a new managed project or an existing read-only project.
@@ -104,6 +110,24 @@ type ManagedClientKeySpec struct {
 	// +kubebuilder:default=1
 	// +optional
 	RotationRevision int64 `json:"rotationRevision,omitempty"`
+
+	// +optional
+	Loader *ClientKeyLoaderSpec `json:"loader,omitempty"`
+}
+
+// ClientKeyLoaderSpec owns the bounded JavaScript loader switches associated with a
+// managed client key. DSNs and OTLP endpoints are derived outputs, not desired state.
+type ClientKeyLoaderSpec struct {
+	// +optional
+	Tracing *bool `json:"tracing,omitempty"`
+	// +optional
+	Replay *bool `json:"replay,omitempty"`
+	// +optional
+	LogsAndMetrics *bool `json:"logsAndMetrics,omitempty"`
+	// +optional
+	UserFeedback *bool `json:"userFeedback,omitempty"`
+	// +optional
+	Debug *bool `json:"debug,omitempty"`
 }
 
 // LegacyBrowserFilter selects one standard Sentry legacy-browser family.
@@ -140,6 +164,44 @@ type FilterSettings struct {
 	// +listType=set
 	// +optional
 	LegacyBrowsers *[]LegacyBrowserFilter `json:"legacyBrowsers,omitempty"`
+
+	// +optional
+	HydrationErrors *bool `json:"hydrationErrors,omitempty"`
+
+	// +optional
+	ChunkLoadErrors *bool `json:"chunkLoadErrors,omitempty"`
+
+	// +kubebuilder:validation:MaxItems=100
+	// +kubebuilder:validation:items:MaxLength=128
+	// +listType=set
+	// +optional
+	IPAddresses *[]string `json:"ipAddresses,omitempty"`
+
+	// +kubebuilder:validation:MaxItems=100
+	// +kubebuilder:validation:items:MaxLength=200
+	// +listType=set
+	// +optional
+	Releases *[]string `json:"releases,omitempty"`
+
+	// +kubebuilder:validation:MaxItems=100
+	// +kubebuilder:validation:items:MaxLength=200
+	// +listType=set
+	// +optional
+	ErrorMessages *[]string `json:"errorMessages,omitempty"`
+
+	// Modern-only filters. Compatibility validation rejects them before external I/O on
+	// legacy connections.
+	// +kubebuilder:validation:MaxItems=100
+	// +kubebuilder:validation:items:MaxLength=200
+	// +listType=set
+	// +optional
+	LogMessages *[]string `json:"logMessages,omitempty"`
+
+	// +kubebuilder:validation:MaxItems=100
+	// +kubebuilder:validation:items:MaxLength=200
+	// +listType=set
+	// +optional
+	ApplicationMetrics *[]string `json:"applicationMetrics,omitempty"`
 }
 
 // PIISettings contains the source-confirmed, adapter-neutral data scrubbing fields.
@@ -182,7 +244,7 @@ type AdvancedPIIRedaction string
 
 // AdvancedPIISelectorRoot selects a bounded event subtree without exposing Relay selector
 // grammar.
-// +kubebuilder:validation:Enum=message;extra;request;user;contexts;tags;breadcrumbs
+// +kubebuilder:validation:Enum=message;extra;request;user;contexts;tags;breadcrumbs;log-body;metric-attribute
 type AdvancedPIISelectorRoot string
 
 // AdvancedPIISelector identifies one exact event field. Path segments are serialized into a
@@ -201,6 +263,10 @@ type AdvancedPIISelector struct {
 
 // AdvancedPIIRule applies one built-in detector and redaction to one or more exact fields.
 type AdvancedPIIRule struct {
+	// Dataset defaults to events for compatibility with existing manifests.
+	// +optional
+	Dataset AdvancedPIIDataset `json:"dataset,omitempty"`
+
 	Type AdvancedPIIRuleType `json:"type"`
 
 	Redaction AdvancedPIIRedaction `json:"redaction"`
@@ -216,6 +282,11 @@ type AdvancedPIIRule struct {
 	// +listType=atomic
 	Applications []AdvancedPIISelector `json:"applications"`
 }
+
+// AdvancedPIIDataset selects the Sentry 26 dataset while retaining the portable event
+// dataset used by older versions.
+// +kubebuilder:validation:Enum=events;logs;application-metrics
+type AdvancedPIIDataset string
 
 // GroupingEnhancementMatcher selects one portable stack-frame field.
 // +kubebuilder:validation:Enum=path;module;function;package
@@ -418,6 +489,9 @@ type BehaviorSettings struct {
 	// +listType=set
 	// +optional
 	AllowedDomains *[]string `json:"allowedDomains,omitempty"`
+
+	// +optional
+	ReleaseAutoCreation *bool `json:"releaseAutoCreation,omitempty"`
 }
 
 // IssueOwnershipMatcherType selects one portable Sentry ownership-rule matcher.
@@ -548,6 +622,27 @@ type ProjectSettings struct {
 
 	// +optional
 	Symbolication *SymbolicationSettings `json:"symbolication,omitempty"`
+
+	// +optional
+	Notifications *ProjectNotificationSettings `json:"notifications,omitempty"`
+}
+
+// ProjectNotificationSettings contains project-wide email formatting and digest defaults.
+type ProjectNotificationSettings struct {
+	// +kubebuilder:validation:MaxLength=200
+	// +optional
+	SubjectPrefix *string `json:"subjectPrefix,omitempty"`
+	// +kubebuilder:validation:MaxLength=200
+	// +optional
+	SubjectTemplate *string `json:"subjectTemplate,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=60
+	// +optional
+	MinimumDigestMinutes *int32 `json:"minimumDigestMinutes,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=60
+	// +optional
+	MaximumDigestMinutes *int32 `json:"maximumDigestMinutes,omitempty"`
 }
 
 // SlackDestination selects a Slack channel by readable names.
@@ -637,7 +732,7 @@ const (
 	ProjectRoleStandby ProjectRole = "Standby"
 )
 
-// AlertTrigger is the portable alert condition exposed by the operator.
+// AlertTrigger is the compatibility form retained for existing manifests.
 // +kubebuilder:validation:Enum=first-seen;regression;event-count;user-count
 type AlertTrigger string
 
@@ -650,7 +745,10 @@ const (
 
 // AlertSpec is adapter-neutral and references notification destinations only by local key.
 type AlertSpec struct {
-	Trigger AlertTrigger `json:"trigger"`
+	// Trigger, windowMinutes, threshold, and notify are the compact compatibility form.
+	// New manifests should select exactly one typed issue or metric block.
+	// +optional
+	Trigger AlertTrigger `json:"trigger,omitempty"`
 
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=1440
@@ -671,7 +769,188 @@ type AlertSpec struct {
 	// +kubebuilder:validation:items:MaxLength=211
 	// +kubebuilder:validation:items:Pattern=`^(slack|pagerDuty)/[^/[:space:]][^/]*$`
 	// +listType=set
-	Notify []string `json:"notify"`
+	// +optional
+	Notify []string `json:"notify,omitempty"`
+
+	// +optional
+	Issue *IssueAlertSpec `json:"issue,omitempty"`
+
+	// +optional
+	Metric *MetricAlertSpec `json:"metric,omitempty"`
+
+	// +kubebuilder:validation:MaxItems=20
+	// +listType=atomic
+	// +optional
+	Actions []AlertAction `json:"actions,omitempty"`
+
+	// +kubebuilder:validation:MaxLength=63
+	// +optional
+	OwnerTeam string `json:"ownerTeam,omitempty"`
+
+	// +kubebuilder:validation:MaxLength=1024
+	// +optional
+	Description string `json:"description,omitempty"`
+
+	// Zero means notify on every trigger.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=43200
+	// +optional
+	ThrottleMinutes int32 `json:"throttleMinutes,omitempty"`
+}
+
+// MatchMode controls boolean composition of typed triggers and filters.
+// +kubebuilder:validation:Enum=all;any
+type MatchMode string
+
+// IssueTriggerType selects one issue-state transition supported by at least one adapter.
+// +kubebuilder:validation:Enum=first-seen;regression;resolved;escalation;event-count;user-count;session-percentage
+type IssueTriggerType string
+
+type IssueTrigger struct {
+	Type IssueTriggerType `json:"type"`
+	// Required for event-count, user-count, and session-percentage.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=10080
+	// +optional
+	WindowMinutes *int32 `json:"windowMinutes,omitempty"`
+	// Required for event-count, user-count, and session-percentage.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	Threshold *int64 `json:"threshold,omitempty"`
+}
+
+type IssueAlertSpec struct {
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=16
+	// +listType=map
+	// +listMapKey=type
+	Triggers []IssueTrigger `json:"triggers"`
+	// +kubebuilder:default=any
+	// +optional
+	TriggerMatch MatchMode `json:"triggerMatch,omitempty"`
+	// +kubebuilder:validation:MaxItems=16
+	// +listType=atomic
+	// +optional
+	Filters []IssueFilter `json:"filters,omitempty"`
+	// +kubebuilder:default=all
+	// +optional
+	FilterMatch MatchMode `json:"filterMatch,omitempty"`
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	Environment string `json:"environment,omitempty"`
+}
+
+// IssueFilterType is deliberately bounded; raw Sentry condition identifiers are excluded.
+// +kubebuilder:validation:Enum=age;assignment;category;frequency;priority;type;event-attribute;tag;latest-release;release-age;level
+type IssueFilterType string
+
+// FilterOperator is shared by bounded numeric and textual issue filters.
+// +kubebuilder:validation:Enum=eq;neq;gt;gte;lt;lte;contains
+type FilterOperator string
+
+type IssueFilter struct {
+	Type     IssueFilterType `json:"type"`
+	Operator FilterOperator  `json:"operator"`
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	Key string `json:"key,omitempty"`
+	// +kubebuilder:validation:MaxLength=256
+	Value string `json:"value"`
+}
+
+// MetricPreset selects a known Sentry aggregate without exposing arbitrary query syntax.
+// +kubebuilder:validation:Enum=error-count;affected-users;crash-free-sessions;crash-free-users;throughput;duration;failure-rate;largest-contentful-paint;logs
+type MetricPreset string
+
+// ThresholdDirection selects the side of the boundary that opens an issue.
+// +kubebuilder:validation:Enum=above;below
+type ThresholdDirection string
+
+type StaticDetection struct {
+	Direction ThresholdDirection `json:"direction"`
+	High      int64              `json:"high"`
+	// +optional
+	Medium *int64 `json:"medium,omitempty"`
+	// +optional
+	Resolve *int64 `json:"resolve,omitempty"`
+}
+
+type ChangeDetection struct {
+	Direction   ThresholdDirection `json:"direction"`
+	HighPercent int64              `json:"highPercent"`
+	// +optional
+	MediumPercent *int64 `json:"mediumPercent,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=10080
+	CompareMinutes int32 `json:"compareMinutes"`
+	// +optional
+	ResolvePercent *int64 `json:"resolvePercent,omitempty"`
+}
+
+// DynamicResponsiveness controls modern anomaly sensitivity.
+// +kubebuilder:validation:Enum=high;medium;low
+type DynamicResponsiveness string
+
+// DynamicDirection controls which anomaly movement is detected.
+// +kubebuilder:validation:Enum=above;below;both
+type DynamicDirection string
+
+type DynamicDetection struct {
+	Responsiveness DynamicResponsiveness `json:"responsiveness"`
+	Direction      DynamicDirection      `json:"direction"`
+}
+
+type MetricDetection struct {
+	// +optional
+	Static *StaticDetection `json:"static,omitempty"`
+	// +optional
+	Change *ChangeDetection `json:"change,omitempty"`
+	// +optional
+	Dynamic *DynamicDetection `json:"dynamic,omitempty"`
+}
+
+type MetricAlertSpec struct {
+	Preset MetricPreset `json:"preset"`
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	Environment string `json:"environment,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=1440
+	IntervalMinutes int32           `json:"intervalMinutes"`
+	Detection       MetricDetection `json:"detection"`
+}
+
+// AlertActionStatus selects the detector state that invokes an action.
+// +kubebuilder:validation:Enum=triggered;high;medium;resolved
+type AlertActionStatus string
+
+// PagerDutySeverity is explicit so modern and legacy adapters cannot invent different defaults.
+// +kubebuilder:validation:Enum=default;critical;warning;error;info
+type PagerDutySeverity string
+
+type AlertAction struct {
+	// Destination references one flattened notification target such as pagerDuty/on-call.
+	// +kubebuilder:validation:MaxLength=211
+	// +optional
+	Destination string `json:"destination,omitempty"`
+	// +optional
+	Email *EmailAlertAction `json:"email,omitempty"`
+	// +kubebuilder:default=triggered
+	// +optional
+	Status AlertActionStatus `json:"status,omitempty"`
+	// +optional
+	PagerDutySeverity PagerDutySeverity `json:"pagerDutySeverity,omitempty"`
+}
+
+// EmailTarget is restricted to ownership-aware recipients.
+// +kubebuilder:validation:Enum=suggested-assignees;team
+type EmailTarget string
+
+type EmailAlertAction struct {
+	Target EmailTarget `json:"target"`
+	// +kubebuilder:validation:MaxLength=63
+	// +optional
+	Team string `json:"team,omitempty"`
 }
 
 // OnDeletePolicy controls whether the external project may be deleted with the CR.
@@ -750,8 +1029,8 @@ type SentryProjectSpec struct {
 	// +optional
 	SymbolSources *map[string]CustomSymbolSourceSpec `json:"symbolSources,omitempty"`
 
-	// GrantAccess manages additional team access for a managed project. The connection access
-	// rule must authorize every team slug.
+	// GrantAccess manages additional team access for a managed project. Kubernetes RBAC on the
+	// namespaced SentryProject is the authorization boundary for selecting team slugs.
 	// +optional
 	GrantAccess *ProjectGrantAccess `json:"grantAccess,omitempty"`
 

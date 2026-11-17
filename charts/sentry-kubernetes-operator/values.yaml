@@ -27,7 +27,6 @@ sentryConnection:
         key: token
     projectManagement:
       unmanagedProjects: Reject
-    access: []
 
 controllerMonitoring:
   # Requires Prometheus Operator CRDs. Metrics are served over plain HTTP.

@@ -58,8 +58,14 @@ func FormatManagedName(displayName string, marker binding.Marker) (string, error
 // FormatRegionalManagedNameFromSlug stores compact regional evidence while keeping the
 // external project slug unchanged. Base36 bounds the largest int64 revision to 13 runes.
 func FormatRegionalManagedNameFromSlug(slug string, evidence ownership.Evidence) (string, error) {
-	slug = strings.TrimSpace(slug)
-	if slug == "" || evidence.Revision <= 0 || !evidenceHashPattern.MatchString(evidence.Fingerprint) {
+	return FormatRegionalManagedName(slug, evidence)
+}
+
+// FormatRegionalManagedName preserves a requested human-facing name while reserving room
+// for complete regional ownership evidence.
+func FormatRegionalManagedName(displayName string, evidence ownership.Evidence) (string, error) {
+	displayName = strings.TrimSpace(displayName)
+	if displayName == "" || evidence.Revision <= 0 || !evidenceHashPattern.MatchString(evidence.Fingerprint) {
 		return "", ErrInvalidMarker
 	}
 	suffix := fmt.Sprintf(" [sko;v=%s;h=%s]", strconv.FormatInt(evidence.Revision, 36), evidence.Fingerprint)
@@ -67,7 +73,7 @@ func FormatRegionalManagedNameFromSlug(slug string, evidence ownership.Evidence)
 	if budget < 1 {
 		return "", ErrMarkerNameTooLong
 	}
-	runes := []rune(slug)
+	runes := []rune(displayName)
 	if len(runes) > budget {
 		runes = runes[:budget]
 	}

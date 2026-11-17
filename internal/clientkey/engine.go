@@ -51,6 +51,7 @@ var (
 type Desired struct {
 	Active           bool
 	RateLimit        *RateLimit
+	Loader           *LoaderOptions
 	RotationRevision int64
 }
 
@@ -228,7 +229,7 @@ func (e *Engine) ensureCreated(ctx context.Context, input Input, key, name strin
 	}
 	err := e.runCreate(ctx, input, key, name, desired, func(ctx context.Context) error {
 		var err error
-		observed, err = e.Adapter.Create(ctx, input.Organization, input.ProjectSlug, CreateRequest{Name: name, RateLimit: cloneRateLimit(desired.RateLimit)})
+		observed, err = e.Adapter.Create(ctx, input.Organization, input.ProjectSlug, CreateRequest{Name: name, RateLimit: cloneRateLimit(desired.RateLimit), Loader: cloneLoader(desired.Loader)})
 		return err
 	}, verify)
 	if err != nil {
@@ -244,14 +245,14 @@ func (e *Engine) ensureConfiguration(ctx context.Context, input Input, remote Re
 	if remote.Identity == "" || remote.Name == "" {
 		return Remote{}, ErrOwnershipLost
 	}
-	if remote.IsActive == desired.Active && equalRateLimit(remote.RateLimit, desired.RateLimit) {
+	if remote.IsActive == desired.Active && equalRateLimit(remote.RateLimit, desired.RateLimit) && equalLoader(remote.Loader, desired.Loader) {
 		return remote, nil
 	}
 	if err := input.Authorize(ctx); err != nil {
 		return Remote{}, err
 	}
 	updated, err := e.Adapter.Update(ctx, input.Organization, input.ProjectSlug, remote.Identity, UpdateRequest{
-		Name: remote.Name, IsActive: desired.Active, RateLimit: cloneRateLimit(desired.RateLimit),
+		Name: remote.Name, IsActive: desired.Active, RateLimit: cloneRateLimit(desired.RateLimit), Loader: cloneLoader(desired.Loader),
 	})
 	if err != nil {
 		return Remote{}, err
@@ -260,7 +261,7 @@ func (e *Engine) ensureConfiguration(ctx context.Context, input Input, remote Re
 	if err != nil {
 		return Remote{}, err
 	}
-	if updated.Identity != remote.Identity || observed.IsActive != desired.Active || !equalRateLimit(observed.RateLimit, desired.RateLimit) {
+	if updated.Identity != remote.Identity || observed.IsActive != desired.Active || !equalRateLimit(observed.RateLimit, desired.RateLimit) || !equalLoader(observed.Loader, desired.Loader) {
 		return Remote{}, ErrVerification
 	}
 	return observed, nil
@@ -452,6 +453,32 @@ func cloneRateLimit(value *RateLimit) *RateLimit {
 	}
 	result := *value
 	return &result
+}
+
+func cloneLoader(value *LoaderOptions) *LoaderOptions {
+	if value == nil {
+		return nil
+	}
+	result := *value
+	return &result
+}
+
+func equalLoader(left, right *LoaderOptions) bool {
+	if right == nil {
+		return true
+	}
+	if left == nil {
+		return false
+	}
+	return optionalBoolEqual(left.HasPerformance, right.HasPerformance) &&
+		optionalBoolEqual(left.HasReplay, right.HasReplay) &&
+		optionalBoolEqual(left.HasLogsAndMetrics, right.HasLogsAndMetrics) &&
+		optionalBoolEqual(left.HasFeedback, right.HasFeedback) &&
+		optionalBoolEqual(left.HasDebug, right.HasDebug)
+}
+
+func optionalBoolEqual(observed, desired *bool) bool {
+	return desired == nil || observed != nil && *observed == *desired
 }
 
 func equalRateLimit(left, right *RateLimit) bool {

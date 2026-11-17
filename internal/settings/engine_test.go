@@ -169,6 +169,46 @@ func TestEngineReconcilesBehaviorSettingsWithOneFreshNarrowPatch(t *testing.T) {
 	}
 }
 
+func TestEngineReconcilesModernFiltersPIIDatasetsAndNotificationDefaults(t *testing.T) {
+	t.Parallel()
+	authorizations := 0
+	adapter := &fakeAdapter{
+		filters: []Filter{},
+		state: ProjectState{RelayPIIConfig: stringPointer(`{"rules":{},"applications":{}}`), Options: map[string]any{
+			"filters:react-hydration-errors": false, "filters:chunk-load-error": false,
+			"filters:blacklisted_ips": "", "filters:releases": "", "filters:error_messages": "", "filters:log_messages": "", "filters:trace_metric_names": "",
+		}},
+	}
+	on := true
+	ips := []string{"10.0.0.0/8"}
+	releases := []string{"legacy-*"}
+	errors := []string{"ignore me"}
+	logs := []string{"healthcheck"}
+	metrics := []string{"internal.*"}
+	rules := []sentryv1alpha1.AdvancedPIIRule{{Dataset: "logs", Type: "email", Redaction: "remove", Applications: []sentryv1alpha1.AdvancedPIISelector{{Root: "log-body"}}}}
+	prefix := "[checkout]"
+	template := "$shortID - $title"
+	minimum, maximum := int32(5), int32(60)
+	result := (&Engine{Adapter: adapter}).Reconcile(context.Background(), Input{
+		Organization: "company", ProjectSlug: "checkout", Modern: true,
+		Desired: &sentryv1alpha1.ProjectSettings{
+			Filters:       &sentryv1alpha1.FilterSettings{HydrationErrors: &on, ChunkLoadErrors: &on, IPAddresses: &ips, Releases: &releases, ErrorMessages: &errors, LogMessages: &logs, ApplicationMetrics: &metrics},
+			PII:           &sentryv1alpha1.PIISettings{AdvancedRules: &rules},
+			Notifications: &sentryv1alpha1.ProjectNotificationSettings{SubjectPrefix: &prefix, SubjectTemplate: &template, MinimumDigestMinutes: &minimum, MaximumDigestMinutes: &maximum},
+		},
+		Authorize: func(context.Context) error { authorizations++; return nil },
+	})
+	if err := result.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if result.Filters.Changed != 7 || result.PII.Changed != 1 || result.Notifications.Changed != 4 || authorizations != 3 {
+		t.Fatalf("result=%#v authorizations=%d", result, authorizations)
+	}
+	if len(adapter.projectUpdates) != 3 || len(adapter.projectUpdates[0].patch.Options) != 7 || adapter.projectUpdates[1].patch.RelayPIIConfig == nil || adapter.projectUpdates[2].patch.SubjectPrefix == nil || adapter.projectUpdates[2].patch.DigestsMinDelay == nil || *adapter.projectUpdates[2].patch.DigestsMinDelay != 300 {
+		t.Fatalf("updates=%#v", adapter.projectUpdates)
+	}
+}
+
 func TestEngineSerializesTypedAdvancedPIIAndGroupingRules(t *testing.T) {
 	t.Parallel()
 
@@ -504,5 +544,7 @@ func (a *fakeAdapter) UpdateProjectState(_ context.Context, _, _ string, patch P
 }
 
 func stringSlicePointer(value []string) *[]string { return &value }
+
+func stringPointer(value string) *string { return &value }
 
 func activeFilterPatch(value bool) FilterPatch { return FilterPatch{Active: &value} }

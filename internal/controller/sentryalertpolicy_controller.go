@@ -27,6 +27,7 @@ import (
 	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/alerts"
 	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/binding"
 	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/destination"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/validation"
 )
 
 const (
@@ -82,6 +83,16 @@ func (r *SentryAlertPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		base := policy.DeepCopy()
 		policy.Finalizers = removeString(policy.Finalizers, sentryAlertPolicyFinalizer)
 		return ctrl.Result{}, r.Patch(ctx, policy, client.MergeFrom(base))
+	}
+	if err := validation.AlertPolicy(policy.Spec); err != nil {
+		base := policy.DeepCopy()
+		policy.Status.ObservedGeneration = policy.Generation
+		meta.SetStatusCondition(&policy.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionFalse, ObservedGeneration: policy.Generation, Reason: "SpecInvalid", Message: "The SentryAlertPolicy specification is invalid: " + err.Error()})
+		if statusErr := r.Status().Patch(ctx, policy, client.MergeFrom(base)); statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
+		emitConditionChangesObserved(r.Recorder, r.Metrics, controllerAlertPolicy, policy, base.Status.Conditions, policy.Status.Conditions)
+		return ctrl.Result{}, nil
 	}
 	base := policy.DeepCopy()
 	policy.Status.ObservedGeneration = policy.Generation

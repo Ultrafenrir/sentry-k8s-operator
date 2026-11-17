@@ -64,6 +64,42 @@ func TestEngineCreatesUpdatesAndDeletesOnlyPinnedKey(t *testing.T) {
 	}
 }
 
+func TestEngineReconcilesBoundedLoaderOptions(t *testing.T) {
+	t.Parallel()
+	adapter := newFakeAdapter()
+	engine := &Engine{Adapter: adapter, Journal: newFakeJournal()}
+	input := testInput()
+	on := true
+	off := false
+	input.Desired["browser"] = Desired{Active: true, RotationRevision: 1, Loader: &LoaderOptions{HasPerformance: &on, HasReplay: &off, HasLogsAndMetrics: &on}}
+
+	result := engine.Reconcile(context.Background(), input)
+	if err := result.Err(); err != nil {
+		t.Fatal(err)
+	}
+	identity := result.Bindings["browser"].ExternalIdentity
+	remote := adapter.items[identity]
+	if remote.Loader == nil || remote.Loader.HasPerformance == nil || !*remote.Loader.HasPerformance || remote.Loader.HasReplay == nil || *remote.Loader.HasReplay {
+		t.Fatalf("loader=%#v", remote.Loader)
+	}
+}
+
+func TestLoaderComparisonIgnoresUnmanagedServerDefaults(t *testing.T) {
+	t.Parallel()
+	on, off := true, false
+	observed := &LoaderOptions{HasPerformance: &on, HasReplay: &on, HasDebug: &off}
+
+	if !equalLoader(observed, &LoaderOptions{HasPerformance: &on, HasReplay: &on}) {
+		t.Fatal("server defaults for unspecified loader fields must not cause drift")
+	}
+	if equalLoader(observed, &LoaderOptions{HasDebug: &on}) {
+		t.Fatal("an explicitly managed loader field must be compared")
+	}
+	if !equalLoader(observed, nil) {
+		t.Fatal("nil desired loader options must leave server defaults unmanaged")
+	}
+}
+
 func TestEngineRecoversLostCreateWithoutSecondPost(t *testing.T) {
 	t.Parallel()
 	adapter := newFakeAdapter()
@@ -187,7 +223,7 @@ func (f *fakeAdapter) List(context.Context, string, string) ([]Remote, error) {
 
 func (f *fakeAdapter) Create(_ context.Context, _, _ string, request CreateRequest) (Remote, error) {
 	f.createCalls++
-	remote := f.addRemote(request.Name, Desired{Active: true, RateLimit: request.RateLimit})
+	remote := f.addRemote(request.Name, Desired{Active: true, RateLimit: request.RateLimit, Loader: request.Loader})
 	if f.loseCreateResponse {
 		return Remote{}, &sentryapi.APIError{Kind: sentryapi.ErrorTimeout, Operation: "create-project-client-key"}
 	}
@@ -208,6 +244,7 @@ func (f *fakeAdapter) Update(_ context.Context, _, _, identity string, request U
 	remote.Name = request.Name
 	remote.IsActive = request.IsActive
 	remote.RateLimit = cloneRateLimit(request.RateLimit)
+	remote.Loader = cloneLoader(request.Loader)
 	f.items[identity] = remote
 	return remote, nil
 }
@@ -220,7 +257,7 @@ func (f *fakeAdapter) Delete(_ context.Context, _, _, identity string) error {
 
 func (f *fakeAdapter) addRemote(name string, desired Desired) Remote {
 	f.nextID++
-	remote := Remote{Identity: fmt.Sprintf("key-%d", f.nextID), Name: name, IsActive: desired.Active, RateLimit: cloneRateLimit(desired.RateLimit)}
+	remote := Remote{Identity: fmt.Sprintf("key-%d", f.nextID), Name: name, IsActive: desired.Active, RateLimit: cloneRateLimit(desired.RateLimit), Loader: cloneLoader(desired.Loader)}
 	remote.DSN.Public = fmt.Sprintf("https://public-%d@example.invalid/1", f.nextID)
 	f.items[remote.Identity] = remote
 	return remote

@@ -31,29 +31,40 @@ type RateLimit struct {
 	Window int32 `json:"window"`
 }
 
+type LoaderOptions struct {
+	HasPerformance    *bool `json:"hasPerformance,omitempty"`
+	HasReplay         *bool `json:"hasReplay,omitempty"`
+	HasLogsAndMetrics *bool `json:"hasLogsAndMetrics,omitempty"`
+	HasFeedback       *bool `json:"hasFeedback,omitempty"`
+	HasDebug          *bool `json:"hasDebug,omitempty"`
+}
+
 // Remote deliberately allowlists only lifecycle fields and the public DSN. Sentry's
 // response also contains secret key material and private endpoints; encoding/json discards
 // them because this type has no destination fields for them.
 type Remote struct {
-	Identity    string     `json:"id"`
-	Name        string     `json:"name"`
-	IsActive    bool       `json:"isActive"`
-	RateLimit   *RateLimit `json:"rateLimit"`
-	DateCreated string     `json:"dateCreated"`
+	Identity    string         `json:"id"`
+	Name        string         `json:"name"`
+	IsActive    bool           `json:"isActive"`
+	RateLimit   *RateLimit     `json:"rateLimit"`
+	Loader      *LoaderOptions `json:"dynamicSdkLoaderOptions"`
+	DateCreated string         `json:"dateCreated"`
 	DSN         struct {
 		Public string `json:"public"`
 	} `json:"dsn"`
 }
 
 type CreateRequest struct {
-	Name      string     `json:"name"`
-	RateLimit *RateLimit `json:"rateLimit,omitempty"`
+	Name      string         `json:"name"`
+	RateLimit *RateLimit     `json:"rateLimit,omitempty"`
+	Loader    *LoaderOptions `json:"dynamicSdkLoaderOptions,omitempty"`
 }
 
 type UpdateRequest struct {
-	Name      string     `json:"name"`
-	IsActive  bool       `json:"isActive"`
-	RateLimit *RateLimit `json:"rateLimit"`
+	Name      string         `json:"name"`
+	IsActive  bool           `json:"isActive"`
+	RateLimit *RateLimit     `json:"rateLimit"`
+	Loader    *LoaderOptions `json:"dynamicSdkLoaderOptions,omitempty"`
 }
 
 type Adapter interface {

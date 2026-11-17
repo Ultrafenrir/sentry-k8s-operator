@@ -98,6 +98,7 @@ type RemoteProject struct {
 type CreateRequest struct {
 	Organization string
 	Slug         string
+	DisplayName  string
 	Team         string
 	Platform     string
 	DefaultRules bool
@@ -177,6 +178,10 @@ func (e *Engine) Reconcile(ctx context.Context, input Input) (Result, error) {
 	if input.Project.Spec.Project.Create != nil {
 		if input.Project.Spec.Role == sentryv1alpha1.ProjectRoleStandby {
 			return e.reconcileStandby(ctx, input, installation)
+		}
+		decision, err = e.preserveBoundOwner(ctx, input, decision)
+		if err != nil {
+			return Result{}, err
 		}
 		if e.Audit == nil {
 			return Result{}, &Error{Reason: ReasonInvalidState, cause: ErrAuditUnavailable}
@@ -294,6 +299,10 @@ func (e *Engine) Delete(ctx context.Context, input Input) (DeletionResult, error
 	}
 	decision, err := policy.EvaluateProject(input.Project.Namespace, input.Project.Spec, input.Connection)
 	if err != nil || decision.AccessMode != binding.AccessManage {
+		return DeletionResult{}, &Error{Reason: ReasonOwnershipLost, cause: err}
+	}
+	decision, err = e.preserveBoundOwner(ctx, input, decision)
+	if err != nil {
 		return DeletionResult{}, &Error{Reason: ReasonOwnershipLost, cause: err}
 	}
 	if input.Project.Spec.Lifecycle.OnDelete != sentryv1alpha1.OnDeleteDeleteProject {
@@ -519,6 +528,26 @@ func (e *Engine) releaseManaged(ctx context.Context, input Input, installation s
 	return result, err
 }
 
+// preserveBoundOwner keeps pre-migration ownership evidence stable after the public connection
+// access policy is removed. New projects use their primary team as owner; an exact existing
+// project incarnation continues to use the owner already fenced in protected and remote state.
+func (e *Engine) preserveBoundOwner(ctx context.Context, input Input, decision policy.Decision) (policy.Decision, error) {
+	record, err := e.Bindings.GetBinding(ctx, string(input.Project.UID))
+	if errors.Is(err, binding.ErrNotFound) {
+		return decision, nil
+	}
+	if err != nil {
+		return policy.Decision{}, err
+	}
+	state := record.Binding
+	if state.Project.UID == string(input.Project.UID) && state.Project.Namespace == input.Project.Namespace &&
+		state.Project.Name == input.Project.Name && state.Connection == input.ConnectionName &&
+		state.Organization == input.Connection.Organization && state.Origin == binding.OriginManaged && state.Owner != "" {
+		decision.Owner = state.Owner
+	}
+	return decision, nil
+}
+
 func (e *Engine) completeDeletion(ctx context.Context, state binding.BindingRecord, claim binding.ClaimRecord) (DeletionResult, error) {
 	// Delete the UID-scoped binding first. If claim deletion then fails, Delete can safely
 	// recover the same-UID claim after proving that no remote ownership evidence remains.
@@ -677,6 +706,7 @@ func (e *Engine) reconcileManaged(ctx context.Context, input Input, installation
 	remote, err = e.Adapter.Create(ctx, CreateRequest{
 		Organization:     input.Connection.Organization,
 		Slug:             slug,
+		DisplayName:      create.DisplayName,
 		Team:             create.Team,
 		Platform:         create.Platform,
 		DefaultRules:     false,

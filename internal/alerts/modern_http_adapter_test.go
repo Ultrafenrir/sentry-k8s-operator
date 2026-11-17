@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/binding"
@@ -64,7 +65,7 @@ func TestModernHTTPAdapterFullMetricIssueLifecycle(t *testing.T) {
 	if got := remote.lastWorkflow.ActionFilters[0].Actions; len(got) != 2 || got[0].Type != "slack" || got[0].IntegrationID != 12 || got[0].Config["targetIdentifier"] != "C123" || got[1].Type != "pagerduty" {
 		t.Fatalf("actions = %#v", got)
 	}
-	if got := remote.lastDetector; got.DataSources[0].Aggregate != "count()" || got.DataSources[0].TimeWindow != 300 || got.ConditionGroup.Conditions[0].Comparison != 200 || !reflect.DeepEqual(got.WorkflowIDs, []string{"101"}) {
+	if got := remote.lastDetector; got.DataSources[0].Aggregate != "count()" || got.DataSources[0].TimeWindow != 300 || numericValue(got.ConditionGroup.Conditions[0].Comparison) != 200 || !reflect.DeepEqual(got.WorkflowIDs, []string{"101"}) {
 		t.Fatalf("detector payload = %#v", got)
 	}
 
@@ -80,7 +81,7 @@ func TestModernHTTPAdapterFullMetricIssueLifecycle(t *testing.T) {
 	if err != nil || updated.Identity != created.Identity || updated.DesiredHash != desiredHash(normalize(updatedDesired)) {
 		t.Fatalf("updated=%#v err=%v", updated, err)
 	}
-	if remote.workflowPuts != 1 || remote.detectorPuts != 1 || remote.lastDetector.ConditionGroup.Conditions[0].Comparison != 250 {
+	if remote.workflowPuts != 1 || remote.detectorPuts != 1 || numericValue(remote.lastDetector.ConditionGroup.Conditions[0].Comparison) != 250 {
 		t.Fatalf("update calls=%d/%d payload=%#v", remote.workflowPuts, remote.detectorPuts, remote.lastDetector)
 	}
 
@@ -114,8 +115,55 @@ func TestModernHTTPAdapterRendersUserCountAggregate(t *testing.T) {
 		t.Fatalf("user-count desired state rejected: %v", err)
 	}
 	payload := detectorPayload("affected-users", "101", desired)
-	if payload.DataSources[0].Aggregate != "count_unique(user)" {
+	if payload.DataSources[0].Aggregate != "count_unique(tags[sentry:user])" {
 		t.Fatalf("detector payload=%#v", payload)
+	}
+}
+
+func TestModernPayloadRendersTypedIssueAndDynamicMetric(t *testing.T) {
+	t.Parallel()
+	adapter := &ModernHTTPAdapter{Client: &sentryapi.Client{}, Destinations: map[string]binding.DestinationBinding{
+		"page": {Kind: "pagerduty", State: "Active", IntegrationIdentity: "34", ResourceIdentity: "567", ResourceName: "checkout"},
+	}}
+	issue := Desired{
+		Issue:   &IssueDesired{TriggerMatch: "any", FilterMatch: "all", Triggers: []IssueTriggerDesired{{Type: TriggerFirstSeen}, {Type: TriggerResolved}}, Filters: []IssueFilterDesired{{Type: "priority", Operator: "gte", Value: "high"}}},
+		Actions: []ActionDesired{{Destination: "page", PagerDutySeverity: "critical"}}, Enabled: true, ThrottleMinutes: 10,
+	}
+	workflow, err := adapter.workflowPayload(context.Background(), "company", "issue", issue, []string{"4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workflow.Triggers.Conditions) != 2 || workflow.Config["frequency"] != int32(10) || len(workflow.ActionFilters) != 1 || workflow.ActionFilters[0].Actions[0].Data["priority"] != "critical" || !reflect.DeepEqual(workflow.DetectorIDs, []string{"4"}) {
+		t.Fatalf("workflow=%#v", workflow)
+	}
+	metric := Desired{Metric: &MetricDesired{Preset: "logs", IntervalMinutes: 5, Detection: DetectionDesired{Kind: "dynamic", Responsiveness: "high", AnomalyDirection: "both"}}, Enabled: true}
+	detector := detectorPayload("logs", "101", metric)
+	if detector.DataSources[0].QueryType != 1 || detector.DataSources[0].Dataset != "events_analytics_platform" || detector.DataSources[0].Aggregate != "count(message)" || len(detector.ConditionGroup.Conditions) != 1 || detector.ConditionGroup.Conditions[0].Type != "anomaly_detection" || detector.Config["detectionType"] != "dynamic" {
+		t.Fatalf("detector=%#v", detector)
+	}
+}
+
+func TestModernPayloadEncodesPercentChangeAsSentryRatios(t *testing.T) {
+	t.Parallel()
+	medium := float64(25)
+	resolve := float64(5)
+
+	above := detectorPayload("growth", "101", Desired{Metric: &MetricDesired{
+		Preset: "logs", IntervalMinutes: 5,
+		Detection: DetectionDesired{Kind: "change", Direction: "above", High: 50, Medium: &medium, Resolve: &resolve, CompareMinutes: 60},
+	}, Enabled: true})
+	conditions := above.ConditionGroup.Conditions
+	if len(conditions) != 3 || conditions[0].Type != "gt" || conditions[0].Comparison != float64(150) || conditions[1].Comparison != float64(125) || conditions[2].Type != "lte" || conditions[2].Comparison != float64(105) {
+		t.Fatalf("above conditions=%#v", conditions)
+	}
+
+	below := detectorPayload("drop", "102", Desired{Metric: &MetricDesired{
+		Preset: "logs", IntervalMinutes: 5,
+		Detection: DetectionDesired{Kind: "change", Direction: "below", High: 50, Medium: &medium, Resolve: &resolve, CompareMinutes: 60},
+	}, Enabled: true})
+	conditions = below.ConditionGroup.Conditions
+	if len(conditions) != 3 || conditions[0].Type != "lt" || conditions[0].Comparison != float64(50) || conditions[1].Comparison != float64(75) || conditions[2].Type != "gte" || conditions[2].Comparison != float64(95) {
+		t.Fatalf("below conditions=%#v", conditions)
 	}
 }
 
@@ -147,12 +195,24 @@ func TestModernHTTPAdapterRecoversLostDetectorCreateResponse(t *testing.T) {
 	marker := binding.Marker{Origin: "managed", Owner: "payments", ManagedBy: "sko"}
 	desired := Desired{Trigger: TriggerEventCount, WindowMinutes: 5, Threshold: 200, Enabled: true, Notify: []string{"chat"}}
 
-	if _, err := adapter.Ensure(context.Background(), ModernMetricIssueAdapter, "company", "checkout", "errors", desired, marker); err == nil {
-		t.Fatal("lost detector response was reported as success")
-	}
 	recovered, err := adapter.Ensure(context.Background(), ModernMetricIssueAdapter, "company", "checkout", "errors", desired, marker)
 	if err != nil || recovered.Identity == "" || remote.workflowPosts != 1 || remote.detectorPosts != 1 {
 		t.Fatalf("recovered=%#v err=%v posts=%d/%d", recovered, err, remote.workflowPosts, remote.detectorPosts)
+	}
+}
+
+func TestModernHTTPAdapterRejectsPartialDetectorAfterAmbiguousCreate(t *testing.T) {
+	t.Parallel()
+
+	remote := &modernTestRemote{loseDetectorResponseOnce: true, dropConditionGroup: true}
+	server := httptest.NewTLSServer(http.HandlerFunc(remote.serveHTTP))
+	defer server.Close()
+	adapter := &ModernHTTPAdapter{Client: modernTestClient(t, server)}
+	desired := Desired{Metric: &MetricDesired{Preset: "error-count", IntervalMinutes: 5, Detection: DetectionDesired{Kind: "dynamic", Responsiveness: "medium", AnomalyDirection: "both"}}, Enabled: true}
+
+	_, err := adapter.Ensure(context.Background(), ModernMetricIssueAdapter, "company", "checkout", "dynamic", desired, binding.Marker{Origin: "managed", Owner: "payments", ManagedBy: "sko"})
+	if err == nil || remote.detectorPosts != 1 {
+		t.Fatalf("partial ambiguous create err=%v detectorPosts=%d", err, remote.detectorPosts)
 	}
 }
 
@@ -169,6 +229,7 @@ type modernTestRemote struct {
 	workflowToggles, detectorToggles, workflowDeletes, detectorDeletes int
 	loseDetectorResponseOnce                                           bool
 	forceDetectorOnCreate                                              bool
+	dropConditionGroup                                                 bool
 }
 
 func (r *modernTestRemote) serveHTTP(w http.ResponseWriter, request *http.Request) {
@@ -193,6 +254,12 @@ func (r *modernTestRemote) serveHTTP(w http.ResponseWriter, request *http.Reques
 			return
 		}
 		writeJSON(w, r.workflowResponse())
+	case request.Method == http.MethodGet && path == "/api/0/organizations/company/detectors/202/":
+		if !r.detectorExists {
+			http.NotFound(w, request)
+			return
+		}
+		writeJSON(w, r.detectorResponse())
 	case request.Method == http.MethodPost && path == "/api/0/organizations/company/workflows/":
 		r.workflowPosts++
 		if json.NewDecoder(request.Body).Decode(&r.lastWorkflow) != nil {
@@ -266,7 +333,11 @@ func (r *modernTestRemote) workflowResponse() modernWorkflowResponse {
 	if r.detectorExists {
 		detectors = []string{"202"}
 	}
-	return modernWorkflowResponse{ID: "101", Name: r.workflowName, Enabled: r.workflowOn, DetectorIDs: detectors}
+	response := modernWorkflowResponse{}
+	payload, _ := json.Marshal(r.lastWorkflow)
+	_ = json.Unmarshal(payload, &response)
+	response.ID, response.Name, response.Enabled, response.DetectorIDs = "101", r.workflowName, r.workflowOn, detectors
+	return response
 }
 
 func (r *modernTestRemote) detectorResponse() modernDetectorResponse {
@@ -274,7 +345,30 @@ func (r *modernTestRemote) detectorResponse() modernDetectorResponse {
 	if r.workflowExists {
 		workflows = []string{"101"}
 	}
-	return modernDetectorResponse{ID: "202", ProjectID: "9", Name: r.detectorName, Type: "metric_issue", Enabled: r.detectorOn, WorkflowIDs: workflows}
+	conditionGroup := r.lastDetector.ConditionGroup
+	dataSources := make([]modernDataSourceResponse, len(r.lastDetector.DataSources))
+	for index, source := range r.lastDetector.DataSources {
+		dataSources[index].QueryObj.SnubaQuery.Dataset = source.Dataset
+		dataSources[index].QueryObj.SnubaQuery.Query = source.Query
+		dataSources[index].QueryObj.SnubaQuery.Aggregate = source.Aggregate
+		dataSources[index].QueryObj.SnubaQuery.TimeWindow = source.TimeWindow
+		dataSources[index].QueryObj.SnubaQuery.Environment = source.Environment
+		dataSources[index].QueryObj.SnubaQuery.EventTypes = source.EventTypes
+	}
+	var owner *modernDetectorOwnerResponse
+	if r.lastDetector.Owner != nil {
+		parts := strings.SplitN(*r.lastDetector.Owner, ":", 2)
+		owner = &modernDetectorOwnerResponse{Type: parts[0], ID: parts[1]}
+	}
+	response := modernDetectorResponse{
+		ID: "202", ProjectID: "9", Name: r.detectorName, Type: "metric_issue", Enabled: r.detectorOn,
+		Config: r.lastDetector.Config, ConditionGroup: &conditionGroup, DataSources: dataSources,
+		WorkflowIDs: workflows, Description: r.lastDetector.Description, Owner: owner,
+	}
+	if r.dropConditionGroup {
+		response.ConditionGroup = nil
+	}
+	return response
 }
 
 func modernTestClient(t *testing.T, server *httptest.Server) *sentryapi.Client {
@@ -288,3 +382,16 @@ func modernTestClient(t *testing.T, server *httptest.Server) *sentryapi.Client {
 }
 
 func writeJSON(w http.ResponseWriter, value any) { _ = json.NewEncoder(w).Encode(value) }
+
+func numericValue(value any) float64 {
+	switch typed := value.(type) {
+	case float64:
+		return typed
+	case int:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	default:
+		return 0
+	}
+}

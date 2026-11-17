@@ -47,6 +47,10 @@ func serializeAdvancedPIIRules(rules []sentryv1alpha1.AdvancedPIIRule) (string, 
 		Applications: map[string][]string{},
 	}
 	for index, rule := range rules {
+		ruleDataset := rule.Dataset
+		if ruleDataset == "" {
+			ruleDataset = "events"
+		}
 		if !validAdvancedPIIType(string(rule.Type)) || !validAdvancedPIIRedaction(string(rule.Redaction)) || len(rule.Applications) == 0 {
 			return "", ErrInvalidDesiredState
 		}
@@ -64,7 +68,7 @@ func serializeAdvancedPIIRules(rules []sentryv1alpha1.AdvancedPIIRule) (string, 
 		}
 		seen := map[string]bool{}
 		for _, application := range rule.Applications {
-			selector, err := serializeAdvancedPIISelector(application)
+			selector, err := serializeAdvancedPIISelector(ruleDataset, application)
 			if err != nil || seen[selector] {
 				return "", ErrInvalidDesiredState
 			}
@@ -79,7 +83,16 @@ func serializeAdvancedPIIRules(rules []sentryv1alpha1.AdvancedPIIRule) (string, 
 	return string(payload), nil
 }
 
-func serializeAdvancedPIISelector(selector sentryv1alpha1.AdvancedPIISelector) (string, error) {
+func serializeAdvancedPIISelector(dataset sentryv1alpha1.AdvancedPIIDataset, selector sentryv1alpha1.AdvancedPIISelector) (string, error) {
+	if dataset == "logs" && selector.Root == "log-body" && len(selector.Path) == 0 {
+		return "$log.body", nil
+	}
+	if dataset == "application-metrics" && selector.Root == "metric-attribute" && len(selector.Path) == 1 && validPathSegment(selector.Path[0]) {
+		return "$trace_metric.attributes.'" + selector.Path[0] + "'.value", nil
+	}
+	if dataset != "events" || selector.Root == "log-body" || selector.Root == "metric-attribute" {
+		return "", ErrInvalidDesiredState
+	}
 	if selector.Root == "message" {
 		if len(selector.Path) != 0 {
 			return "", ErrInvalidDesiredState
@@ -174,7 +187,7 @@ func validAdvancedPIIRedaction(value string) bool {
 }
 
 func validAdvancedPIIRoot(value string) bool {
-	return value == "extra" || value == "request" || value == "user" || value == "contexts" || value == "tags" || value == "breadcrumbs"
+	return value == "extra" || value == "request" || value == "user" || value == "contexts" || value == "tags" || value == "breadcrumbs" || value == "log-body" || value == "metric-attribute"
 }
 
 func validPathSegment(value string) bool {

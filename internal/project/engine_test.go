@@ -65,6 +65,43 @@ func TestManagedCreateIsIdempotentAndAtomic(t *testing.T) {
 	}
 }
 
+func TestManagedProjectPreservesLegacyBoundOwner(t *testing.T) {
+	t.Parallel()
+
+	engine, adapter, store := testEngine(t)
+	input := managedInput("checkout", "uid-legacy-owner", "payments")
+	if _, err := engine.Reconcile(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.GetBinding(context.Background(), "uid-legacy-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := record.Binding
+	next.Owner = "legacy-platform-owner"
+	next.Marker.Owner = next.Owner
+	if _, err := store.UpdateBinding(context.Background(), record, next); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := store.GetClaim(context.Background(), record.Binding.Installation, record.Binding.Organization, record.Binding.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextClaim := claim.Claim
+	nextClaim.Owner = next.Owner
+	if _, err := store.UpdateClaim(context.Background(), claim, nextClaim); err != nil {
+		t.Fatal(err)
+	}
+	remote := adapter.projects["checkout"]
+	remote.Marker.Owner = next.Owner
+	adapter.projects["checkout"] = remote
+
+	result, err := engine.Reconcile(context.Background(), input)
+	if err != nil || result.Owner != next.Owner || adapter.createCalls != 1 {
+		t.Fatalf("result=%#v err=%v creates=%d", result, err, adapter.createCalls)
+	}
+}
+
 func TestManagedCreatePublishesAndPinsRegionalRevisionEvidence(t *testing.T) {
 	t.Parallel()
 	engine, adapter, store := testEngine(t)
@@ -167,7 +204,6 @@ func TestExactHandoffPromotesStandbyWithoutExternalMutation(t *testing.T) {
 	candidate := managedInput("checkout", "candidate-uid", "payments-two")
 	candidate.Project.Spec.Role = sentryv1alpha1.ProjectRoleStandby
 	candidate.Connection.Ownership = manager.Connection.Ownership.DeepCopy()
-	candidate.Connection.Access[1].Owner = "payments"
 	if _, err := engine.Reconcile(context.Background(), candidate); err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +250,6 @@ func TestUnclaimedManagedProjectPromotesStandbyWithoutStealing(t *testing.T) {
 	candidate := managedInput("checkout", "candidate-uid", "payments-two")
 	candidate.Project.Spec.Role = sentryv1alpha1.ProjectRoleStandby
 	candidate.Connection.Ownership = manager.Connection.Ownership.DeepCopy()
-	candidate.Connection.Access[1].Owner = "payments"
 	if _, err := engine.Reconcile(context.Background(), candidate); err != nil {
 		t.Fatal(err)
 	}
@@ -1210,25 +1245,5 @@ func testConnectionSpec() sentryv1alpha1.SentryConnectionSpec {
 	return sentryv1alpha1.SentryConnectionSpec{
 		URL:          "https://sentry.example/",
 		Organization: "company",
-		Access: []sentryv1alpha1.AccessRule{
-			{
-				Owner:       "payments",
-				Namespaces:  sentryv1alpha1.NamespaceAccess{MatchNames: []string{"payments"}},
-				Teams:       []string{"payments"},
-				AllowCreate: true,
-				ExistingProjects: &sentryv1alpha1.ExistingProjectAccess{
-					Observe: []string{"shared", "checkout"},
-				},
-			},
-			{
-				Owner:       "payments-two",
-				Namespaces:  sentryv1alpha1.NamespaceAccess{MatchNames: []string{"payments-two"}},
-				Teams:       []string{"payments"},
-				AllowCreate: true,
-				ExistingProjects: &sentryv1alpha1.ExistingProjectAccess{
-					Observe: []string{"shared", "checkout"},
-				},
-			},
-		},
 	}
 }

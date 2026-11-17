@@ -22,14 +22,25 @@ jobs:
       - uses: azure/setup-helm@v4
       - name: Install controller-gen
         run: go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.21.0
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
+      - name: Build custom golangci-lint
+        run: |
+          mkdir -p "$RUNNER_TEMP/golangci-lint"
+          golangci-lint custom --destination "$RUNNER_TEMP/golangci-lint" --name golangci-lint
+          echo "$RUNNER_TEMP/golangci-lint" >> "$GITHUB_PATH"
       - name: Run lint
         run: make lint
       - name: Verify generated files are committed
         run: git diff --exit-code
 
   test:
-    name: Unit and envtest
+    name: Unit and envtest (${{ matrix.kubernetes }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        kubernetes: ["1.35.0", "1.36.0"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -41,6 +52,6 @@ jobs:
           go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.21.0
           go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.24
       - name: Configure envtest
-        run: echo "KUBEBUILDER_ASSETS=$(setup-envtest use -p path 1.35.0)" >> "$GITHUB_ENV"
+        run: echo "KUBEBUILDER_ASSETS=$(setup-envtest use -p path ${{ matrix.kubernetes }})" >> "$GITHUB_ENV"
       - name: Run tests
         run: make test

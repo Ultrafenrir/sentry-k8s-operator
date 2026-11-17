@@ -119,6 +119,24 @@ func TestBindingRequiresMarkerPairAndPinsExternalIdentity(t *testing.T) {
 	}
 }
 
+func TestBindingAllowsEmailOnlyAlertWithoutIntegrationDestinations(t *testing.T) {
+	t.Parallel()
+
+	marker := Marker{Origin: "managed", Owner: "payments", ManagedBy: "company-sentry-operator"}
+	value := testBinding("email-alert-uid", marker)
+	value.PinnedAdapters = map[string]string{"alerts": "modern-metric-issue-v1"}
+	value.Alerts = map[string]AlertBinding{
+		"email-only": {
+			Owner:   ChildOwner{Kind: ChildOwnerProject, Name: "checkout", UID: "email-alert-uid"},
+			Adapter: "modern-metric-issue-v1", ExternalIdentity: "external-alert", Trigger: "event-count",
+			DesiredHash: strings.Repeat("a", 64), Enabled: true, Destinations: []string{}, Marker: marker,
+		},
+	}
+	if err := ValidateProjectBinding(value); err != nil {
+		t.Fatalf("email-only alert binding rejected: %v", err)
+	}
+}
+
 func TestAdminHandoffRevokesSourceAndIsOneTime(t *testing.T) {
 	t.Parallel()
 

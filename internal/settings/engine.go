@@ -87,30 +87,43 @@ type ProjectState struct {
 	GroupingEnhancements *string
 	FingerprintingRules  *string
 	BuiltinSymbolSources *[]string
+	ReleaseAutoCreation  *bool
+	SubjectPrefix        *string
+	SubjectTemplate      *string
+	DigestsMinDelay      *int32
+	DigestsMaxDelay      *int32
+	Options              map[string]any
 	ETag                 string
 }
 
 type ProjectPatch struct {
-	ScrubData            *bool     `json:"dataScrubber,omitempty"`
-	ScrubDefaults        *bool     `json:"dataScrubberDefaults,omitempty"`
-	ScrubIPAddresses     *bool     `json:"scrubIPAddresses,omitempty"`
-	SensitiveFields      *[]string `json:"sensitiveFields,omitempty"`
-	SafeFields           *[]string `json:"safeFields,omitempty"`
-	ResolveAge           *int64    `json:"resolveAge,omitempty"`
-	DefaultEnvironment   *string   `json:"defaultEnvironment,omitempty"`
-	StoreCrashReports    *int32    `json:"storeCrashReports,omitempty"`
-	ScrapeJavaScript     *bool     `json:"scrapeJavaScript,omitempty"`
-	AllowedDomains       *[]string `json:"allowedDomains,omitempty"`
-	RelayPIIConfig       *string   `json:"relayPiiConfig,omitempty"`
-	GroupingEnhancements *string   `json:"groupingEnhancements,omitempty"`
-	FingerprintingRules  *string   `json:"fingerprintingRules,omitempty"`
-	BuiltinSymbolSources *[]string `json:"builtinSymbolSources,omitempty"`
+	ScrubData            *bool          `json:"dataScrubber,omitempty"`
+	ScrubDefaults        *bool          `json:"dataScrubberDefaults,omitempty"`
+	ScrubIPAddresses     *bool          `json:"scrubIPAddresses,omitempty"`
+	SensitiveFields      *[]string      `json:"sensitiveFields,omitempty"`
+	SafeFields           *[]string      `json:"safeFields,omitempty"`
+	ResolveAge           *int64         `json:"resolveAge,omitempty"`
+	DefaultEnvironment   *string        `json:"defaultEnvironment,omitempty"`
+	StoreCrashReports    *int32         `json:"storeCrashReports,omitempty"`
+	ScrapeJavaScript     *bool          `json:"scrapeJavaScript,omitempty"`
+	AllowedDomains       *[]string      `json:"allowedDomains,omitempty"`
+	RelayPIIConfig       *string        `json:"relayPiiConfig,omitempty"`
+	GroupingEnhancements *string        `json:"groupingEnhancements,omitempty"`
+	FingerprintingRules  *string        `json:"fingerprintingRules,omitempty"`
+	BuiltinSymbolSources *[]string      `json:"builtinSymbolSources,omitempty"`
+	ReleaseAutoCreation  *bool          `json:"enableAutoReleaseCreation,omitempty"`
+	SubjectPrefix        *string        `json:"subjectPrefix,omitempty"`
+	SubjectTemplate      *string        `json:"subjectTemplate,omitempty"`
+	DigestsMinDelay      *int32         `json:"digestsMinDelay,omitempty"`
+	DigestsMaxDelay      *int32         `json:"digestsMaxDelay,omitempty"`
+	Options              map[string]any `json:"options,omitempty"`
 }
 
 func (p ProjectPatch) Empty() bool {
 	return p.ScrubData == nil && p.ScrubDefaults == nil && p.ScrubIPAddresses == nil && p.SensitiveFields == nil && p.SafeFields == nil &&
 		p.ResolveAge == nil && p.DefaultEnvironment == nil && p.StoreCrashReports == nil && p.ScrapeJavaScript == nil && p.AllowedDomains == nil &&
-		p.RelayPIIConfig == nil && p.GroupingEnhancements == nil && p.FingerprintingRules == nil && p.BuiltinSymbolSources == nil
+		p.RelayPIIConfig == nil && p.GroupingEnhancements == nil && p.FingerprintingRules == nil && p.BuiltinSymbolSources == nil &&
+		p.ReleaseAutoCreation == nil && p.SubjectPrefix == nil && p.SubjectTemplate == nil && p.DigestsMinDelay == nil && p.DigestsMaxDelay == nil && len(p.Options) == 0
 }
 
 type Adapter interface {
@@ -124,6 +137,7 @@ type Input struct {
 	Organization string
 	ProjectSlug  string
 	Desired      *sentryv1alpha1.ProjectSettings
+	Modern       bool
 	Authorize    Authorization
 }
 
@@ -139,10 +153,11 @@ type Result struct {
 	Behavior      Component
 	Grouping      Component
 	Symbolication Component
+	Notifications Component
 }
 
 func (r Result) Err() error {
-	return errors.Join(r.Filters.Err, r.PII.Err, r.Behavior.Err, r.Grouping.Err, r.Symbolication.Err)
+	return errors.Join(r.Filters.Err, r.PII.Err, r.Behavior.Err, r.Grouping.Err, r.Symbolication.Err, r.Notifications.Err)
 }
 
 type Engine struct {
@@ -174,6 +189,9 @@ func (e *Engine) Reconcile(ctx context.Context, input Input) Result {
 		if input.Desired.Symbolication != nil {
 			result.Symbolication = Component{Managed: true, Err: err}
 		}
+		if input.Desired.Notifications != nil {
+			result.Notifications = Component{Managed: true, Err: err}
+		}
 		return result
 	}
 	if input.Desired.Filters != nil {
@@ -196,11 +214,15 @@ func (e *Engine) Reconcile(ctx context.Context, input Input) Result {
 		result.Symbolication.Managed = true
 		result.Symbolication.Changed, result.Symbolication.Err = e.reconcileSymbolication(ctx, input, input.Desired.Symbolication)
 	}
+	if input.Desired.Notifications != nil {
+		result.Notifications.Managed = true
+		result.Notifications.Changed, result.Notifications.Err = e.reconcileNotifications(ctx, input, input.Desired.Notifications)
+	}
 	return result
 }
 
 func (e *Engine) reconcileBehavior(ctx context.Context, input Input, desired *sentryv1alpha1.BehaviorSettings) (int, error) {
-	if desired.AutoResolveHours == nil && desired.DefaultEnvironment == nil && desired.CrashReportLimit == nil && desired.ScrapeJavaScript == nil && desired.AllowedDomains == nil {
+	if desired.AutoResolveHours == nil && desired.DefaultEnvironment == nil && desired.CrashReportLimit == nil && desired.ScrapeJavaScript == nil && desired.AllowedDomains == nil && desired.ReleaseAutoCreation == nil {
 		return 0, nil
 	}
 	current, err := e.Adapter.GetProjectState(ctx, input.Organization, input.ProjectSlug)
@@ -232,6 +254,10 @@ func (e *Engine) reconcileBehavior(ctx context.Context, input Input, desired *se
 			patch.AllowedDomains = &wanted
 			changed++
 		}
+	}
+	if desired.ReleaseAutoCreation != nil && !equalBool(current.ReleaseAutoCreation, desired.ReleaseAutoCreation) {
+		patch.ReleaseAutoCreation = desired.ReleaseAutoCreation
+		changed++
 	}
 	if patch.Empty() {
 		return 0, nil
@@ -306,7 +332,66 @@ func (e *Engine) reconcileFilters(ctx context.Context, input Input, desired *sen
 			changed++
 		}
 	}
+	optionPatch, optionChanges, etag, err := filterOptionsPatch(ctx, e.Adapter, input, desired)
+	if err != nil {
+		return changed, err
+	}
+	if optionChanges > 0 {
+		if err := input.Authorize(ctx); err != nil {
+			return changed, err
+		}
+		if err := e.Adapter.UpdateProjectState(ctx, input.Organization, input.ProjectSlug, optionPatch, etag); err != nil {
+			return changed, err
+		}
+		changed += optionChanges
+	}
 	return changed, nil
+}
+
+func filterOptionsPatch(ctx context.Context, adapter Adapter, input Input, desired *sentryv1alpha1.FilterSettings) (ProjectPatch, int, string, error) {
+	if desired.HydrationErrors == nil && desired.ChunkLoadErrors == nil && desired.IPAddresses == nil && desired.Releases == nil && desired.ErrorMessages == nil && desired.LogMessages == nil && desired.ApplicationMetrics == nil {
+		return ProjectPatch{}, 0, "", nil
+	}
+	current, err := adapter.GetProjectState(ctx, input.Organization, input.ProjectSlug)
+	if err != nil {
+		return ProjectPatch{}, 0, "", err
+	}
+	patch := ProjectPatch{Options: map[string]any{}}
+	changed := 0
+	setBool := func(key string, value *bool) {
+		if value == nil {
+			return
+		}
+		observed, ok := current.Options[key].(bool)
+		if !ok || observed != *value {
+			patch.Options[key] = *value
+			changed++
+		}
+	}
+	setList := func(key string, values *[]string) {
+		if values == nil {
+			return
+		}
+		canonical := append([]string(nil), (*values)...)
+		sort.Strings(canonical)
+		wanted := strings.Join(canonical, "\n")
+		observed, ok := current.Options[key].(string)
+		if !ok || observed != wanted {
+			patch.Options[key] = wanted
+			changed++
+		}
+	}
+	setBool("filters:react-hydration-errors", desired.HydrationErrors)
+	setBool("filters:chunk-load-error", desired.ChunkLoadErrors)
+	setList("filters:blacklisted_ips", desired.IPAddresses)
+	setList("filters:releases", desired.Releases)
+	setList("filters:error_messages", desired.ErrorMessages)
+	setList("filters:log_messages", desired.LogMessages)
+	setList("filters:trace_metric_names", desired.ApplicationMetrics)
+	if changed == 0 {
+		patch.Options = nil
+	}
+	return patch, changed, current.ETag, nil
 }
 
 func findFilter(filters []Filter, id string) (Filter, bool) {
@@ -398,6 +483,50 @@ func (e *Engine) reconcilePII(ctx context.Context, input Input, desired *sentryv
 		}
 		if !equalJSONString(current.RelayPIIConfig, serialized) {
 			patch.RelayPIIConfig = &serialized
+			changed++
+		}
+	}
+	if patch.Empty() {
+		return 0, nil
+	}
+	if err := input.Authorize(ctx); err != nil {
+		return 0, err
+	}
+	if err := e.Adapter.UpdateProjectState(ctx, input.Organization, input.ProjectSlug, patch, current.ETag); err != nil {
+		return 0, err
+	}
+	return changed, nil
+}
+
+func (e *Engine) reconcileNotifications(ctx context.Context, input Input, desired *sentryv1alpha1.ProjectNotificationSettings) (int, error) {
+	if desired.SubjectPrefix == nil && desired.SubjectTemplate == nil && desired.MinimumDigestMinutes == nil && desired.MaximumDigestMinutes == nil {
+		return 0, nil
+	}
+	current, err := e.Adapter.GetProjectState(ctx, input.Organization, input.ProjectSlug)
+	if err != nil {
+		return 0, err
+	}
+	patch := ProjectPatch{}
+	changed := 0
+	if desired.SubjectPrefix != nil && !equalString(current.SubjectPrefix, desired.SubjectPrefix) {
+		patch.SubjectPrefix = desired.SubjectPrefix
+		changed++
+	}
+	if desired.SubjectTemplate != nil && !equalString(current.SubjectTemplate, desired.SubjectTemplate) {
+		patch.SubjectTemplate = desired.SubjectTemplate
+		changed++
+	}
+	if desired.MinimumDigestMinutes != nil {
+		seconds := *desired.MinimumDigestMinutes * 60
+		if !equalInt32(current.DigestsMinDelay, &seconds) {
+			patch.DigestsMinDelay = &seconds
+			changed++
+		}
+	}
+	if desired.MaximumDigestMinutes != nil {
+		seconds := *desired.MaximumDigestMinutes * 60
+		if !equalInt32(current.DigestsMaxDelay, &seconds) {
+			patch.DigestsMaxDelay = &seconds
 			changed++
 		}
 	}

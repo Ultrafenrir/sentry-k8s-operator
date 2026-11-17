@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible operator, chart, admission, or documentation defect.
+description: Report a reproducible operator, chart, validation, or documentation defect.
 title: "Bug: "
 body:
   - type: markdown
@@ -28,9 +28,8 @@ body:
         - SentryConnection
         - SentryProject
         - SentryAlertPolicy
-        - Admission or CRD schema
-        - Helm or Kustomize packaging
-        - kubectl-sentry plugin
+        - CRD schema or controller validation
+        - Helm packaging
         - Metrics, events, audit, or recovery
         - Documentation
         - Build, test, or release tooling

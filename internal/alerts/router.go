@@ -101,6 +101,12 @@ func (a *LegacyRouterAdapter) childForDesired(adapter string, desired Desired) (
 		return "", "", ErrLegacyInvalidState
 	}
 	child := legacyChildForTrigger(desired.Trigger)
+	if desired.Issue != nil {
+		child = LegacyIssueAdapter
+	}
+	if desired.Metric != nil {
+		child = LegacyMetricAdapter
+	}
 	switch child {
 	case LegacyIssueAdapter:
 		return child, "issue", nil
@@ -113,9 +119,9 @@ func (a *LegacyRouterAdapter) childForDesired(adapter string, desired Desired) (
 
 func legacyChildForTrigger(trigger Trigger) string {
 	switch trigger {
-	case TriggerFirstSeen, TriggerRegression:
+	case TriggerFirstSeen, TriggerRegression, TriggerEscalation, TriggerSessions:
 		return LegacyIssueAdapter
-	case TriggerEventCount, TriggerUserCount:
+	case TriggerEventCount, TriggerUserCount, TriggerCrashFreeSessions, TriggerCrashFreeUsers, TriggerThroughput, TriggerDuration, TriggerFailureRate, TriggerLCP:
 		return LegacyMetricAdapter
 	default:
 		return ""

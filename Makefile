@@ -1,6 +1,7 @@
 IMG ?= ultrafenrir/sentry-k8s-operator:dev
 GO ?= $(if $(wildcard .tools/go-1.26.10/bin/go),$(CURDIR)/.tools/go-1.26.10/bin/go,go)
 CONTROLLER_GEN ?= $(if $(wildcard .tools/bin/controller-gen),$(CURDIR)/.tools/bin/controller-gen,controller-gen)
+GOLANGCI_LINT ?= $(if $(wildcard .tools/bin/golangci-lint),$(CURDIR)/.tools/bin/golangci-lint,golangci-lint)
 HELM ?= helm
 ENVTEST_K8S_VERSION ?= 1.35.0
 ENVTEST_ASSETS ?= $(CURDIR)/.tools/envtest/$(ENVTEST_K8S_VERSION)
@@ -15,11 +16,13 @@ GO_VERSION := $(shell env -u GOROOT $(GO) env GOVERSION)
 GOROOT := $(shell env -u GOROOT $(GO) env GOROOT)
 GOTOOLCHAIN := local
 GOCACHE := $(CURDIR)/.cache/go-build/$(GO_VERSION)
+GOLANGCI_LINT_CACHE := $(CURDIR)/.cache/golangci-lint
 export GOROOT
 export GOTOOLCHAIN
 export GOCACHE
+export GOLANGCI_LINT_CACHE
 
-.PHONY: help generate manifests fmt vet lint test build docker-build docker-push helm-lint verify-english clean verify-sentry-compose sentry-up sentry-bootstrap sentry-smoke sentry-status sentry-logs sentry-down
+.PHONY: help generate manifests fmt vet lint lint-go test build docker-build docker-push helm-lint verify-english clean verify-sentry-compose sentry-up sentry-bootstrap sentry-smoke sentry-status sentry-logs sentry-down
 
 help: ## Show the available targets.
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage: make <target>\n\n"} /^[a-zA-Z_0-9-]+:.*?##/ {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -57,7 +60,10 @@ fmt: ## Format Go source.
 vet: ## Run go vet.
 	$(GO) vet ./...
 
-lint: generate manifests fmt vet helm-lint verify-english ## Run all static and generated checks.
+lint-go: ## Run golangci-lint with the repository configuration.
+	PATH="$(dir $(GO)):$$PATH" $(GOLANGCI_LINT) run ./...
+
+lint: generate manifests fmt vet lint-go helm-lint verify-english ## Run all static and generated checks.
 	git diff --check
 
 test: generate manifests fmt vet ## Run the complete Go test suite, including envtest.
@@ -94,9 +100,24 @@ helm-lint: ## Lint and render the Helm chart.
 	@grep -q '^      key: api-token$$' .cache/helm/rendered.yaml
 	@awk 'BEGIN { core = 0; found = 0 } /apiGroups: \[""\]/ { core = 1; next } core && /resources: \["events"\]/ { found = 1 } /^  - apiGroups:/ { core = 0 } END { exit found ? 0 : 1 }' .cache/helm/rendered.yaml
 	@if grep -Eq '^kind: Namespace$$|sentry-kubernetes-operator-system|sentry-kubernetes-operator-state|sentry-kubernetes-operator-audit' .cache/helm/rendered.yaml; then echo 'Helm render contains fixed namespaces'; exit 1; fi
+	$(HELM) template helm-contract charts/sentry-kubernetes-operator --namespace helm-contract-ns --kube-version 1.16.0 \
+		--set sentryConnection.spec.credentials.tokenSecretRef.name=helm-contract-token \
+		--set sentryConnection.spec.credentials.tokenSecretRef.key=api-token >.cache/helm/rendered-1.16.yaml
+	@if grep -q 'seccompProfile:' .cache/helm/rendered-1.16.yaml; then echo 'Kubernetes 1.16 render contains unsupported seccompProfile'; exit 1; fi
+	$(HELM) template helm-contract charts/sentry-kubernetes-operator --namespace helm-contract-ns --kube-version 1.20.0 \
+		--set replicaCount=2 \
+		--set sentryConnection.spec.credentials.tokenSecretRef.name=helm-contract-token \
+		--set sentryConnection.spec.credentials.tokenSecretRef.key=api-token >.cache/helm/rendered-1.20.yaml
+	@grep -q '^apiVersion: policy/v1beta1$$' .cache/helm/rendered-1.20.yaml
+	$(HELM) template helm-contract charts/sentry-kubernetes-operator --namespace helm-contract-ns --kube-version 1.21.0 \
+		--set replicaCount=2 \
+		--set sentryConnection.spec.credentials.tokenSecretRef.name=helm-contract-token \
+		--set sentryConnection.spec.credentials.tokenSecretRef.key=api-token >.cache/helm/rendered-1.21.yaml
+	@grep -q '^apiVersion: policy/v1$$' .cache/helm/rendered-1.21.yaml
+	@grep -q 'seccompProfile:' .cache/helm/rendered-1.21.yaml
 
 verify-english: ## Reject Cyrillic text in repository files.
 	@if git grep -n -I -P '[\x{0400}-\x{04FF}]' -- .; then echo 'Repository text must be English.'; exit 1; fi
 
 clean: ## Remove local build output.
-	rm -f bin/manager
+	rm -rf bin .cache/go-build .cache/golangci-lint .cache/helm

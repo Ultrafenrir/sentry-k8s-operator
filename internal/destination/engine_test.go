@@ -31,13 +31,13 @@ func TestPolicyDenialCreatesRevokeStateBeforeCatalogLookup(t *testing.T) {
 	t.Parallel()
 
 	project, connection := destinationInput()
-	connection.Access[0].NotificationTargets = nil
+	connection.Integrations = nil
 	catalog := &fakeCatalog{}
 	current := map[string]binding.DestinationBinding{
 		"slack/incidents": {Kind: "slack", IntegrationIdentity: "workspace-id", ResourceIdentity: "channel-id", State: StateActive},
 	}
 	result := (&Engine{Catalog: catalog}).Reconcile(context.Background(), Input{Namespace: "payments", Project: project, Connection: connection, Current: current})
-	if !result.RevokeOnly || !policy.IsKind(result.PolicyErr, policy.ErrorDestinationAccessDenied) || catalog.calls != 0 {
+	if !result.RevokeOnly || !policy.IsKind(result.PolicyErr, policy.ErrorDestinationUnavailable) || catalog.calls != 0 {
 		t.Fatalf("result=%#v catalog calls=%d", result, catalog.calls)
 	}
 	if result.Bindings["slack/incidents"].State != StateRevoked || result.Bindings["slack/incidents"].ResourceIdentity != "channel-id" {
@@ -73,7 +73,7 @@ func TestOneDestinationGrantRevokeDoesNotBlockAllowedSibling(t *testing.T) {
 	t.Parallel()
 
 	project, connection := destinationInput()
-	connection.Access[0].NotificationTargets.SlackWorkspaces = nil
+	connection.Integrations.Slack = nil
 	catalog := &fakeCatalog{
 		integrations: map[string][]Integration{"pagerduty": {{Identity: "pd-account-id", Name: "primary"}}},
 		pagerDuty:    map[string][]Resource{"pd-account-id": {{Identity: "service-id", Name: "checkout"}}},
@@ -90,7 +90,7 @@ func TestOneDestinationGrantRevokeDoesNotBlockAllowedSibling(t *testing.T) {
 	if result.RevokeOnly || result.PolicyErr != nil {
 		t.Fatalf("unexpected global revoke=%#v", result)
 	}
-	if !policy.IsKind(result.Statuses["slack/incidents"].Err, policy.ErrorDestinationAccessDenied) || result.Bindings["slack/incidents"].State != StateRevoked || result.Bindings["slack/incidents"].ResourceIdentity != "channel-id" {
+	if !policy.IsKind(result.Statuses["slack/incidents"].Err, policy.ErrorDestinationUnavailable) || result.Bindings["slack/incidents"].State != StateRevoked || result.Bindings["slack/incidents"].ResourceIdentity != "channel-id" {
 		t.Fatalf("revoked sibling=%#v status=%#v", result.Bindings["slack/incidents"], result.Statuses["slack/incidents"])
 	}
 	if result.Bindings["pagerDuty/checkout"].State != StateActive || result.Bindings["pagerDuty/checkout"].ResourceIdentity != "service-id" || catalog.calls != 2 {
@@ -194,10 +194,6 @@ func destinationInput() (sentryv1alpha1.SentryProjectSpec, sentryv1alpha1.Sentry
 			Slack:     &sentryv1alpha1.SlackIntegration{Workspaces: []sentryv1alpha1.IntegrationCatalogEntry{{Name: "company", SentryName: "company"}}},
 			PagerDuty: &sentryv1alpha1.PagerDutyIntegration{Accounts: []sentryv1alpha1.IntegrationCatalogEntry{{Name: "primary", SentryName: "primary"}}},
 		},
-		Access: []sentryv1alpha1.AccessRule{{
-			Owner: "payments", Namespaces: sentryv1alpha1.NamespaceAccess{MatchNames: []string{"payments"}}, Teams: []string{"payments"}, AllowCreate: true,
-			NotificationTargets: &sentryv1alpha1.NotificationTargetAccess{SlackWorkspaces: []string{"company"}, PagerDutyAccounts: []string{"primary"}},
-		}},
 	}
 	return project, connection
 }

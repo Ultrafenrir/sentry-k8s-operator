@@ -86,10 +86,14 @@ func (a *HTTPAdapter) Create(ctx context.Context, request CreateRequest) (Remote
 }
 
 func managedProjectName(request CreateRequest) (string, error) {
-	if request.RegionalEvidence != nil {
-		return FormatRegionalManagedNameFromSlug(request.Slug, *request.RegionalEvidence)
+	displayName := request.DisplayName
+	if displayName == "" {
+		displayName = request.Slug
 	}
-	return FormatManagedNameFromSlug(request.Slug, request.Marker)
+	if request.RegionalEvidence != nil {
+		return FormatRegionalManagedName(displayName, *request.RegionalEvidence)
+	}
+	return FormatManagedNameFromSlug(displayName, request.Marker)
 }
 
 func matchesCreateEvidence(remote RemoteProject, request CreateRequest) bool {

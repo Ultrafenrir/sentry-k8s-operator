@@ -548,7 +548,9 @@ func validateAlertBindings(project ProjectBinding) error {
 			return ErrInvalidRecord
 		}
 		digest, err := hex.DecodeString(alert.DesiredHash)
-		if err != nil || len(digest) != 32 || len(alert.Destinations) == 0 || len(alert.Destinations) > 20 {
+		// Email-only alerts have no integration destination dependency. An empty list is
+		// therefore valid; it still means destination cleanup has nothing to retain.
+		if err != nil || len(digest) != 32 || len(alert.Destinations) > 20 {
 			return ErrInvalidRecord
 		}
 		seen := make(map[string]bool, len(alert.Destinations))

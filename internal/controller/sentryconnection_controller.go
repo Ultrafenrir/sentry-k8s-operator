@@ -38,6 +38,7 @@ import (
 	sentryconfigurationv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
 	connectionruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/connection"
 	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/sentryapi"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/validation"
 )
 
 // SentryConnectionReconciler reconciles a SentryConnection object
@@ -78,6 +79,13 @@ func (r *SentryConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	resourceFound = true
 	if r.Registry == nil || r.OperatorNamespace == "" {
 		return ctrl.Result{}, fmt.Errorf("connection runtime is not configured")
+	}
+	if err := validation.Connection(connection.Spec); err != nil {
+		r.Registry.Delete(connection.Name)
+		if statusErr := r.setCredentialCondition(ctx, connection, metav1.ConditionFalse, "SpecInvalid", "The SentryConnection specification is invalid: "+err.Error()); statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
+		return ctrl.Result{}, nil
 	}
 
 	inputs, err := connectionruntime.LoadSecretInputs(ctx, r.Client, r.OperatorNamespace, connection.Spec)

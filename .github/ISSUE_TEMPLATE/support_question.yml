@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Support is best-effort. Read SUPPORT.md and the configuration and troubleshooting guides first.
+        Support is best-effort. Read SUPPORT.md and the configuration guide first.
         Never include credentials, DSNs, Secret data, protected-state contents, customer events, or raw sensitive responses.
 
   - type: checkboxes
@@ -13,7 +13,7 @@ body:
     attributes:
       label: Preflight
       options:
-        - label: I reviewed the README, configuration guide, troubleshooting guide, and support policy.
+        - label: I reviewed the README, configuration guide, and support policy.
           required: true
         - label: This question contains no sensitive data and is not a vulnerability report.
           required: true

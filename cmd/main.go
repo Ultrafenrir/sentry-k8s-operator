@@ -247,7 +247,6 @@ func main() {
 		os.Exit(1)
 	}
 	projectAudit := &audit.KubernetesStore{Client: outputSecretClient, Namespace: auditNamespace, Logger: ctrl.Log.WithName("project-mutation-audit")}
-	destinationAudit := &audit.KubernetesStore{Client: outputSecretClient, Namespace: auditNamespace, Logger: ctrl.Log.WithName("destination-mutation-audit")}
 	if err := mgr.Add(&audit.RetentionJanitor{
 		Store:    &audit.KubernetesStore{Client: outputSecretClient, Namespace: auditNamespace},
 		Interval: auditGCInterval, Retention: auditRetention, Batch: auditGCBatch,
@@ -277,16 +276,15 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.SentryProjectReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		Registry:         connectionRegistry,
-		Bindings:         bindingStore,
-		OutputSecrets:    outputSecretClient,
-		ManagedBy:        managedBy,
-		Recorder:         mgr.GetEventRecorder("sentryproject-controller"),
-		Metrics:          controllerMetrics,
-		Audit:            projectAudit,
-		DestinationAudit: destinationAudit,
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		Registry:      connectionRegistry,
+		Bindings:      bindingStore,
+		OutputSecrets: outputSecretClient,
+		ManagedBy:     managedBy,
+		Recorder:      mgr.GetEventRecorder("sentryproject-controller"),
+		Metrics:       controllerMetrics,
+		Audit:         projectAudit,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "sentryproject")
 		os.Exit(1)

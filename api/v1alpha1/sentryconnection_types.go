@@ -60,75 +60,6 @@ type ConnectionTransport struct {
 	InsecureSkipTLSVerify bool `json:"insecureSkipTLSVerify,omitempty"`
 }
 
-// NamespaceAccess selects namespaces by exact, human-readable name.
-type NamespaceAccess struct {
-	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:MaxItems=100
-	// +kubebuilder:validation:items:MinLength=1
-	// +kubebuilder:validation:items:MaxLength=63
-	// +listType=set
-	MatchNames []string `json:"matchNames"`
-}
-
-// ExistingProjectAccess grants read-only visibility and optional DSN consumption by slug.
-type ExistingProjectAccess struct {
-	// +kubebuilder:validation:MaxItems=100
-	// +kubebuilder:validation:items:MinLength=1
-	// +kubebuilder:validation:items:MaxLength=64
-	// +listType=set
-	// +optional
-	Observe []string `json:"observe,omitempty"`
-
-	// +kubebuilder:validation:MaxItems=100
-	// +kubebuilder:validation:items:MinLength=1
-	// +kubebuilder:validation:items:MaxLength=64
-	// +listType=set
-	// +optional
-	ConsumeDSN []string `json:"consumeDSN,omitempty"`
-}
-
-// NotificationTargetAccess grants use of platform-catalog integration aliases. Channels
-// and services are deliberately absent: an authorized project may select any visible
-// channel or service inside the granted workspace or account.
-type NotificationTargetAccess struct {
-	// +kubebuilder:validation:MaxItems=100
-	// +listType=set
-	// +optional
-	SlackWorkspaces []string `json:"slackWorkspaces,omitempty"`
-
-	// +kubebuilder:validation:MaxItems=100
-	// +listType=set
-	// +optional
-	PagerDutyAccounts []string `json:"pagerDutyAccounts,omitempty"`
-}
-
-// AccessRule binds one trusted owner to namespace, project and destination policy.
-type AccessRule struct {
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=63
-	// +kubebuilder:validation:Pattern=`^[a-z](?:[a-z0-9.-]*[a-z0-9])?$`
-	Owner string `json:"owner"`
-
-	Namespaces NamespaceAccess `json:"namespaces"`
-
-	// +kubebuilder:validation:MaxItems=50
-	// +kubebuilder:validation:items:MinLength=1
-	// +kubebuilder:validation:items:MaxLength=64
-	// +listType=set
-	// +optional
-	Teams []string `json:"teams,omitempty"`
-
-	// +optional
-	AllowCreate bool `json:"allowCreate,omitempty"`
-
-	// +optional
-	ExistingProjects *ExistingProjectAccess `json:"existingProjects,omitempty"`
-
-	// NotificationTargets grants integration aliases, never channel or service allowlists.
-	// +optional
-	NotificationTargets *NotificationTargetAccess `json:"notificationTargets,omitempty"`
-}
-
 // IntegrationCatalogEntry maps one stable local alias to one already-installed Sentry
 // integration name. Declaring an entry never installs an integration.
 type IntegrationCatalogEntry struct {
@@ -290,12 +221,6 @@ type SentryConnectionSpec struct {
 
 	// +optional
 	Transport *ConnectionTransport `json:"transport,omitempty"`
-
-	// +kubebuilder:validation:MaxItems=100
-	// +listType=map
-	// +listMapKey=owner
-	// +optional
-	Access []AccessRule `json:"access,omitempty"`
 
 	// +optional
 	Integrations *ConnectionIntegrations `json:"integrations,omitempty"`
