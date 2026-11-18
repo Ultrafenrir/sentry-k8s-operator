@@ -36,49 +36,19 @@ const (
 	ProjectInputSecretName = "sentry-project-inputs"
 )
 
-// ProjectCreate identifies a new project entirely through readable values.
-type ProjectCreate struct {
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=64
-	Team string `json:"team"`
-
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=64
-	// +optional
-	Platform string `json:"platform,omitempty"`
-
-	// DisplayName is the human-facing Sentry project name. The Kubernetes name remains
-	// the stable project slug and ownership key.
-	// +kubebuilder:validation:MaxLength=64
-	// +optional
-	DisplayName string `json:"displayName,omitempty"`
-}
-
-// ProjectSelector chooses either a new managed project or an existing read-only project.
-type ProjectSelector struct {
-	// +optional
-	Create *ProjectCreate `json:"create,omitempty"`
-
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=64
-	// +optional
-	Use *string `json:"use,omitempty"`
-}
-
-// DSNSpec customizes the public DSN output without exposing external IDs.
-type DSNSpec struct {
+// ExistingClientKeySpec selects one externally managed Sentry client key for public DSN
+// publication. The operator never updates, rotates, or deletes the selected key.
+type ExistingClientKeySpec struct {
+	// Name is the exact readable Sentry client-key name.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=100
-	// +optional
-	ClientKey string `json:"clientKey,omitempty"`
+	Name string `json:"name"`
 
-	// ManagedClientKey selects one operator-managed client key by its local map key. This
-	// avoids exposing the ownership-bearing remote Sentry label.
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=32
-	// +kubebuilder:validation:Pattern=`^[a-z](?:[a-z0-9-]*[a-z0-9])?$`
+	// PublishDSN publishes the selected public DSN to the namespace-local sentry-dsns
+	// Secret. It must be true when this block is present.
+	// +kubebuilder:default=true
 	// +optional
-	ManagedClientKey string `json:"managedClientKey,omitempty"`
+	PublishDSN bool `json:"publishDSN,omitempty"`
 }
 
 // ClientKeyRateLimit caps accepted errors for one managed client key. A missing rateLimit
@@ -110,6 +80,11 @@ type ManagedClientKeySpec struct {
 	// +kubebuilder:default=1
 	// +optional
 	RotationRevision int64 `json:"rotationRevision,omitempty"`
+
+	// PublishDSN selects this key as the single public DSN source for the project.
+	// At most one managed key may enable publication.
+	// +optional
+	PublishDSN bool `json:"publishDSN,omitempty"`
 
 	// +optional
 	Loader *ClientKeyLoaderSpec `json:"loader,omitempty"`
@@ -859,8 +834,47 @@ type IssueFilter struct {
 }
 
 // MetricPreset selects a known Sentry aggregate without exposing arbitrary query syntax.
-// +kubebuilder:validation:Enum=error-count;affected-users;crash-free-sessions;crash-free-users;throughput;duration;failure-rate;largest-contentful-paint;logs
+// +kubebuilder:validation:Enum=error-count;affected-users;crash-free-sessions;crash-free-users;throughput;duration;failure-rate;largest-contentful-paint;logs;application-metric
 type MetricPreset string
+
+// ApplicationMetricType is the OpenTelemetry metric kind stored by Sentry.
+// +kubebuilder:validation:Enum=counter;gauge;distribution
+type ApplicationMetricType string
+
+// ApplicationMetricAggregation is the bounded set exposed by Sentry's metric detector UI.
+// Compatibility validation further restricts it by metric type.
+// +kubebuilder:validation:Enum=count;sum;avg;min;max;p50;p75;p90;p95;p99;per-second;per-minute
+type ApplicationMetricAggregation string
+
+// ApplicationMetricTerm selects one exact catalog metric. Names and units deliberately use a
+// restricted portable alphabet so the adapter never accepts raw query or aggregate syntax.
+type ApplicationMetricTerm struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:Pattern=`^[A-Za-z][A-Za-z0-9_.:/-]*$`
+	Name string                `json:"name"`
+	Type ApplicationMetricType `json:"type"`
+	// Unit is omitted for unitless metrics.
+	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_.:/-]*$`
+	// +optional
+	Unit        string                       `json:"unit,omitempty"`
+	Aggregation ApplicationMetricAggregation `json:"aggregation"`
+}
+
+// ApplicationMetricOperator combines exactly two bounded metric terms.
+// +kubebuilder:validation:Enum=add;subtract;multiply;divide
+type ApplicationMetricOperator string
+
+// ApplicationMetricExpression is either one term or one binary equation. Nested and raw
+// expressions are intentionally excluded.
+type ApplicationMetricExpression struct {
+	Left ApplicationMetricTerm `json:"left"`
+	// +optional
+	Operator ApplicationMetricOperator `json:"operator,omitempty"`
+	// +optional
+	Right *ApplicationMetricTerm `json:"right,omitempty"`
+}
 
 // ThresholdDirection selects the side of the boundary that opens an issue.
 // +kubebuilder:validation:Enum=above;below
@@ -911,6 +925,9 @@ type MetricDetection struct {
 
 type MetricAlertSpec struct {
 	Preset MetricPreset `json:"preset"`
+	// ApplicationMetric is required only for the application-metric preset.
+	// +optional
+	ApplicationMetric *ApplicationMetricExpression `json:"applicationMetric,omitempty"`
 	// +kubebuilder:validation:MaxLength=64
 	// +optional
 	Environment string `json:"environment,omitempty"`
@@ -935,11 +952,37 @@ type AlertAction struct {
 	Destination string `json:"destination,omitempty"`
 	// +optional
 	Email *EmailAlertAction `json:"email,omitempty"`
+	// GitHubIssue creates a ticket through one connection-owned source-code integration.
+	// It is supported only by modern issue workflows.
+	// +optional
+	GitHubIssue *GitHubIssueAlertAction `json:"githubIssue,omitempty"`
 	// +kubebuilder:default=triggered
 	// +optional
 	Status AlertActionStatus `json:"status,omitempty"`
 	// +optional
 	PagerDutySeverity PagerDutySeverity `json:"pagerDutySeverity,omitempty"`
+}
+
+// GitHubIssueAlertAction selects catalog aliases instead of exposing Sentry integration IDs or
+// provider-specific dynamic form payloads.
+type GitHubIssueAlertAction struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Integration string `json:"integration"`
+
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Repository string `json:"repository"`
+
+	// +kubebuilder:validation:MaxItems=20
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=100
+	// +optional
+	Labels []string `json:"labels,omitempty"`
+
+	// +kubebuilder:validation:MaxLength=100
+	// +optional
+	Assignee string `json:"assignee,omitempty"`
 }
 
 // EmailTarget is restricted to ownership-aware recipients.
@@ -993,14 +1036,36 @@ type SentryProjectSpec struct {
 	// +optional
 	AlertPolicy string `json:"alertPolicy,omitempty"`
 
-	Project ProjectSelector `json:"project"`
-
-	// +kubebuilder:default=Active
+	// AlertPolicies applies reusable policies in declared order. It is mutually exclusive
+	// with the backward-compatible alertPolicy field. Conflicting keys fail closed.
+	// +kubebuilder:validation:MaxItems=20
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=253
+	// +listType=atomic
 	// +optional
-	Role ProjectRole `json:"role,omitempty"`
+	AlertPolicies []string `json:"alertPolicies,omitempty"`
 
+	// Team is the Sentry team used for deterministic project creation and ownership.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	Team string `json:"team"`
+
+	// Platform is an optional Sentry SDK platform hint supplied when the project is created.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
 	// +optional
-	DSN *DSNSpec `json:"dsn,omitempty"`
+	Platform string `json:"platform,omitempty"`
+
+	// DisplayName is the optional human-facing Sentry project name. The Kubernetes name
+	// remains the stable project slug and ownership key.
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	DisplayName string `json:"displayName,omitempty"`
+
+	// ExistingClientKey selects an externally managed key only for public DSN publication.
+	// It is mutually exclusive with publishDSN on an operator-managed client key.
+	// +optional
+	ExistingClientKey *ExistingClientKeySpec `json:"existingClientKey,omitempty"`
 
 	// +optional
 	Settings *ProjectSettings `json:"settings,omitempty"`

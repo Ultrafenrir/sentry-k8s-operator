@@ -20,11 +20,208 @@ package validation
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	sentryv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
 )
+
+// CronMonitor validates the independent Cron configuration before project or credentials are resolved.
+func CronMonitor(spec sentryv1alpha1.SentryCronMonitorSpec) error {
+	if spec.ProjectRef == "" || len(spec.ProjectRef) > 253 {
+		return invalid("spec.projectRef", "is required")
+	}
+	if len(spec.DisplayName) > 128 {
+		return invalid("spec.displayName", "must contain at most 128 characters")
+	}
+	if (spec.Crontab == nil) == (spec.Interval == nil) {
+		return invalid("spec", "exactly one of crontab or interval is required")
+	}
+	if spec.Crontab != nil {
+		if err := validateFiveFieldCron(spec.Crontab.Expression); err != nil {
+			return invalid("spec.crontab.expression", err.Error())
+		}
+		zone := spec.Crontab.Timezone
+		if zone == "" {
+			zone = "UTC"
+		}
+		if _, err := time.LoadLocation(zone); err != nil {
+			return invalid("spec.crontab.timezone", "must be an IANA timezone")
+		}
+	}
+	if spec.Interval != nil {
+		if spec.Interval.Value < 1 || spec.Interval.Value > 10000 {
+			return invalid("spec.interval.value", "must be between 1 and 10000")
+		}
+		switch spec.Interval.Unit {
+		case "minute", "hour", "day", "week", "month", "year":
+		default:
+			return invalid("spec.interval.unit", "is unsupported")
+		}
+	}
+	for _, bound := range []struct {
+		field string
+		value *int32
+		max   int32
+	}{
+		{field: "spec.checkInMarginMinutes", value: spec.CheckInMarginMinutes, max: 10080},
+		{field: "spec.maxRuntimeMinutes", value: spec.MaxRuntimeMinutes, max: 43200},
+		{field: "spec.failureThreshold", value: spec.FailureThreshold, max: 1000},
+		{field: "spec.recoveryThreshold", value: spec.RecoveryThreshold, max: 1000},
+	} {
+		if bound.value != nil && (*bound.value < 1 || *bound.value > bound.max) {
+			return invalid(bound.field, fmt.Sprintf("must be between 1 and %d", bound.max))
+		}
+	}
+	if spec.OwnerTeam != "" && (len(spec.OwnerTeam) > 64 || !dnsLabelPattern.MatchString(spec.OwnerTeam)) {
+		return invalid("spec.ownerTeam", "must be a valid Sentry team slug")
+	}
+	if spec.OnDelete != "" && spec.OnDelete != sentryv1alpha1.MonitorDelete && spec.OnDelete != sentryv1alpha1.MonitorRetain {
+		return invalid("spec.onDelete", "must be Delete or Retain")
+	}
+	return nil
+}
+
+// UptimeMonitor validates the public, non-secret surface before any Secret or Sentry access.
+func UptimeMonitor(spec sentryv1alpha1.SentryUptimeMonitorSpec) error {
+	if spec.ProjectRef == "" || len(spec.ProjectRef) > 253 {
+		return invalid("spec.projectRef", "is required")
+	}
+	if len(spec.DisplayName) > 128 {
+		return invalid("spec.displayName", "must contain at most 128 characters")
+	}
+	if len(spec.URL) > 255 {
+		return invalid("spec.url", "must contain at most 255 characters")
+	}
+	parsed, err := url.Parse(spec.URL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.Fragment != "" {
+		return invalid("spec.url", "must be an absolute HTTP or HTTPS URL without userinfo or fragment")
+	}
+	if parsed.Port() != "" {
+		port, err := strconv.Atoi(parsed.Port())
+		if err != nil || port < 1 || port > 65535 {
+			return invalid("spec.url", "contains an invalid port")
+		}
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") {
+		return invalid("spec.url", "local destinations are not allowed")
+	}
+	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified()) {
+		return invalid("spec.url", "non-public IP destinations are not allowed")
+	}
+	switch spec.Method {
+	case "", "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS":
+	default:
+		return invalid("spec.method", "is unsupported")
+	}
+	switch spec.IntervalSeconds {
+	case 60, 300, 600, 1200, 1800, 3600:
+	default:
+		return invalid("spec.intervalSeconds", "is unsupported")
+	}
+	if spec.TimeoutMilliseconds < 1000 || spec.TimeoutMilliseconds > 60000 {
+		return invalid("spec.timeoutMilliseconds", "must be between 1000 and 60000")
+	}
+	if spec.FailureThreshold < 0 || spec.FailureThreshold > 1000 {
+		return invalid("spec.failureThreshold", "must be zero or between 1 and 1000")
+	}
+	if spec.RecoveryThreshold < 0 || spec.RecoveryThreshold > 1000 {
+		return invalid("spec.recoveryThreshold", "must be zero or between 1 and 1000")
+	}
+	if len(spec.Environment) > 64 {
+		return invalid("spec.environment", "must contain at most 64 characters")
+	}
+	if spec.OwnerTeam != "" && (len(spec.OwnerTeam) > 64 || !dnsLabelPattern.MatchString(spec.OwnerTeam)) {
+		return invalid("spec.ownerTeam", "must be a valid Sentry team slug")
+	}
+	if len(spec.Headers) > 20 {
+		return invalid("spec.headers", "must contain at most 20 entries")
+	}
+	if len(spec.Assertions) > 10 {
+		return invalid("spec.assertions", "must contain at most 10 entries")
+	}
+	if (spec.Method == "" || spec.Method == "GET" || spec.Method == "HEAD" || spec.Method == "OPTIONS") && spec.BodyFrom != nil {
+		return invalid("spec.bodyFrom", "is not valid for a method without a request body")
+	}
+	headerNames := map[string]bool{}
+	for i, header := range spec.Headers {
+		name := strings.ToLower(strings.TrimSpace(header.Name))
+		if name == "" || strings.ContainsAny(name, "\r\n:") {
+			return invalid(fmt.Sprintf("spec.headers[%d].name", i), "is invalid")
+		}
+		if name == "host" || name == "authorization" || name == "proxy-authorization" || name == "cookie" {
+			return invalid(fmt.Sprintf("spec.headers[%d].name", i), "is reserved or credential-bearing")
+		}
+		if headerNames[name] {
+			return invalid(fmt.Sprintf("spec.headers[%d].name", i), "is duplicated")
+		}
+		headerNames[name] = true
+		if header.ValueFrom.Name != "sentry-uptime-inputs" || header.ValueFrom.Key == "" {
+			return invalid(fmt.Sprintf("spec.headers[%d].valueFrom", i), "must reference a key in sentry-uptime-inputs")
+		}
+	}
+	if spec.BodyFrom != nil && (spec.BodyFrom.Name != "sentry-uptime-inputs" || spec.BodyFrom.Key == "") {
+		return invalid("spec.bodyFrom", "must reference a key in sentry-uptime-inputs")
+	}
+	for i, assertion := range spec.Assertions {
+		if len(assertion.Key) > 256 {
+			return invalid(fmt.Sprintf("spec.assertions[%d].key", i), "must contain at most 256 characters")
+		}
+		if assertion.Value == "" || len(assertion.Value) > 512 {
+			return invalid(fmt.Sprintf("spec.assertions[%d].value", i), "must contain between 1 and 512 characters")
+		}
+		switch assertion.Type {
+		case "statusCode":
+			if assertion.Key != "" {
+				return invalid(fmt.Sprintf("spec.assertions[%d].key", i), "must be empty for statusCode")
+			}
+			code, err := strconv.Atoi(assertion.Value)
+			if err != nil || code < 100 || code > 599 {
+				return invalid(fmt.Sprintf("spec.assertions[%d].value", i), "must be an HTTP status code")
+			}
+		case "responseHeader":
+			if strings.TrimSpace(assertion.Key) == "" || strings.ContainsAny(assertion.Key, "\r\n:") {
+				return invalid(fmt.Sprintf("spec.assertions[%d].key", i), "must be a response header name")
+			}
+		case "jsonPath":
+			if !strings.HasPrefix(assertion.Key, "$") || len(assertion.Key) > 256 || strings.ContainsAny(assertion.Key, "\r\n") {
+				return invalid(fmt.Sprintf("spec.assertions[%d].key", i), "must be a bounded JSON path")
+			}
+		default:
+			return invalid(fmt.Sprintf("spec.assertions[%d].type", i), "is unsupported")
+		}
+		switch assertion.Comparison {
+		case "equals", "notEquals", "lessThan", "greaterThan":
+		default:
+			return invalid(fmt.Sprintf("spec.assertions[%d].comparison", i), "is unsupported")
+		}
+	}
+	if spec.OnDelete != "" && spec.OnDelete != sentryv1alpha1.MonitorDelete && spec.OnDelete != sentryv1alpha1.MonitorRetain {
+		return invalid("spec.onDelete", "must be Delete or Retain")
+	}
+	return nil
+}
+
+func validateFiveFieldCron(expression string) error {
+	fields := strings.Fields(expression)
+	if len(fields) != 5 {
+		return fmt.Errorf("must contain exactly five fields")
+	}
+	for _, field := range fields {
+		if field == "" || !regexp.MustCompile(`^[0-9*/?,\-]+$`).MatchString(field) {
+			return fmt.Errorf("contains unsupported syntax")
+		}
+		if strings.Contains(field, "?") {
+			return fmt.Errorf("question-mark syntax is not supported")
+		}
+	}
+	return nil
+}
 
 var (
 	dnsLabelPattern      = regexp.MustCompile(`^[a-z](?:[a-z0-9-]*[a-z0-9])?$`)
@@ -72,8 +269,18 @@ func Connection(spec sentryv1alpha1.SentryConnectionSpec) error {
 
 // Project validates all cross-field relationships before project reconciliation performs I/O.
 func Project(spec sentryv1alpha1.SentryProjectSpec) error {
-	if (spec.Project.Create == nil) == (spec.Project.Use == nil) {
-		return invalid("spec.project", "exactly one of create or use is required")
+	if spec.AlertPolicy != "" && len(spec.AlertPolicies) > 0 {
+		return invalid("spec.alertPolicies", "cannot be combined with alertPolicy")
+	}
+	seenPolicies := map[string]bool{}
+	for index, name := range spec.AlertPolicies {
+		if name == "" || seenPolicies[name] {
+			return invalid(fmt.Sprintf("spec.alertPolicies[%d]", index), "must be non-empty and unique")
+		}
+		seenPolicies[name] = true
+	}
+	if spec.Team == "" {
+		return invalid("spec.team", "is required")
 	}
 	if err := validateDSN(spec); err != nil {
 		return err
@@ -98,23 +305,6 @@ func Project(spec sentryv1alpha1.SentryProjectSpec) error {
 			return invalid("spec.notificationTargets", "target names must be unique within each provider")
 		}
 	}
-	if spec.Project.Use != nil {
-		if spec.Settings != nil || spec.IssueOwnership != nil || spec.CodeMappings != nil || spec.ClientKeys != nil ||
-			spec.SymbolSources != nil || spec.NotificationTargets != nil || spec.Alerts != nil || spec.GrantAccess != nil || spec.AlertPolicy != "" {
-			return invalid("spec.project.use", "existing projects cannot declare managed project components")
-		}
-		if spec.Lifecycle.OnDelete == sentryv1alpha1.OnDeleteDeleteProject {
-			return invalid("spec.lifecycle.onDelete", "DeleteProject is not valid with project.use")
-		}
-	}
-	if spec.Role == sentryv1alpha1.ProjectRoleStandby {
-		if spec.Settings != nil || spec.IssueOwnership != nil || spec.CodeMappings != nil || spec.ClientKeys != nil || spec.SymbolSources != nil || spec.GrantAccess != nil {
-			return invalid("spec.role", "Standby cannot declare managed project components")
-		}
-		if spec.Lifecycle.OnDelete == sentryv1alpha1.OnDeleteDeleteProject {
-			return invalid("spec.lifecycle.onDelete", "DeleteProject is not valid with Standby")
-		}
-	}
 	return nil
 }
 
@@ -129,24 +319,28 @@ func AlertPolicy(spec sentryv1alpha1.SentryAlertPolicySpec) error {
 }
 
 func validateDSN(spec sentryv1alpha1.SentryProjectSpec) error {
-	if spec.DSN == nil {
-		return nil
+	publishers := 0
+	if spec.ClientKeys != nil {
+		for name, key := range *spec.ClientKeys {
+			if !key.PublishDSN {
+				continue
+			}
+			publishers++
+			if !key.Active {
+				return invalid("spec.clientKeys."+name+".publishDSN", "requires an active managed key")
+			}
+		}
 	}
-	if spec.DSN.ClientKey != "" && spec.DSN.ManagedClientKey != "" {
-		return invalid("spec.dsn", "clientKey and managedClientKey are mutually exclusive")
+	if publishers > 1 {
+		return invalid("spec.clientKeys", "at most one managed key may publish its public DSN")
 	}
-	if spec.DSN.ManagedClientKey == "" {
-		return nil
-	}
-	if spec.ClientKeys == nil {
-		return invalid("spec.dsn.managedClientKey", "must reference a declared clientKeys entry")
-	}
-	key, ok := (*spec.ClientKeys)[spec.DSN.ManagedClientKey]
-	if !ok {
-		return invalid("spec.dsn.managedClientKey", "must reference a declared clientKeys entry")
-	}
-	if !key.Active {
-		return invalid("spec.dsn.managedClientKey", "must reference an active managed key")
+	if spec.ExistingClientKey != nil {
+		if !spec.ExistingClientKey.PublishDSN {
+			return invalid("spec.existingClientKey.publishDSN", "must be true when existingClientKey is declared")
+		}
+		if publishers != 0 {
+			return invalid("spec.existingClientKey", "cannot be combined with publishDSN on a managed client key")
+		}
 	}
 	return nil
 }
@@ -264,10 +458,7 @@ func validateProjectTeams(spec sentryv1alpha1.SentryProjectSpec) error {
 			}
 		}
 	}
-	attached := map[string]bool{}
-	if spec.Project.Create != nil {
-		attached[spec.Project.Create.Team] = true
-	}
+	attached := map[string]bool{spec.Team: true}
 	if spec.GrantAccess != nil {
 		for _, team := range spec.GrantAccess.Teams {
 			if attached[team] {
@@ -360,6 +551,14 @@ func validateAlerts(alerts *map[string]sentryv1alpha1.AlertSpec) error {
 		}
 		if alert.Metric != nil {
 			metric := alert.Metric
+			if (metric.Preset == sentryv1alpha1.MetricPreset("application-metric")) != (metric.ApplicationMetric != nil) {
+				return invalid("spec.alerts."+name+".metric.applicationMetric", "is required only for the application-metric preset")
+			}
+			if metric.ApplicationMetric != nil {
+				if err := validateApplicationMetricExpression(*metric.ApplicationMetric); err != nil {
+					return invalid("spec.alerts."+name+".metric.applicationMetric", err.Error())
+				}
+			}
 			detections := 0
 			if metric.Detection.Static != nil {
 				detections++
@@ -389,14 +588,27 @@ func validateAlerts(alerts *map[string]sentryv1alpha1.AlertSpec) error {
 			return invalid("spec.alerts."+name, "at least one notify target or typed action is required")
 		}
 		for index, action := range alert.Actions {
-			if (action.Destination == "") == (action.Email == nil) {
-				return invalid(fmt.Sprintf("spec.alerts.%s.actions[%d]", name, index), "select exactly one destination or email action")
+			selected := 0
+			if action.Destination != "" {
+				selected++
+			}
+			if action.Email != nil {
+				selected++
+			}
+			if action.GitHubIssue != nil {
+				selected++
+			}
+			if selected != 1 {
+				return invalid(fmt.Sprintf("spec.alerts.%s.actions[%d]", name, index), "select exactly one destination, email, or GitHub issue action")
 			}
 			if action.Email != nil && (action.Email.Target == sentryv1alpha1.EmailTarget("team")) != (action.Email.Team != "") {
 				return invalid(fmt.Sprintf("spec.alerts.%s.actions[%d].email.team", name, index), "is required only for team email targets")
 			}
 			if action.PagerDutySeverity != "" && !strings.HasPrefix(action.Destination, "pagerDuty/") {
 				return invalid(fmt.Sprintf("spec.alerts.%s.actions[%d].pagerDutySeverity", name, index), "is valid only for PagerDuty destinations")
+			}
+			if action.GitHubIssue != nil && alert.Issue == nil {
+				return invalid(fmt.Sprintf("spec.alerts.%s.actions[%d].githubIssue", name, index), "is valid only for issue workflows")
 			}
 		}
 	}
@@ -482,11 +694,14 @@ func ProjectCompatibility(spec sentryv1alpha1.SentryProjectSpec, profile sentryv
 					}
 				}
 			}
-			if !modern && alert.Metric != nil && (alert.Metric.Detection.Dynamic != nil || alert.Metric.Preset == sentryv1alpha1.MetricPreset("logs")) {
+			if !modern && alert.Metric != nil && (alert.Metric.Detection.Dynamic != nil || alert.Metric.Preset == sentryv1alpha1.MetricPreset("logs") || alert.Metric.Preset == sentryv1alpha1.MetricPreset("application-metric")) {
 				return invalid("spec.alerts."+name+".metric", "selected preset or detection mode requires modern-26.10.1")
 			}
 			if !modern {
 				for index, action := range alert.Actions {
+					if action.GitHubIssue != nil {
+						return invalid(fmt.Sprintf("spec.alerts.%s.actions[%d].githubIssue", name, index), "requires modern-26.10.1")
+					}
 					if action.Status == sentryv1alpha1.AlertActionStatus("resolved") {
 						return invalid(fmt.Sprintf("spec.alerts.%s.actions[%d].status", name, index), "resolved actions require modern-26.10.1")
 					}
@@ -496,6 +711,33 @@ func ProjectCompatibility(spec sentryv1alpha1.SentryProjectSpec, profile sentryv
 				}
 			}
 		}
+	}
+	return nil
+}
+
+func validateApplicationMetricExpression(expression sentryv1alpha1.ApplicationMetricExpression) error {
+	if err := validateApplicationMetricTerm(expression.Left); err != nil {
+		return fmt.Errorf("left: %w", err)
+	}
+	if (expression.Operator == "") != (expression.Right == nil) {
+		return fmt.Errorf("operator and right must be supplied together")
+	}
+	if expression.Right != nil {
+		if err := validateApplicationMetricTerm(*expression.Right); err != nil {
+			return fmt.Errorf("right: %w", err)
+		}
+	}
+	return nil
+}
+
+func validateApplicationMetricTerm(term sentryv1alpha1.ApplicationMetricTerm) error {
+	allowed := map[sentryv1alpha1.ApplicationMetricType]map[sentryv1alpha1.ApplicationMetricAggregation]bool{
+		"counter":      {"sum": true, "per-second": true, "per-minute": true},
+		"gauge":        {"count": true, "sum": true, "avg": true, "min": true, "max": true, "per-second": true, "per-minute": true},
+		"distribution": {"count": true, "sum": true, "avg": true, "min": true, "max": true, "p50": true, "p75": true, "p90": true, "p95": true, "p99": true, "per-second": true, "per-minute": true},
+	}
+	if !allowed[term.Type][term.Aggregation] {
+		return fmt.Errorf("aggregation %q is not valid for %s metrics", term.Aggregation, term.Type)
 	}
 	return nil
 }

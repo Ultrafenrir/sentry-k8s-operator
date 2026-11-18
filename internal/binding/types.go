@@ -136,6 +136,10 @@ type AlertBinding struct {
 	Enabled          bool       `json:"enabled"`
 	Destinations     []string   `json:"destinations"`
 	Marker           Marker     `json:"marker"`
+	DetectorIdentity string     `json:"detectorIdentity,omitempty"`
+	WorkflowIdentity string     `json:"workflowIdentity,omitempty"`
+	DetectorHash     string     `json:"detectorHash,omitempty"`
+	WorkflowHash     string     `json:"workflowHash,omitempty"`
 }
 
 const (
@@ -184,6 +188,7 @@ type ProjectBinding struct {
 	Destinations      map[string]DestinationBinding  `json:"destinations,omitempty"`
 	Alerts            map[string]AlertBinding        `json:"alerts,omitempty"`
 	AlertPolicy       *AppliedAlertPolicy            `json:"alertPolicy,omitempty"`
+	AlertPolicies     []AppliedAlertPolicy           `json:"alertPolicies,omitempty"`
 }
 
 type AppliedAlertPolicy struct {

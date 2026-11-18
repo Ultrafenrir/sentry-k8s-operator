@@ -1,12 +1,13 @@
 # Configuration reference
 
-This guide documents the complete public configuration surface of the three CRDs. The generated
+This guide documents the complete public configuration surface of the five CRDs. The generated
 CRDs remain the machine-readable source of validation constraints; this document explains how to
 choose values and what the operator owns.
 
 ## Common rules
 
-- `SentryConnection` and `SentryAlertPolicy` are cluster-scoped. `SentryProject` is namespaced.
+- `SentryConnection` and `SentryAlertPolicy` are cluster-scoped. `SentryProject`,
+  `SentryCronMonitor`, and `SentryUptimeMonitor` are namespaced.
 - The default Helm chart installs the operator and one connection. Application teams own project
   and policy instances.
 - An omitted optional field is unmanaged. For owned maps and lists, an explicitly empty value
@@ -15,7 +16,8 @@ choose values and what the operator owns.
   intentionally avoid CEL validation so they can be installed on older Kubernetes API servers.
 - Public DSNs are written only to the pre-created `sentry-dsns` Secret in the project namespace.
   The key is the `SentryProject` name. Optional symbol-source credentials are read only from the
-  pre-created `sentry-project-inputs` Secret.
+  pre-created `sentry-project-inputs` Secret. Uptime request values can only be read from the
+  pre-created `sentry-uptime-inputs` Secret in the monitor namespace.
 - API tokens, secret keys, private DSNs, and protected Sentry identities never belong in a CR or
   status field.
 
@@ -93,8 +95,9 @@ migration requirement for existing Sentry projects.
 ## `SentryAlertPolicy`
 
 A policy is a reusable alert template. Creating the policy does not call Sentry. A project opts in
-with `spec.alertPolicy`, after which policy alerts and project-local alerts are merged by stable map
-key. A conflicting key fails closed.
+with the backward-compatible `spec.alertPolicy` or ordered `spec.alertPolicies`, after which policy
+alerts and project-local alerts are merged by stable map key. Policy order is durable, but does not
+imply override precedence: any duplicate destination or alert key fails closed before Sentry I/O.
 
 ```yaml
 apiVersion: sentryconfiguration.io/v1alpha1
@@ -197,7 +200,8 @@ an alert can reference it; environments are normally created by ingested events.
 ### Metric alerts
 
 Metric presets are `error-count`, `affected-users`, `crash-free-sessions`, `crash-free-users`,
-`throughput`, `duration`, `failure-rate`, `largest-contentful-paint`, and modern-only `logs`.
+`throughput`, `duration`, `failure-rate`, `largest-contentful-paint`, and modern-only `logs` and
+`application-metric`.
 `intervalMinutes` is the evaluation window and `environment` is optional.
 
 Exactly one detection block is required:
@@ -231,6 +235,33 @@ detection:
 Directions are `above` or `below`. Dynamic responsiveness is `high`, `medium`, or `low`; dynamic
 direction is `above`, `below`, or `both`. Dynamic detection requires the modern profile and a Sentry
 deployment with the required Seer support. It is rejected when that backend capability is absent.
+The failure is reported as `DynamicDetectionUnavailable` before a workflow or detector is created.
+
+The `application-metric` preset selects one exact catalog metric without accepting Sentry query
+syntax:
+
+```yaml
+metric:
+  preset: application-metric
+  applicationMetric:
+    left:
+      name: checkout.latency
+      type: distribution
+      unit: millisecond
+      aggregation: p95
+  intervalMinutes: 5
+  detection:
+    static:
+      direction: above
+      high: 500
+      resolve: 100
+```
+
+Types are `counter`, `gauge`, and `distribution`. Counter metrics support `sum`, `per-second`, and
+`per-minute`; gauges support `count`, `sum`, `avg`, `min`, `max`, and the two rate aggregations;
+distributions additionally support `p50`, `p75`, `p90`, `p95`, and `p99`. A bounded two-term
+equation supplies `operator` (`add`, `subtract`, `multiply`, or `divide`) and `right` with the same
+shape as `left`. Nested expressions, raw filters, and arbitrary aggregate strings are not accepted.
 
 ### Alert actions
 
@@ -253,10 +284,40 @@ email:
 
 Legacy metric alerts do not support `suggested-assignees`; use a team there.
 
+Modern issue workflows may create a GitHub or GitHub Enterprise issue through a source-code
+catalog owned by the referenced `SentryConnection`:
+
+```yaml
+actions:
+  - status: triggered
+    githubIssue:
+      integration: company-github
+      repository: checkout
+      labels:
+        - sentry
+        - production
+      assignee: backend-oncall
+```
+
+`integration` and `repository` are the readable aliases declared under
+`SentryConnection.spec.integrations.sourceCode`; they are not Sentry numeric IDs. `labels` is
+optional and bounded to 20 entries, and `assignee` is optional. This action is available only for
+typed `issue` alerts with the `modern-26.10.1` profile. It is deliberately separate from Slack,
+PagerDuty, and email delivery, and it is rejected before Sentry I/O for metric alerts, legacy
+profiles, unknown aliases, or non-GitHub providers.
+
+The operator persists Sentry's bounded issue-form metadata so the workflow UI exposes Repository,
+Assignee, and Labels. A real integration can populate the async choices. The local acceptance
+fixture proves the saved values through the workflow API and the visible form fields without
+calling GitHub.
+
 ## `SentryProject`
 
-The Kubernetes resource name is the stable Sentry project slug for a created project. The resource
-may instead observe an existing project by slug, but read-only projects cannot own mutable children.
+The Kubernetes resource name is the stable Sentry project slug. Reconciliation is ensure-style:
+the operator creates a missing project and continues with a recognized managed project. An
+existing project without recognized ownership follows the referenced connection's
+`projectManagement.unmanagedProjects` policy. Application manifests do not select separate create
+or use modes.
 
 ```yaml
 apiVersion: sentryconfiguration.io/v1alpha1
@@ -267,29 +328,14 @@ metadata:
 spec:
   sentry: company-sentry
   alertPolicy: backend-alerts
-  project:
-    create:
-      team: payments
-      platform: python
-      displayName: Checkout API
-  role: Active
+  team: payments
+  platform: python
+  displayName: Checkout API
   lifecycle:
     onDelete: Retain
   grantAccess:
     teams:
       - backend
-  dsn:
-    managedClientKey: browser
-```
-
-To observe an existing project without creating it:
-
-```yaml
-spec:
-  sentry: company-sentry
-  project:
-    use: existing-project-slug
-  role: Standby
 ```
 
 ### Project identity and lifecycle
@@ -298,13 +344,16 @@ spec:
 | --- | --- |
 | `spec.sentry` | Connection name. |
 | `spec.alertPolicy` | Optional reusable policy name. |
-| `spec.project.create.team` | Primary Sentry team slug. |
-| `spec.project.create.platform` | Optional Sentry platform identifier. |
-| `spec.project.create.displayName` | Optional UI name; it does not change the stable slug. |
-| `spec.project.use` | Existing project slug; mutually exclusive with `create`. |
-| `spec.role` | `Active` requests management; `Standby` does not acquire ownership. |
+| `spec.team` | Required Sentry team slug used for deterministic creation and project ownership. |
+| `spec.platform` | Optional create-time Sentry SDK platform hint. |
+| `spec.displayName` | Optional UI name; it does not change the stable slug. The slug is used when this field is omitted. |
 | `spec.paused` | Suspends project mutation while preserving protected state. |
 | `spec.lifecycle.onDelete` | `Retain` removes operator-owned children and releases ownership but keeps the project. `DeleteProject` guardedly deletes an operator-owned project. |
+
+Connection-wide `ownership.role` and `ownership.revision` determine which operator installation may
+mutate. `projectManagement.unmanagedProjects` determines whether an unmarked existing project is
+rejected, observed in standby, or explicitly adopted. These platform controls are not duplicated
+on each project.
 
 `grantAccess.teams` belongs on each project, not on the connection. It grants additional teams
 access to this project. User membership and team creation remain outside the operator.
@@ -317,6 +366,7 @@ spec:
     browser:
       active: true
       rotationRevision: 1
+      publishDSN: true
       rateLimit:
         count: 100
         windowSeconds: 60
@@ -326,17 +376,31 @@ spec:
         logsAndMetrics: true
         userFeedback: true
         debug: false
-  dsn:
-    managedClientKey: browser
 ```
 
-Client-key map keys are local aliases. Increasing `rotationRevision` creates a server-generated
+Client-key map keys such as `browser` are arbitrary local aliases, not Sentry key types. Declaring
+an entry creates and fully manages a new Sentry Client Key. Increasing `rotationRevision` creates a server-generated
 replacement. Removing `rateLimit` disables the owned per-key limit. Loader booleans that are
 omitted are unmanaged. `logsAndMetrics` and `userFeedback` require the modern profile.
 
-`dsn.managedClientKey` selects a managed alias. `dsn.clientKey` selects an existing readable key
-name instead. They are mutually exclusive. The operator writes only the public DSN to the
-pre-created `sentry-dsns` Secret and preserves all other keys and metadata.
+For the normal single-key project, omit `clientKeys`: Sentry creates its default Client Key and the
+operator automatically publishes that key's public DSN. With multiple keys, exactly one managed
+entry may set `publishDSN: true`. The operator writes only the public DSN to the pre-created
+`sentry-dsns` Secret under the `SentryProject` name and preserves all other keys and metadata.
+
+To publish a Client Key that is managed outside the operator:
+
+```yaml
+spec:
+  existingClientKey:
+    name: Default
+    publishDSN: true
+```
+
+The external key is selected by its exact readable Sentry name. It is never updated, rotated, or
+deleted by the operator. External and operator-managed DSN publication are mutually exclusive. If
+multiple active keys exist and no source is selected, reconciliation reports
+`DSNClientKeyAmbiguous` instead of publishing an arbitrary credential.
 
 ### Project behavior and notification defaults
 
@@ -498,6 +562,103 @@ Code mappings select aliases from `SentryConnection.spec.integrations.sourceCode
 Use them for a project-specific rule; use `SentryAlertPolicy` for shared defaults. Project-local and
 policy rule keys must not conflict.
 
+## `SentryCronMonitor`
+
+A Cron Monitor is an independently owned namespaced resource. `projectRef` must name a managed
+`SentryProject` in the same namespace. The controller manages configuration; the application still
+emits check-ins. Remote IDs and check-in history stay out of status.
+
+```yaml
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryCronMonitor
+metadata:
+  name: checkout-settlement
+  namespace: payments
+spec:
+  projectRef: checkout
+  displayName: Checkout settlement
+  crontab:
+    expression: "0 */2 * * *"
+    timezone: Europe/Nicosia
+  checkInMarginMinutes: 10
+  maxRuntimeMinutes: 30
+  failureThreshold: 2
+  recoveryThreshold: 1
+  ownerTeam: payments
+  enabled: true
+  onDelete: Delete
+```
+
+Use `interval` instead of `crontab` for a bounded interval, for example
+`interval: {value: 15, unit: minute}`. Units are `minute`, `hour`, `day`, `week`, `month`, and
+`year`. A five-field crontab and an IANA timezone are required for the crontab form. Sentry creates
+environments from application check-ins, so environment selection is deliberately not claimed as
+monitor configuration. Sentry's public monitor API also has no description field.
+
+`onDelete: Delete` verifies the protected remote identity and deletes it. `Retain` leaves the
+remote monitor in Sentry and releases only protected operator state.
+
+## `SentryUptimeMonitor`
+
+Uptime uses the experimental Sentry 26 API and is rejected on the legacy compatibility profile.
+The controller runs Sentry's preflight before create or update and verifies the saved object after
+each mutation.
+
+```yaml
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryUptimeMonitor
+metadata:
+  name: checkout-health
+  namespace: payments
+spec:
+  projectRef: checkout
+  displayName: Checkout health
+  url: https://checkout.example.com/health
+  method: GET
+  intervalSeconds: 300
+  timeoutMilliseconds: 5000
+  failureThreshold: 3
+  recoveryThreshold: 1
+  environment: production
+  ownerTeam: payments
+  traceSampling: false
+  responseCaptureEnabled: true
+  assertions:
+    - type: statusCode
+      comparison: equals
+      value: "200"
+  enabled: true
+  onDelete: Delete
+```
+
+Allowed intervals are 60, 300, 600, 1200, 1800, and 3600 seconds. Assertions are combined with
+AND and support `statusCode`, `responseHeader`, and a bounded `jsonPath`, using `equals`,
+`notEquals`, `lessThan`, or `greaterThan`.
+
+Request header values and a body are never placed in the CR:
+
+```yaml
+headers:
+  - name: X-Uptime-Probe
+    valueFrom:
+      name: sentry-uptime-inputs
+      key: probe-token
+bodyFrom:
+  name: sentry-uptime-inputs
+  key: request-body
+```
+
+Only `sentry-uptime-inputs` is readable. `Authorization`, `Proxy-Authorization`, `Cookie`, and
+`Host` headers are rejected to prevent the controller from becoming a general Secret forwarding
+primitive. URL userinfo, fragments, localhost names, `.local`/`.internal` names, and literal
+private, loopback, link-local, multicast, or unspecified addresses are rejected. Sentry's checker
+remains responsible for DNS re-resolution, redirects, and destination enforcement at request time;
+the operator never connects to the monitored URL itself.
+
+Sentry 26.10.1 does not render `responseCaptureEnabled` in its edit form. The controller still
+round-trips and verifies the field through the public API; physical acceptance verifies every other
+field in the browser and this one field through read-after-write API evidence.
+
 ## Compatibility summary
 
 | Feature | `legacy-24.7.1` | `modern-26.10.1` |
@@ -507,10 +668,13 @@ policy rule keys must not conflict.
 | Typed issue and static/change metric alerts | Yes | Yes |
 | Dynamic metric detection | No | Requires Seer support |
 | `logs` metric preset | No | Yes |
+| Bounded Application Metrics detector | No | Yes |
 | Log/application-metric filters and PII datasets | No | Yes |
 | Loader logs/metrics and user feedback | No | Yes |
 | Release auto-creation | No | Yes |
 | Legacy metric email to suggested assignees | No | Yes |
+| Cron Monitor configuration | Yes | Yes |
+| Uptime Monitor configuration | No | Yes |
 
 Compatibility is validated before Sentry mutation. A field appearing in the Sentry UI is not a
 guarantee that the self-hosted backend enabled the required service.
@@ -524,6 +688,7 @@ Start with the top-level `Ready` condition and compare `metadata.generation` wit
 kubectl get sentryconnection company-sentry
 kubectl get sentryalertpolicy backend-alerts -o yaml
 kubectl -n payments get sentryproject checkout -o yaml
+kubectl -n payments get sentrycronmonitor,sentryuptimemonitor
 ```
 
 `SentryProject` also reports component conditions for the policy, project, DSN, client keys,

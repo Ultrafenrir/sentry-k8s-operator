@@ -31,6 +31,14 @@ import (
 
 var testMarker = binding.Marker{Origin: "managed", Owner: "team-a", ManagedBy: "operator-a"}
 
+func TestDynamicBackendFailureHasStableReason(t *testing.T) {
+	t.Parallel()
+
+	if got := reasonFor(errors.Join(ErrModernDynamicUnavailable, errors.New("seer unavailable"))); got != "DynamicDetectionUnavailable" {
+		t.Fatalf("reasonFor() = %q", got)
+	}
+}
+
 func TestAbsentAlertsDoesNotManageExistingChildren(t *testing.T) {
 	current := map[string]binding.AlertBinding{"existing": {ExternalIdentity: "alert-1"}}
 	result := (&Engine{}).Reconcile(context.Background(), Input{Manage: false, Current: current, DestinationCleanup: []string{"chat"}})
@@ -239,6 +247,29 @@ func TestUpdateAndToggleReauthorizeEveryMutation(t *testing.T) {
 	}
 }
 
+func TestModernReenableCanonicalizesWorkflowAfterToggle(t *testing.T) {
+	t.Parallel()
+	adapter := newFakeAdapter()
+	input := baseInput(adapter, func(context.Context) error { return nil })
+	input.Capabilities = []Capability{{Name: ModernMetricIssueAdapter, Triggers: allTriggers(), SupportsUpdate: true, SupportsToggle: true}}
+	desired := Desired{Trigger: TriggerEventCount, WindowMinutes: 5, Threshold: 20, Enabled: true, Notify: []string{"chat"}}
+	currentDesired := desired
+	currentDesired.Enabled = false
+	current := boundAlert("rule", ModernMetricIssueAdapter, currentDesired, testMarker)
+	adapter.objects[current.ExternalIdentity] = observedFromBinding(current)
+	input.Current = map[string]binding.AlertBinding{"rule": current}
+	input.PinnedAdapter = ModernMetricIssueAdapter
+	input.Desired = map[string]Desired{"rule": desired}
+
+	result := newTestEngine(adapter).Reconcile(context.Background(), input)
+	if err := result.Err(); err != nil {
+		t.Fatalf("re-enable failed: %v", err)
+	}
+	if !reflect.DeepEqual(adapter.operations, []string{"toggle:rule:true", "update:rule"}) {
+		t.Fatalf("modern re-enable operations = %v", adapter.operations)
+	}
+}
+
 func TestCanonicalHashIgnoresNotifyOrderAndRejectsDuplicates(t *testing.T) {
 	left := normalize(Desired{Trigger: TriggerFirstSeen, Enabled: true, Notify: []string{"pager", "chat"}})
 	right := normalize(Desired{Trigger: TriggerFirstSeen, Enabled: true, Notify: []string{"chat", "pager"}})
@@ -366,6 +397,31 @@ func TestSubmittedDifferentIntentFailsClosed(t *testing.T) {
 	})
 	if !errors.Is(err, ErrJournalConflict) || applied {
 		t.Fatalf("different intent did not fail closed: err=%v applied=%v", err, applied)
+	}
+}
+
+func TestSubmittedDifferentIntentClosesWhenNewStateIsAlreadyVerified(t *testing.T) {
+	journal := newFakeJournal()
+	journal.operations["op"] = sentryapi.Operation{
+		Key: "op", Kind: "UpdateAlert", LocalResource: "project/rule",
+		IdempotencyHash: "old", Phase: sentryapi.OperationSubmitted, Revision: 2,
+	}
+	auditSink := &fakeAudit{}
+	authorized := false
+	applied := false
+	err := runMutation(context.Background(), journal, mutation{
+		Key: "op", Kind: "UpdateAlert", LocalResource: "project/rule", Hash: "new",
+		Audit: auditSink, Action: audit.ActionUpdate,
+		Authorize: func(context.Context) error { authorized = true; return nil },
+		Apply:     func(context.Context) error { applied = true; return nil },
+		Verify:    func(context.Context) (bool, error) { return true, nil },
+	})
+	operation := journal.operations["op"]
+	if err != nil || authorized || applied || operation.Phase != sentryapi.OperationVerified || operation.IdempotencyHash != "new" || operation.Revision != 3 {
+		t.Fatalf("stale intent was not safely closed: err=%v authorized=%v applied=%v operation=%#v", err, authorized, applied, operation)
+	}
+	if got := auditSink.outcomes(); !reflect.DeepEqual(got, []string{"recovered/ResultRecovered"}) {
+		t.Fatalf("unexpected audit sequence: %v", got)
 	}
 }
 

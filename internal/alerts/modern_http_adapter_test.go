@@ -143,6 +143,58 @@ func TestModernPayloadRendersTypedIssueAndDynamicMetric(t *testing.T) {
 	}
 }
 
+func TestModernPayloadRendersSuggestedAssigneeEmailFallback(t *testing.T) {
+	t.Parallel()
+
+	adapter := &ModernHTTPAdapter{Client: &sentryapi.Client{}}
+	action, err := adapter.emailAction(context.Background(), "company", ActionDesired{EmailTarget: "suggested-assignees"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action.Type != "email" || action.Config["targetType"] != "issue_owners" || action.Config["targetIdentifier"] != "" || action.Data["fallthroughType"] != "ActiveMembers" {
+		t.Fatalf("action=%#v", action)
+	}
+}
+
+func TestModernPayloadRendersCatalogBoundGitHubIssue(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/api/0/organizations/company/integrations/" || request.URL.Query().Get("providerKey") != "github" {
+			http.NotFound(w, request)
+			return
+		}
+		writeJSON(w, []map[string]any{{"id": "42", "name": "SKO local source fixture"}})
+	}))
+	defer server.Close()
+	adapter := &ModernHTTPAdapter{Client: modernTestClient(t, server)}
+	desired := Desired{
+		Issue: &IssueDesired{Triggers: []IssueTriggerDesired{{Type: TriggerFirstSeen}}},
+		Actions: []ActionDesired{{GitHubIssue: &GitHubIssueActionDesired{
+			PayloadVersion: 2, Provider: "github", IntegrationName: "SKO local source fixture", RepositoryName: "sko/local-repository",
+			Labels: []string{"operator", "accepted"}, Assignee: "sko-bot",
+		}}},
+	}
+	filters, err := adapter.actionFilters(context.Background(), "company", desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	action := filters[0].Actions[0]
+	additional := action.Data["additional_fields"].(map[string]any)
+	formFields := action.Data["dynamic_form_fields"].([]any)
+	if action.Type != "github" || action.IntegrationID != 42 || additional["repo"] != "sko/local-repository" || additional["assignee"] != "sko-bot" || action.Config["targetType"] != "specific" || len(formFields) != 3 {
+		t.Fatalf("action=%#v", action)
+	}
+	assigneeField := formFields[1].(map[string]any)
+	if assigneeField["url"] != "/extensions/github/search/company/42/" || assigneeField["prefetch"] != true {
+		t.Fatalf("assignee field=%#v", assigneeField)
+	}
+	responseData := map[string]any{"additionalFields": additional, "dynamicFormFields": formFields}
+	if !modernActionDataMatches("github", action.Data, responseData) {
+		t.Fatalf("response data did not match: %#v", responseData)
+	}
+}
+
 func TestModernPayloadEncodesPercentChangeAsSentryRatios(t *testing.T) {
 	t.Parallel()
 	medium := float64(25)
@@ -216,6 +268,36 @@ func TestModernHTTPAdapterRejectsPartialDetectorAfterAmbiguousCreate(t *testing.
 	}
 }
 
+func TestModernHTTPAdapterProbesDynamicBackendBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	remote := &modernTestRemote{seerUnavailable: true}
+	server := httptest.NewTLSServer(http.HandlerFunc(remote.serveHTTP))
+	defer server.Close()
+	adapter := &ModernHTTPAdapter{Client: modernTestClient(t, server)}
+	desired := Desired{Metric: &MetricDesired{Preset: "error-count", IntervalMinutes: 5, Detection: DetectionDesired{Kind: "dynamic", Responsiveness: "medium", AnomalyDirection: "both"}}, Enabled: true}
+
+	_, err := adapter.Ensure(context.Background(), ModernMetricIssueAdapter, "company", "checkout", "dynamic", desired, binding.Marker{Origin: "managed", Owner: "payments", ManagedBy: "sko"})
+	if !errors.Is(err, ErrModernDynamicUnavailable) || remote.seerProbes != 1 || remote.workflowPosts != 0 || remote.detectorPosts != 0 {
+		t.Fatalf("err=%v probes=%d posts=%d/%d", err, remote.seerProbes, remote.workflowPosts, remote.detectorPosts)
+	}
+}
+
+func TestModernHTTPAdapterProbesDynamicBackendBeforeUpdate(t *testing.T) {
+	t.Parallel()
+
+	remote := &modernTestRemote{seerUnavailable: true}
+	server := httptest.NewTLSServer(http.HandlerFunc(remote.serveHTTP))
+	defer server.Close()
+	adapter := &ModernHTTPAdapter{Client: modernTestClient(t, server)}
+	desired := Desired{Metric: &MetricDesired{Preset: "error-count", IntervalMinutes: 5, Detection: DetectionDesired{Kind: "dynamic", Responsiveness: "medium", AnomalyDirection: "both"}}, Enabled: true}
+
+	_, err := adapter.Update(context.Background(), ModernMetricIssueAdapter, "company", "checkout", `{"detector":"202","workflow":"101"}`, desired)
+	if !errors.Is(err, ErrModernDynamicUnavailable) || remote.seerProbes != 1 || remote.workflowPuts != 0 || remote.detectorPuts != 0 {
+		t.Fatalf("err=%v probes=%d puts=%d/%d", err, remote.seerProbes, remote.workflowPuts, remote.detectorPuts)
+	}
+}
+
 type modernTestRemote struct {
 	workflowExists                                                     bool
 	detectorExists                                                     bool
@@ -230,12 +312,21 @@ type modernTestRemote struct {
 	loseDetectorResponseOnce                                           bool
 	forceDetectorOnCreate                                              bool
 	dropConditionGroup                                                 bool
+	seerUnavailable                                                    bool
+	seerProbes                                                         int
 }
 
 func (r *modernTestRemote) serveHTTP(w http.ResponseWriter, request *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	path := request.URL.Path
 	switch {
+	case request.Method == http.MethodGet && path == "/api/0/seer/models/":
+		r.seerProbes++
+		if r.seerUnavailable {
+			http.Error(w, `{"detail":"Failed to fetch models from Seer"}`, http.StatusBadGateway)
+			return
+		}
+		writeJSON(w, map[string]any{"models": []string{"acceptance-model"}})
 	case request.Method == http.MethodGet && path == "/api/0/organizations/company/workflows/":
 		if !r.workflowExists {
 			writeJSON(w, []any{})

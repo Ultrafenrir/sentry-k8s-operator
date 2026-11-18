@@ -24,34 +24,16 @@ import (
 
 func TestEvaluateDerivesManagedProjectFromNamespace(t *testing.T) {
 	t.Parallel()
-	project := sentryv1alpha1.SentryProjectSpec{Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}}}
+	project := sentryv1alpha1.SentryProjectSpec{Team: "payments"}
 	decision, err := EvaluateProject("checkout-prod", project, sentryv1alpha1.SentryConnectionSpec{})
 	if err != nil || decision.AccessMode != "Manage" || decision.Owner != "payments" || !decision.ConsumeDSN {
 		t.Fatalf("decision=%#v err=%v", decision, err)
 	}
 }
 
-func TestEvaluateExistingProjectUsesProjectDSNIntent(t *testing.T) {
+func TestEvaluateRejectsMissingTeam(t *testing.T) {
 	t.Parallel()
-	slug := "shared-platform"
-	project := sentryv1alpha1.SentryProjectSpec{Project: sentryv1alpha1.ProjectSelector{Use: &slug}}
-	decision, err := EvaluateProject("checkout-prod", project, sentryv1alpha1.SentryConnectionSpec{})
-	if err != nil || decision.AccessMode != "ReadOnly" || decision.Owner != "" || decision.ConsumeDSN {
-		t.Fatalf("observe decision=%#v err=%v", decision, err)
-	}
-	project.DSN = &sentryv1alpha1.DSNSpec{}
-	decision, err = EvaluateProject("checkout-prod", project, sentryv1alpha1.SentryConnectionSpec{})
-	if err != nil || !decision.ConsumeDSN {
-		t.Fatalf("DSN decision=%#v err=%v", decision, err)
-	}
-}
-
-func TestEvaluateRejectsAmbiguousProjectSelector(t *testing.T) {
-	t.Parallel()
-	slug := "existing"
-	project := sentryv1alpha1.SentryProjectSpec{Project: sentryv1alpha1.ProjectSelector{
-		Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}, Use: &slug,
-	}}
+	project := sentryv1alpha1.SentryProjectSpec{}
 	if _, err := EvaluateProject("checkout-prod", project, sentryv1alpha1.SentryConnectionSpec{}); !IsKind(err, ErrorProjectInvalid) {
 		t.Fatalf("error=%v", err)
 	}
@@ -61,7 +43,7 @@ func TestEvaluateNotificationTargetsUseConnectionCatalog(t *testing.T) {
 	t.Parallel()
 	connection := testConnection()
 	project := sentryv1alpha1.SentryProjectSpec{
-		Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
+		Team: "payments",
 		NotificationTargets: &sentryv1alpha1.NotificationTargets{
 			Slack: map[string][]string{"company": {"any-visible-channel"}}, PagerDuty: map[string][]string{"primary": {"Any Visible Service"}},
 		},
@@ -78,7 +60,7 @@ func TestEvaluateNotificationTargetsUseConnectionCatalog(t *testing.T) {
 func TestEvaluateProjectIsIndependentFromInvalidDestination(t *testing.T) {
 	t.Parallel()
 	project := sentryv1alpha1.SentryProjectSpec{
-		Project:             sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
+		Team:                "payments",
 		NotificationTargets: &sentryv1alpha1.NotificationTargets{Slack: map[string][]string{"missing": {"alerts"}}},
 	}
 	decision, err := EvaluateProject("checkout-prod", project, testConnection())
@@ -95,7 +77,7 @@ func TestEvaluateProjectIsIndependentFromInvalidDestination(t *testing.T) {
 func TestProjectAccessTeamsComeFromProject(t *testing.T) {
 	t.Parallel()
 	project := sentryv1alpha1.SentryProjectSpec{
-		Project:     sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
+		Team:        "payments",
 		GrantAccess: &sentryv1alpha1.ProjectGrantAccess{Teams: []string{"backend", "platform"}},
 	}
 	allowed, err := ProjectAccessTeams(project)
@@ -111,7 +93,7 @@ func TestProjectAccessTeamsComeFromProject(t *testing.T) {
 func TestIssueOwnershipTeamsMustBeAttachedByProject(t *testing.T) {
 	t.Parallel()
 	project := sentryv1alpha1.SentryProjectSpec{
-		Project:     sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
+		Team:        "payments",
 		GrantAccess: &sentryv1alpha1.ProjectGrantAccess{Teams: []string{"backend"}},
 		IssueOwnership: &sentryv1alpha1.IssueOwnershipSpec{Rules: []sentryv1alpha1.IssueOwnershipRule{{
 			Matcher: sentryv1alpha1.IssueOwnershipMatcher{Type: sentryv1alpha1.IssueOwnershipMatcherPath, Pattern: "src/*"}, Teams: []string{"payments", "backend"},

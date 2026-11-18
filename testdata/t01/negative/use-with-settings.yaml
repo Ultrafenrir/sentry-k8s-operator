@@ -5,8 +5,8 @@ metadata:
   namespace: checkout-prod
 spec:
   sentry: company-sentry
-  project:
-    use: checkout-api
-  settings:
-    filters:
-      localhost: true
+  team: payments
+  clientKeys:
+    disabled:
+      active: false
+      publishDSN: true

@@ -141,12 +141,39 @@ func TestManagedCreateRejectsStandbyConnectionBeforeExternalMutation(t *testing.
 	}
 }
 
+func TestManagedProjectTransitionsToStandbyWithoutExternalMutation(t *testing.T) {
+	t.Parallel()
+	engine, adapter, store := testEngine(t)
+	input := managedInput("checkout", "uid-one", "payments")
+	input.Connection.Ownership = &sentryv1alpha1.ConnectionOwnership{
+		Region: "eu-west-1", Role: sentryv1alpha1.ConnectionRoleActive, Revision: 8,
+	}
+	if _, err := engine.Reconcile(context.Background(), input); err != nil {
+		t.Fatalf("active reconcile: %v", err)
+	}
+	updateCalls := adapter.updateEvidenceCalls
+	input.Connection.Ownership.Role = sentryv1alpha1.ConnectionRoleStandby
+	input.Connection.ProjectManagement.UnmanagedProjects = sentryv1alpha1.UnmanagedProjectsStandby
+
+	result, err := engine.Reconcile(context.Background(), input)
+	if err != nil || result.Origin != binding.OriginManaged || result.AccessMode != binding.AccessReadOnly {
+		t.Fatalf("standby result=%#v error=%v", result, err)
+	}
+	record, err := store.GetBinding(context.Background(), "uid-one")
+	if err != nil || record.Binding.AccessMode != binding.AccessManage {
+		t.Fatalf("standby binding=%#v error=%v", record.Binding, err)
+	}
+	if adapter.createCalls != 1 || adapter.updateEvidenceCalls != updateCalls {
+		t.Fatalf("standby mutated Sentry: create=%d regional-updates=%d", adapter.createCalls, adapter.updateEvidenceCalls-updateCalls)
+	}
+}
+
 func TestStandbyProjectObservesUnmanagedProjectWithoutClaim(t *testing.T) {
 	t.Parallel()
 	engine, adapter, store := testEngine(t)
 	adapter.projects["checkout"] = RemoteProject{Identity: "external-id", Slug: "checkout", URL: "https://sentry.example/projects/checkout"}
 	input := managedInput("checkout", "uid-one", "payments")
-	input.Project.Spec.Role = sentryv1alpha1.ProjectRoleStandby
+	input.Connection.Ownership = &sentryv1alpha1.ConnectionOwnership{Region: "eu-west-1", Role: sentryv1alpha1.ConnectionRoleStandby, Revision: 8}
 	input.Connection.ProjectManagement.UnmanagedProjects = sentryv1alpha1.UnmanagedProjectsStandby
 
 	result, err := engine.Reconcile(context.Background(), input)
@@ -174,8 +201,8 @@ func TestStandbyProjectContributesToProtectedManagedProjectWithoutTakingClaim(t 
 		t.Fatal(err)
 	}
 	candidate := managedInput("checkout", "candidate-uid", "payments-two")
-	candidate.Project.Spec.Role = sentryv1alpha1.ProjectRoleStandby
 	candidate.Connection.Ownership = manager.Connection.Ownership.DeepCopy()
+	candidate.Connection.Ownership.Role = sentryv1alpha1.ConnectionRoleStandby
 	result, err := engine.Reconcile(context.Background(), candidate)
 	if err != nil || result.Origin != binding.OriginManaged || result.AccessMode != binding.AccessReadOnly || result.Owner != "payments" {
 		t.Fatalf("candidate result=%#v error=%v", result, err)
@@ -202,16 +229,16 @@ func TestExactHandoffPromotesStandbyWithoutExternalMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	candidate := managedInput("checkout", "candidate-uid", "payments-two")
-	candidate.Project.Spec.Role = sentryv1alpha1.ProjectRoleStandby
 	candidate.Connection.Ownership = manager.Connection.Ownership.DeepCopy()
+	candidate.Connection.Ownership.Role = sentryv1alpha1.ConnectionRoleStandby
 	if _, err := engine.Reconcile(context.Background(), candidate); err != nil {
 		t.Fatal(err)
 	}
-	candidate.Project.Spec.Role = sentryv1alpha1.ProjectRoleActive
+	candidate.Connection.Ownership.Role = sentryv1alpha1.ConnectionRoleActive
 	if _, err := engine.Reconcile(context.Background(), candidate); !IsReason(err, ReasonOwnershipConflict) {
 		t.Fatalf("active request stole manager claim: %v", err)
 	}
-	candidate.Project.Spec.Role = sentryv1alpha1.ProjectRoleStandby
+	candidate.Connection.Ownership.Role = sentryv1alpha1.ConnectionRoleStandby
 	claim, err := store.GetClaim(context.Background(), "https://sentry.example", "company", "checkout")
 	if err != nil {
 		t.Fatal(err)
@@ -221,7 +248,7 @@ func TestExactHandoffPromotesStandbyWithoutExternalMutation(t *testing.T) {
 	if _, err := store.Handoff(context.Background(), claim, "manager-uid", target); err != nil {
 		t.Fatal(err)
 	}
-	candidate.Project.Spec.Role = sentryv1alpha1.ProjectRoleActive
+	candidate.Connection.Ownership.Role = sentryv1alpha1.ConnectionRoleActive
 	result, err := engine.Reconcile(context.Background(), candidate)
 	if err != nil || result.AccessMode != binding.AccessManage || result.Owner != "payments" {
 		t.Fatalf("promotion result=%#v error=%v", result, err)
@@ -248,8 +275,8 @@ func TestUnclaimedManagedProjectPromotesStandbyWithoutStealing(t *testing.T) {
 		t.Fatal(err)
 	}
 	candidate := managedInput("checkout", "candidate-uid", "payments-two")
-	candidate.Project.Spec.Role = sentryv1alpha1.ProjectRoleStandby
 	candidate.Connection.Ownership = manager.Connection.Ownership.DeepCopy()
+	candidate.Connection.Ownership.Role = sentryv1alpha1.ConnectionRoleStandby
 	if _, err := engine.Reconcile(context.Background(), candidate); err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +284,7 @@ func TestUnclaimedManagedProjectPromotesStandbyWithoutStealing(t *testing.T) {
 	if err != nil || store.DeleteClaim(context.Background(), claim) != nil {
 		t.Fatalf("release claim=%#v error=%v", claim.Claim, err)
 	}
-	candidate.Project.Spec.Role = sentryv1alpha1.ProjectRoleActive
+	candidate.Connection.Ownership.Role = sentryv1alpha1.ConnectionRoleActive
 	candidate.Project.Generation = 2
 	result, err := engine.Reconcile(context.Background(), candidate)
 	if err != nil || result.AccessMode != binding.AccessManage {
@@ -277,12 +304,12 @@ func TestExternalStandbyPromotesOnlyThroughExplicitAdoption(t *testing.T) {
 	engine, adapter, store := testEngine(t)
 	adapter.projects["checkout"] = RemoteProject{Identity: "external-id", Slug: "checkout", URL: "https://sentry.example/projects/checkout"}
 	input := managedInput("checkout", "candidate-uid", "payments")
-	input.Project.Spec.Role = sentryv1alpha1.ProjectRoleStandby
+	input.Connection.Ownership = &sentryv1alpha1.ConnectionOwnership{Region: "eu-west-1", Role: sentryv1alpha1.ConnectionRoleStandby, Revision: 8}
 	input.Connection.ProjectManagement.UnmanagedProjects = sentryv1alpha1.UnmanagedProjectsStandby
 	if _, err := engine.Reconcile(context.Background(), input); err != nil {
 		t.Fatal(err)
 	}
-	input.Project.Spec.Role = sentryv1alpha1.ProjectRoleActive
+	input.Connection.Ownership.Role = sentryv1alpha1.ConnectionRoleActive
 	if _, err := engine.Reconcile(context.Background(), input); !IsReason(err, ReasonProjectAlreadyExists) {
 		t.Fatalf("standby policy unexpectedly promoted external project: %v", err)
 	}
@@ -310,7 +337,7 @@ func TestStandbyProjectRejectsUnmanagedProjectByDefault(t *testing.T) {
 	engine, adapter, store := testEngine(t)
 	adapter.projects["checkout"] = RemoteProject{Identity: "external-id", Slug: "checkout"}
 	input := managedInput("checkout", "uid-one", "payments")
-	input.Project.Spec.Role = sentryv1alpha1.ProjectRoleStandby
+	input.Connection.Ownership = &sentryv1alpha1.ConnectionOwnership{Region: "eu-west-1", Role: sentryv1alpha1.ConnectionRoleStandby, Revision: 8}
 	if _, err := engine.Reconcile(context.Background(), input); !IsReason(err, ReasonProjectAlreadyExists) {
 		t.Fatalf("default standby policy error=%v", err)
 	}
@@ -707,19 +734,15 @@ func TestSameSlugReplacementAndLostMarkerStopMutation(t *testing.T) {
 	}
 }
 
-func TestProjectUseIsReadOnlyAndMarkerAloneDoesNotProveManaged(t *testing.T) {
+func TestStandbyRejectsUnprotectedManagedMarker(t *testing.T) {
 	t.Parallel()
 
 	engine, adapter, store := testEngine(t)
 	marker := binding.Marker{Origin: "managed", Owner: "payments", ManagedBy: "company-sentry-op"}
 	adapter.projects["shared"] = RemoteProject{Identity: "shared-id", Slug: "shared", URL: "https://sentry.example/projects/shared", Marker: &marker}
 	input := useInput("reader", "reader-uid", "payments", "shared")
-	result, err := engine.Reconcile(context.Background(), input)
-	if err != nil {
-		t.Fatalf("external reader: %v", err)
-	}
-	if result.Origin != binding.OriginExternal || result.AccessMode != binding.AccessReadOnly || result.Owner != "" {
-		t.Fatalf("marker-only reader result = %#v", result)
+	if _, err := engine.Reconcile(context.Background(), input); !IsReason(err, ReasonProjectAlreadyExists) {
+		t.Fatalf("marker-only standby error = %v", err)
 	}
 	if _, err := store.GetClaim(context.Background(), "https://sentry.example", "company", "shared"); err != binding.ErrNotFound {
 		t.Fatalf("reader created manager claim: %v", err)
@@ -1228,7 +1251,7 @@ func managedInput(name, uid, namespace string) Input {
 	return Input{
 		Project: &sentryv1alpha1.SentryProject{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, UID: types.UID(uid), Generation: 1},
-			Spec:       sentryv1alpha1.SentryProjectSpec{Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}}},
+			Spec:       sentryv1alpha1.SentryProjectSpec{Team: "payments"},
 		},
 		ConnectionName: "main",
 		Connection:     testConnectionSpec(),
@@ -1237,7 +1260,9 @@ func managedInput(name, uid, namespace string) Input {
 
 func useInput(name, uid, namespace, slug string) Input {
 	input := managedInput(name, uid, namespace)
-	input.Project.Spec.Project = sentryv1alpha1.ProjectSelector{Use: &slug}
+	input.Project.Name = slug
+	input.Connection.Ownership = &sentryv1alpha1.ConnectionOwnership{Region: "eu-west-1", Role: sentryv1alpha1.ConnectionRoleStandby, Revision: 8}
+	input.Connection.ProjectManagement.UnmanagedProjects = sentryv1alpha1.UnmanagedProjectsStandby
 	return input
 }
 

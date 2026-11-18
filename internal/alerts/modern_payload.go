@@ -20,12 +20,13 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"path"
 	"strconv"
 
 	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/sentryapi"
 )
 
-func modernMetricSource(desired Desired) (string, string, string, []string) {
+func modernMetricSource(desired Desired) (string, string, string, []string, error) {
 	preset := "error-count"
 	if desired.Metric != nil {
 		preset = desired.Metric.Preset
@@ -35,24 +36,67 @@ func modernMetricSource(desired Desired) (string, string, string, []string) {
 	}
 	switch preset {
 	case "affected-users":
-		return "events", "count_unique(tags[sentry:user])", "is:unresolved", []string{"error", "default"}
+		return "events", "count_unique(tags[sentry:user])", "is:unresolved", []string{"error", "default"}, nil
 	case "crash-free-sessions":
-		return "metrics", "percentage(sessions_crashed, sessions) AS _crash_rate_alert_aggregate", "", []string{}
+		return "metrics", "percentage(sessions_crashed, sessions) AS _crash_rate_alert_aggregate", "", []string{}, nil
 	case "crash-free-users":
-		return "metrics", "percentage(users_crashed, users) AS _crash_rate_alert_aggregate", "", []string{}
+		return "metrics", "percentage(users_crashed, users) AS _crash_rate_alert_aggregate", "", []string{}, nil
 	case "throughput":
-		return "events_analytics_platform", "count(span.duration)", "", []string{"trace_item_span"}
+		return "events_analytics_platform", "count(span.duration)", "", []string{"trace_item_span"}, nil
 	case "duration":
-		return "events_analytics_platform", "p95(span.duration)", "", []string{"trace_item_span"}
+		return "events_analytics_platform", "p95(span.duration)", "", []string{"trace_item_span"}, nil
 	case "failure-rate":
-		return "events_analytics_platform", "failure_rate()", "", []string{"trace_item_span"}
+		return "events_analytics_platform", "failure_rate()", "", []string{"trace_item_span"}, nil
 	case "largest-contentful-paint":
-		return "events_analytics_platform", "p75(measurements.lcp)", "is_transaction:true", []string{"trace_item_span"}
+		return "events_analytics_platform", "p75(measurements.lcp)", "is_transaction:true", []string{"trace_item_span"}, nil
 	case "logs":
-		return "events_analytics_platform", "count(message)", "", []string{"trace_item_log"}
+		return "events_analytics_platform", "count(message)", "", []string{"trace_item_log"}, nil
+	case "application-metric":
+		if desired.Metric == nil || desired.Metric.ApplicationMetric == nil {
+			return "", "", "", nil, ErrInvalidInput
+		}
+		aggregate, err := applicationMetricAggregate(*desired.Metric.ApplicationMetric)
+		return "events_analytics_platform", aggregate, "", []string{"trace_item_metric"}, err
 	default:
-		return "events", "count()", "is:unresolved", []string{"error", "default"}
+		return "events", "count()", "is:unresolved", []string{"error", "default"}, nil
 	}
+}
+
+func applicationMetricAggregate(expression ApplicationMetricExpressionDesired) (string, error) {
+	left, err := applicationMetricTermAggregate(expression.Left)
+	if err != nil {
+		return "", err
+	}
+	if expression.Operator == "" && expression.Right == nil {
+		return left, nil
+	}
+	if expression.Right == nil {
+		return "", ErrInvalidInput
+	}
+	right, err := applicationMetricTermAggregate(*expression.Right)
+	if err != nil {
+		return "", err
+	}
+	operator, ok := map[string]string{"add": "+", "subtract": "-", "multiply": "*", "divide": "/"}[expression.Operator]
+	if !ok {
+		return "", ErrInvalidInput
+	}
+	return "equation|" + left + " " + operator + " " + right, nil
+}
+
+func applicationMetricTermAggregate(term ApplicationMetricTermDesired) (string, error) {
+	if !validApplicationMetricTerm(term) {
+		return "", ErrInvalidInput
+	}
+	aggregation := map[string]string{"per-second": "per_second", "per-minute": "per_minute"}[term.Aggregation]
+	if aggregation == "" {
+		aggregation = term.Aggregation
+	}
+	unit := term.Unit
+	if unit == "" {
+		unit = "none"
+	}
+	return fmt.Sprintf("%s(value,%s,%s,%s)", aggregation, term.Name, term.Type, unit), nil
 }
 
 func modernDetection(desired Desired) ([]modernCondition, map[string]any) {
@@ -168,6 +212,8 @@ func (a *ModernHTTPAdapter) actionFilters(ctx context.Context, organization stri
 			action, err = a.destinationAction(desiredAction.Destination, desiredAction.PagerDutySeverity)
 		case desiredAction.EmailTarget != "":
 			action, err = a.emailAction(ctx, organization, desiredAction)
+		case desiredAction.GitHubIssue != nil:
+			action, err = a.githubIssueAction(ctx, organization, *desiredAction.GitHubIssue)
 		default:
 			err = ErrModernDestinationUnsupported
 		}
@@ -202,6 +248,49 @@ func (a *ModernHTTPAdapter) actionFilters(ctx context.Context, organization stri
 		result = append(result, modernActionFilter{LogicType: logic, Conditions: conditions, Actions: grouped[status]})
 	}
 	return result, nil
+}
+
+func (a *ModernHTTPAdapter) githubIssueAction(ctx context.Context, organization string, desired GitHubIssueActionDesired) (modernAction, error) {
+	integrationID, err := a.resolveIntegrationID(ctx, organization, desired.Provider, desired.IntegrationName)
+	if err != nil {
+		return modernAction{}, err
+	}
+	additionalFields := map[string]any{
+		"repo": desired.RepositoryName, "labels": append([]string(nil), desired.Labels...), "assignee": desired.Assignee,
+	}
+	return modernAction{
+		Type: desired.Provider, IntegrationID: integrationID,
+		Data:   map[string]any{"additional_fields": additionalFields, "dynamic_form_fields": githubIssueFormFields(organization, integrationID, desired)},
+		Config: map[string]any{"targetType": "specific", "targetIdentifier": nil, "targetDisplay": nil},
+	}, nil
+}
+
+func githubIssueFormFields(organization string, integrationID int64, desired GitHubIssueActionDesired) []any {
+	repositoryLabel := path.Base(desired.RepositoryName)
+	searchURL := fmt.Sprintf("/extensions/github/search/%s/%d/", url.PathEscape(organization), integrationID)
+	fields := []any{map[string]any{
+		"name": "repo", "label": "GitHub Repository", "type": "select", "default": desired.RepositoryName,
+		"choices": [][]string{{desired.RepositoryName, repositoryLabel}}, "url": searchURL, "updatesForm": true, "required": true,
+		"prefetch": true,
+	}}
+	assigneeChoices := [][]string{}
+	if desired.Assignee != "" {
+		assigneeChoices = append(assigneeChoices, []string{desired.Assignee, desired.Assignee})
+	}
+	fields = append(fields, map[string]any{
+		"name": "assignee", "label": "Assignee", "type": "select", "default": desired.Assignee,
+		"choices": assigneeChoices, "url": searchURL, "required": false, "prefetch": true,
+		"dependsOn": []string{"repo"},
+	})
+	labelChoices := make([][]string, 0, len(desired.Labels))
+	for _, label := range desired.Labels {
+		labelChoices = append(labelChoices, []string{label, label})
+	}
+	return append(fields, map[string]any{
+		"name": "labels", "label": "Labels", "type": "select", "default": append([]string(nil), desired.Labels...),
+		"choices": labelChoices, "url": searchURL, "multiple": true, "required": false, "prefetch": true,
+		"dependsOn": []string{"repo"},
+	})
 }
 
 func modernIssueFilters(desired Desired) ([]modernCondition, error) {
@@ -293,10 +382,12 @@ func modernIssueFilter(filter IssueFilterDesired) (modernCondition, error) {
 
 func (a *ModernHTTPAdapter) emailAction(ctx context.Context, organization string, desired ActionDesired) (modernAction, error) {
 	config := map[string]any{}
+	data := map[string]any{}
 	switch desired.EmailTarget {
 	case "suggested-assignees":
 		config["targetType"] = "issue_owners"
 		config["targetIdentifier"] = ""
+		data["fallthroughType"] = "ActiveMembers"
 	case "team":
 		teamID, err := a.resolveTeamID(ctx, organization, desired.EmailTeam)
 		if err != nil {
@@ -307,7 +398,7 @@ func (a *ModernHTTPAdapter) emailAction(ctx context.Context, organization string
 	default:
 		return modernAction{}, ErrModernDestinationUnsupported
 	}
-	return modernAction{Type: "email", Data: map[string]any{}, Config: config}, nil
+	return modernAction{Type: "email", Data: data, Config: config}, nil
 }
 
 func (a *ModernHTTPAdapter) resolveTeamID(ctx context.Context, organization, slug string) (string, error) {
@@ -325,4 +416,31 @@ func (a *ModernHTTPAdapter) resolveTeamID(ctx context.Context, organization, slu
 		}
 	}
 	return "", fmt.Errorf("%w: team %q", ErrModernDestinationUnsupported, slug)
+}
+
+func (a *ModernHTTPAdapter) resolveIntegrationID(ctx context.Context, organization, provider, name string) (int64, error) {
+	type integration struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	path := organizationPath(organization) + "integrations/?providerKey=" + url.QueryEscape(provider) + "&includeConfig=0"
+	items, err := sentryapi.CollectPages[integration](ctx, a.Client, path, "list-modern-ticket-integrations")
+	if err != nil {
+		return 0, err
+	}
+	identity := int64(0)
+	for _, item := range items {
+		if item.Name != name {
+			continue
+		}
+		parsed, err := strconv.ParseInt(item.ID, 10, 64)
+		if err != nil || parsed <= 0 || identity != 0 {
+			return 0, ErrModernDestinationUnsupported
+		}
+		identity = parsed
+	}
+	if identity == 0 {
+		return 0, fmt.Errorf("%w: %s integration %q", ErrModernDestinationUnsupported, provider, name)
+	}
+	return identity, nil
 }

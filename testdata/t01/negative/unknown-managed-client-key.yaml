@@ -5,10 +5,11 @@ metadata:
   namespace: default
 spec:
   sentry: company-sentry
-  project:
-    create:
-      team: payments
+  team: payments
   clientKeys:
-    ingest: {}
-  dsn:
-    managedClientKey: missing
+    ingest:
+      active: true
+      publishDSN: true
+  existingClientKey:
+    name: Default
+    publishDSN: true

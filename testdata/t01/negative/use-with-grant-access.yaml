@@ -5,8 +5,11 @@ metadata:
   namespace: checkout-prod
 spec:
   sentry: company-sentry
-  project:
-    use: checkout-api
-  grantAccess:
-    teams:
-      - backend
+  team: payments
+  clientKeys:
+    web:
+      active: true
+      publishDSN: true
+    mobile:
+      active: true
+      publishDSN: true

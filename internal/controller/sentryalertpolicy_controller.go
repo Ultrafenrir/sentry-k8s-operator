@@ -12,6 +12,7 @@ package controller
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -103,7 +104,7 @@ func (r *SentryAlertPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	var desired, ready, failed, pending int32
 	for i := range projects.Items {
 		project := &projects.Items[i]
-		if project.Spec.AlertPolicy != policy.Name {
+		if !projectReferencesPolicy(project.Spec, policy.Name) {
 			continue
 		}
 		desired++
@@ -115,7 +116,7 @@ func (r *SentryAlertPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			}
 			return ctrl.Result{}, bindingErr
 		}
-		if record.Binding.AlertPolicy == nil || record.Binding.AlertPolicy.UID != string(policy.UID) || record.Binding.AlertPolicy.Generation != policy.Generation {
+		if !bindingContainsPolicy(record.Binding, string(policy.UID), policy.Generation) {
 			pending++
 			continue
 		}
@@ -203,10 +204,36 @@ func (r *SentryAlertPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 func (r *SentryAlertPolicyReconciler) policyForProject(_ context.Context, object client.Object) []reconcile.Request {
 	project, ok := object.(*sentryv1alpha1.SentryProject)
-	if !ok || project.Spec.AlertPolicy == "" {
+	if !ok {
 		return nil
 	}
-	return []reconcile.Request{{NamespacedName: client.ObjectKey{Name: project.Spec.AlertPolicy}}}
+	names := project.Spec.AlertPolicies
+	if len(names) == 0 && project.Spec.AlertPolicy != "" {
+		names = []string{project.Spec.AlertPolicy}
+	}
+	requests := make([]reconcile.Request, 0, len(names))
+	for _, name := range names {
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Name: name}})
+	}
+	return requests
+}
+
+func projectReferencesPolicy(spec sentryv1alpha1.SentryProjectSpec, name string) bool {
+	if spec.AlertPolicy == name {
+		return true
+	}
+	return slices.Contains(spec.AlertPolicies, name)
+}
+func bindingContainsPolicy(state binding.ProjectBinding, uid string, generation int64) bool {
+	if state.AlertPolicy != nil && state.AlertPolicy.UID == uid && state.AlertPolicy.Generation == generation {
+		return true
+	}
+	for _, policy := range state.AlertPolicies {
+		if policy.UID == uid && policy.Generation == generation {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *SentryAlertPolicyReconciler) policiesForConnection(ctx context.Context, object client.Object) []reconcile.Request {

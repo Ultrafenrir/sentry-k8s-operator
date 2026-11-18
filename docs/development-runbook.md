@@ -31,9 +31,12 @@ Build the single controller image with `make docker-build IMG=repository/name:ta
 ## Local Sentry
 
 The Makefile manages a pinned, version-scoped self-hosted Sentry checkout. `sentry-up` recreates
-only that version's local runtime and volumes, then starts the API-facing core services and their
-direct databases. Event consumers, task workers, schedulers, cleanup jobs, and optional product
-services are not started.
+only that version's local runtime and volumes. The default `errors-only` profile starts the
+API-facing core and direct databases. The Sentry 26 `feature-complete` profile additionally starts
+the bounded task, Cron, Uptime, and Application Metrics ingestion/subscription services required by
+physical acceptance. It also enables Sentry's organization-scoped GitHub issue-form prefetch flag;
+this keeps the local non-delivery source-code fixture deterministic while still exercising the
+real workflow form.
 
 Run the same workflow for either pinned compatibility target:
 
@@ -48,6 +51,17 @@ for version in 24.7.1 26.10.1; do
 done
 ```
 
+Use `SENTRY_PROFILE=feature-complete` for Sentry 26 Cron/Uptime acceptance. Follow
+`docs/acceptance-runbook.md`; in particular, asynchronous Cron deletion is not complete until the
+task services process Sentry's `pending_deletion` tombstone.
+
+After the accepted project has published its DSN, ingest three deterministic catalog metrics with
+`make sentry-metrics-fixture`. The script streams the DSN directly into the SDK process and prints
+only the catalog result. Run `make verify-upgrade` to build the pinned previous controller, upgrade
+it in an isolated kind cluster, migrate the breaking alpha `SentryProject` schema while the old
+controller is stopped, restart the current controller, and verify guarded remote deletion. The
+target restores the caller's kubectl context and deletes its successful temporary cluster.
+
 The selected core-service list is version-specific. Sentry 24.7.1 does not define the
 `pgbouncer` or `seaweedfs` Compose services that are part of the 26.10.1 core profile.
 
@@ -59,3 +73,17 @@ configuration, not third-party message delivery.
 
 `sentry-down` removes only the selected stand's containers, network, token, and version-scoped
 volumes.
+
+## Kubernetes support matrix
+
+| Kubernetes | Helm render | CRD install | Controller startup | Full reconcile |
+| --- | --- | --- | --- | --- |
+| 1.16 | CI | best effort | not claimed | not claimed |
+| 1.20 | CI, `policy/v1beta1` PDB | best effort | not claimed | not claimed |
+| 1.21 | CI, `policy/v1` PDB | best effort | not claimed | not claimed |
+| 1.35 | CI | CI | envtest CI | envtest CI |
+| 1.36 | CI | CI | envtest CI | envtest CI |
+
+Rendering does not establish runtime compatibility. A Kubernetes release becomes supported for
+controller startup or reconciliation only after a continuously running envtest or cluster lane is
+added. Remove a release from the claimed matrix when that lane can no longer run.

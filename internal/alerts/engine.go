@@ -50,6 +50,7 @@ const (
 	TriggerFailureRate       Trigger = "failure-rate"
 	TriggerLCP               Trigger = "largest-contentful-paint"
 	TriggerLogs              Trigger = "logs"
+	TriggerApplicationMetric Trigger = "application-metric"
 
 	StateReady   = "Ready"
 	StateDeleted = "Deleted"
@@ -105,10 +106,24 @@ type IssueFilterDesired struct {
 }
 
 type MetricDesired struct {
-	Preset          string
-	Environment     string
-	IntervalMinutes int32
-	Detection       DetectionDesired
+	Preset            string
+	Environment       string
+	IntervalMinutes   int32
+	Detection         DetectionDesired
+	ApplicationMetric *ApplicationMetricExpressionDesired `json:"ApplicationMetric,omitempty"`
+}
+
+type ApplicationMetricTermDesired struct {
+	Name        string
+	Type        string
+	Unit        string
+	Aggregation string
+}
+
+type ApplicationMetricExpressionDesired struct {
+	Left     ApplicationMetricTermDesired
+	Operator string
+	Right    *ApplicationMetricTermDesired
 }
 
 type DetectionDesired struct {
@@ -126,8 +141,18 @@ type ActionDesired struct {
 	Destination       string
 	EmailTarget       string
 	EmailTeam         string
+	GitHubIssue       *GitHubIssueActionDesired `json:"GitHubIssue,omitempty"`
 	Status            string
 	PagerDutySeverity string
+}
+
+type GitHubIssueActionDesired struct {
+	PayloadVersion  int
+	Provider        string
+	IntegrationName string
+	RepositoryName  string
+	Labels          []string
+	Assignee        string
 }
 
 type Capability struct {
@@ -380,6 +405,12 @@ func (e *Engine) updateOne(ctx context.Context, input Input, capability Capabili
 			Apply: func(ctx context.Context) error {
 				var applyErr error
 				observed, applyErr = e.Adapter.SetEnabled(ctx, current.Adapter, input.Organization, input.ProjectSlug, current.ExternalIdentity, desired.Enabled)
+				if applyErr == nil && desired.Enabled && current.Adapter == ModernMetricIssueAdapter {
+					// A shared modern workflow is split before one detector is disabled. On
+					// re-enable, canonicalize the pair again so an identical enabled workflow
+					// is reused instead of leaving a permanent one-detector duplicate.
+					observed, applyErr = e.Adapter.Update(ctx, current.Adapter, input.Organization, input.ProjectSlug, observed.Identity, desired)
+				}
 				return applyErr
 			},
 			Verify: func(ctx context.Context) (bool, error) {
@@ -452,7 +483,7 @@ func selectCapability(input Input, keys []string) (Capability, error) {
 			// support is intentionally checked per child in updateOne so one
 			// unsupported disabled rule cannot make unrelated compatible rules
 			// report AlertAdapterUnavailable.
-			if !candidate.Triggers[input.Desired[key].Trigger] {
+			if !candidate.Triggers[input.Desired[key].Trigger] || (candidate.Name != ModernMetricIssueAdapter && hasGitHubIssueAction(input.Desired[key])) {
 				compatible = false
 				break
 			}
@@ -462,6 +493,15 @@ func selectCapability(input Input, keys []string) (Capability, error) {
 		}
 	}
 	return Capability{}, ErrAdapterUnavailable
+}
+
+func hasGitHubIssueAction(desired Desired) bool {
+	for _, action := range desired.Actions {
+		if action.GitHubIssue != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func validateDesired(key string, desired Desired, destinations map[string]binding.DestinationBinding, requireOwner bool) error {
@@ -486,6 +526,12 @@ func validateDesired(key string, desired Desired, destinations map[string]bindin
 		}
 	} else if desired.Metric != nil {
 		if desired.Metric.IntervalMinutes < 1 || desired.Metric.IntervalMinutes > 1440 || desired.Metric.Detection.Kind == "" {
+			return ErrInvalidInput
+		}
+		if (desired.Metric.Preset == "application-metric") != (desired.Metric.ApplicationMetric != nil) {
+			return ErrInvalidInput
+		}
+		if desired.Metric.ApplicationMetric != nil && !validApplicationMetricExpression(*desired.Metric.ApplicationMetric) {
 			return ErrInvalidInput
 		}
 	} else {
@@ -514,16 +560,57 @@ func validateDesired(key string, desired Desired, destinations map[string]bindin
 		}
 	}
 	for _, action := range desired.Actions {
+		selected := 0
 		if action.Destination != "" {
+			selected++
 			destination, ok := destinations[action.Destination]
 			if !ok || destination.State != "Active" {
 				return ErrInvalidInput
 			}
-		} else if action.EmailTarget == "" {
+		}
+		if action.EmailTarget != "" {
+			selected++
+		}
+		if action.GitHubIssue != nil {
+			selected++
+			github := action.GitHubIssue
+			if desired.Issue == nil || github.PayloadVersion != 2 || (github.Provider != "github" && github.Provider != "github_enterprise") || github.IntegrationName == "" || github.RepositoryName == "" || len(github.Labels) > 20 {
+				return ErrInvalidInput
+			}
+		}
+		if selected != 1 {
 			return ErrInvalidInput
 		}
 	}
 	return nil
+}
+
+var applicationMetricValuePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.:/-]{0,127}$`)
+var applicationMetricUnitPattern = regexp.MustCompile(`^[A-Za-z0-9_.:/-]{0,32}$`)
+
+func validApplicationMetricExpression(expression ApplicationMetricExpressionDesired) bool {
+	if !validApplicationMetricTerm(expression.Left) || ((expression.Operator == "") != (expression.Right == nil)) {
+		return false
+	}
+	if expression.Right == nil {
+		return true
+	}
+	if !map[string]bool{"add": true, "subtract": true, "multiply": true, "divide": true}[expression.Operator] {
+		return false
+	}
+	return validApplicationMetricTerm(*expression.Right)
+}
+
+func validApplicationMetricTerm(term ApplicationMetricTermDesired) bool {
+	if !applicationMetricValuePattern.MatchString(term.Name) || !applicationMetricUnitPattern.MatchString(term.Unit) {
+		return false
+	}
+	allowed := map[string]map[string]bool{
+		"counter":      {"sum": true, "per-second": true, "per-minute": true},
+		"gauge":        {"count": true, "sum": true, "avg": true, "min": true, "max": true, "per-second": true, "per-minute": true},
+		"distribution": {"count": true, "sum": true, "avg": true, "min": true, "max": true, "p50": true, "p75": true, "p90": true, "p95": true, "p99": true, "per-second": true, "per-minute": true},
+	}
+	return allowed[term.Type][term.Aggregation]
 }
 
 func metricAggregate(trigger Trigger) (string, bool) {
@@ -569,7 +656,13 @@ func desiredHash(desired Desired) string {
 }
 
 func verifyIdentity(observed Observed, current binding.AlertBinding, marker binding.Marker) error {
-	if observed.Identity != current.ExternalIdentity || observed.Adapter != current.Adapter || !observed.Marker.Matches(marker) {
+	identityMatches := observed.Identity == current.ExternalIdentity
+	if !identityMatches && observed.Adapter == ModernMetricIssueAdapter && current.Adapter == ModernMetricIssueAdapter {
+		previous, previousErr := parseModernIdentity(current.ExternalIdentity)
+		next, nextErr := parseModernIdentity(observed.Identity)
+		identityMatches = previousErr == nil && nextErr == nil && previous.Detector == next.Detector && previous.SharedDetector == next.SharedDetector
+	}
+	if !identityMatches || observed.Adapter != current.Adapter || !observed.Marker.Matches(marker) {
 		return ErrOwnershipLost
 	}
 	return nil
@@ -586,12 +679,21 @@ func verifyObserved(observed Observed, adapter string, marker binding.Marker, ha
 }
 
 func newBinding(observed Observed, desired Desired) binding.AlertBinding {
-	return binding.AlertBinding{
+	result := binding.AlertBinding{
 		Owner:   desired.Owner,
 		Adapter: observed.Adapter, ExternalIdentity: observed.Identity, Trigger: string(desired.Trigger),
 		DesiredHash: observed.DesiredHash, Enabled: observed.Enabled,
 		Destinations: destinationReferences(desired), Marker: observed.Marker,
 	}
+	if observed.Adapter == ModernMetricIssueAdapter {
+		if identity, err := parseModernIdentity(observed.Identity); err == nil {
+			result.DetectorIdentity = identity.Detector
+			result.WorkflowIdentity = identity.Workflow
+			result.DetectorHash = observed.DesiredHash
+			result.WorkflowHash = modernWorkflowHash(desired)
+		}
+	}
+	return result
 }
 
 func reasonFor(err error) string {
@@ -604,6 +706,8 @@ func reasonFor(err error) string {
 		return "AlertUpdateUnsupported"
 	case errors.Is(err, ErrAdapterUnavailable):
 		return "AlertAdapterUnavailable"
+	case errors.Is(err, ErrModernDynamicUnavailable):
+		return "DynamicDetectionUnavailable"
 	case errors.Is(err, ErrInvalidInput):
 		return "InvalidAlert"
 	default:

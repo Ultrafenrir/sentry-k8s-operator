@@ -22,7 +22,7 @@ export GOTOOLCHAIN
 export GOCACHE
 export GOLANGCI_LINT_CACHE
 
-.PHONY: help generate manifests fmt vet lint lint-go test build docker-build docker-push helm-lint verify-english clean verify-sentry-compose sentry-up sentry-bootstrap sentry-smoke sentry-status sentry-logs sentry-down
+.PHONY: help generate manifests fmt vet lint lint-go test build docker-build docker-push helm-lint verify-english verify-upgrade sentry-metrics-fixture clean verify-sentry-compose sentry-up sentry-bootstrap sentry-smoke sentry-status sentry-logs sentry-down
 
 help: ## Show the available targets.
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage: make <target>\n\n"} /^[a-zA-Z_0-9-]+:.*?##/ {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -30,7 +30,7 @@ help: ## Show the available targets.
 verify-sentry-compose: ## Verify the pinned, isolated local Sentry Compose stack.
 	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PROFILE="$(SENTRY_PROFILE)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_WAIT_TIMEOUT="$(SENTRY_WAIT_TIMEOUT)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" sh hack/manage-sentry-self-hosted.sh verify
 
-sentry-up: ## Recreate and start only the local Sentry core API and direct data services.
+sentry-up: ## Recreate the selected local Sentry profile (errors-only or feature-complete).
 	SENTRY_VERSION="$(SENTRY_VERSION)" SENTRY_PROFILE="$(SENTRY_PROFILE)" SENTRY_PORT="$(SENTRY_PORT)" SENTRY_WAIT_TIMEOUT="$(SENTRY_WAIT_TIMEOUT)" SENTRY_SKIP_PULL="$(SENTRY_SKIP_PULL)" SENTRY_SELF_HOSTED_CACHE="$(SENTRY_SELF_HOSTED_CACHE)" SENTRY_BASH_BIN="$(SENTRY_BASH_BIN)" sh hack/manage-sentry-self-hosted.sh up
 
 sentry-bootstrap: ## Create a local API user and store its token outside Git.
@@ -78,6 +78,12 @@ test: generate manifests fmt vet ## Run the complete Go test suite, including en
 		echo "envtest binaries are missing; install setup-envtest or set KUBEBUILDER_ASSETS"; \
 		exit 1; \
 	fi
+
+verify-upgrade: ## Verify the documented alpha API migration, restart, and deletion against local Sentry 26.
+	sh hack/verify-upgrade.sh
+
+sentry-metrics-fixture: ## Ingest and verify three deterministic Application Metrics in local Sentry 26.
+	sh hack/ingest-application-metrics.sh
 
 build: generate fmt vet ## Build the operator binary.
 	$(GO) build -o bin/manager ./cmd

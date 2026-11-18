@@ -1,9 +1,9 @@
 apiVersion: v2
 name: sentry-kubernetes-operator
-description: Kubernetes operator for Sentry projects and alert policies
+description: Declarative Sentry configuration and GitOps automation for Kubernetes
 type: application
-version: 0.2.0-alpha.1
-appVersion: "0.2.0-alpha.1"
+version: 0.3.0-alpha.1
+appVersion: "0.3.0-alpha.1"
 home: https://github.com/Ultrafenrir/sentry-k8s-operator
 sources:
   - https://github.com/Ultrafenrir/sentry-k8s-operator
@@ -15,6 +15,12 @@ keywords:
   - operator
   - sentry
   - observability
+  - gitops
+  - sentry-operator
+  - configuration-as-code
+  - infrastructure-as-code
+  - self-hosted-sentry
+  - alerting
 annotations:
   artifacthub.io/license: Apache-2.0
   sentryconfiguration.io/evidence: source-and-kind-tested-no-live-sentry

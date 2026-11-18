@@ -175,20 +175,17 @@ func (e *Engine) Reconcile(ctx context.Context, input Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if input.Project.Spec.Project.Create != nil {
-		if input.Project.Spec.Role == sentryv1alpha1.ProjectRoleStandby {
-			return e.reconcileStandby(ctx, input, installation)
-		}
-		decision, err = e.preserveBoundOwner(ctx, input, decision)
-		if err != nil {
-			return Result{}, err
-		}
-		if e.Audit == nil {
-			return Result{}, &Error{Reason: ReasonInvalidState, cause: ErrAuditUnavailable}
-		}
-		return e.reconcileManaged(ctx, input, installation, decision)
+	if input.Connection.Ownership != nil && input.Connection.Ownership.Role == sentryv1alpha1.ConnectionRoleStandby {
+		return e.reconcileStandby(ctx, input, installation)
 	}
-	return e.reconcileReadOnly(ctx, input, installation, decision)
+	decision, err = e.preserveBoundOwner(ctx, input, decision)
+	if err != nil {
+		return Result{}, err
+	}
+	if e.Audit == nil {
+		return Result{}, &Error{Reason: ReasonInvalidState, cause: ErrAuditUnavailable}
+	}
+	return e.reconcileManaged(ctx, input, installation, decision)
 }
 
 func (e *Engine) reconcileStandby(ctx context.Context, input Input, installation string) (Result, error) {
@@ -196,6 +193,12 @@ func (e *Engine) reconcileStandby(ctx context.Context, input Input, installation
 	slug := project.Name
 	remote, err := e.Adapter.GetBySlug(ctx, input.Connection.Organization, slug)
 	if err != nil {
+		if sentryapi.IsKind(err, sentryapi.ErrorNotFound) {
+			if _, bindingErr := e.Bindings.GetBinding(ctx, string(project.UID)); bindingErr == nil {
+				return Result{}, &Error{Reason: ReasonExternalDeleted}
+			}
+			return Result{}, &Error{Reason: ReasonConnectionStandby, cause: ownership.ErrStandby}
+		}
 		return Result{}, err
 	}
 	if remote.Identity == "" || remote.Slug != slug {
@@ -203,15 +206,23 @@ func (e *Engine) reconcileStandby(ctx context.Context, input Input, installation
 	}
 	record, err := e.Bindings.GetBinding(ctx, string(project.UID))
 	if err == nil {
-		if record.Binding.Project.UID != string(project.UID) || record.Binding.Project.Namespace != project.Namespace || record.Binding.Project.Name != project.Name || record.Binding.Connection != input.ConnectionName || record.Binding.Installation != installation || record.Binding.Organization != input.Connection.Organization || record.Binding.Slug != slug || record.Binding.ExternalIdentity != remote.Identity || record.Binding.AccessMode != binding.AccessReadOnly {
+		if record.Binding.Project.UID != string(project.UID) || record.Binding.Project.Namespace != project.Namespace || record.Binding.Project.Name != project.Name || record.Binding.Connection != input.ConnectionName || record.Binding.Installation != installation || record.Binding.Organization != input.Connection.Organization || record.Binding.Slug != slug || record.Binding.ExternalIdentity != remote.Identity {
 			return Result{}, &Error{Reason: ReasonOwnershipLost}
 		}
 		if record.Binding.Origin == binding.OriginExternal {
-			if input.Connection.ProjectManagement.UnmanagedProjects != sentryv1alpha1.UnmanagedProjectsStandby || remote.Marker != nil || remote.RegionalEvidence != nil {
+			if record.Binding.AccessMode != binding.AccessReadOnly || input.Connection.ProjectManagement.UnmanagedProjects != sentryv1alpha1.UnmanagedProjectsStandby || remote.Marker != nil || remote.RegionalEvidence != nil {
 				return Result{}, &Error{Reason: ReasonOwnershipLost}
 			}
-		} else if !e.matchesStandbyManagedSource(ctx, record.Binding, remote) {
-			return Result{}, &Error{Reason: ReasonOwnershipLost}
+		} else {
+			if record.Binding.Origin != binding.OriginManaged || !e.matchesStandbyManagedSource(ctx, record.Binding, remote) {
+				return Result{}, &Error{Reason: ReasonOwnershipLost}
+			}
+			// Keep a local manager binding intact while the connection is Standby. The
+			// returned access mode fences every component reconciler, while retaining
+			// protected child identities and the claim needed for a safe resume.
+			if record.Binding.AccessMode != binding.AccessManage && record.Binding.AccessMode != binding.AccessReadOnly {
+				return Result{}, &Error{Reason: ReasonOwnershipLost}
+			}
 		}
 		return Result{Origin: record.Binding.Origin, AccessMode: binding.AccessReadOnly, Owner: record.Binding.Owner, ProjectURL: remote.URL}, nil
 	}
@@ -238,6 +249,9 @@ func (e *Engine) reconcileStandby(ctx context.Context, input Input, installation
 			state.RegionalOwnership = &regional
 		}
 	} else if remote.Marker != nil || remote.RegionalEvidence != nil || input.Connection.ProjectManagement.UnmanagedProjects != sentryv1alpha1.UnmanagedProjectsStandby {
+		if remote.Marker == nil && remote.RegionalEvidence == nil && input.Connection.ProjectManagement.UnmanagedProjects == sentryv1alpha1.UnmanagedProjectsAdopt && input.Connection.Ownership != nil && input.Connection.Ownership.Role == sentryv1alpha1.ConnectionRoleStandby {
+			return Result{}, &Error{Reason: ReasonConnectionStandby, cause: ownership.ErrStandby}
+		}
 		return Result{}, &Error{Reason: ReasonProjectAlreadyExists}
 	}
 	if _, err := e.Bindings.CreateBinding(ctx, state); err != nil {
@@ -269,12 +283,6 @@ func (e *Engine) matchesStandbyManagedSource(ctx context.Context, candidate bind
 func (e *Engine) Delete(ctx context.Context, input Input) (DeletionResult, error) {
 	if e.Bindings == nil || e.Adapter == nil || input.Project == nil || input.Project.UID == "" {
 		return DeletionResult{}, &Error{Reason: ReasonInvalidState}
-	}
-	if input.Project.Spec.Project.Create == nil {
-		if input.Project.Spec.Lifecycle.OnDelete != sentryv1alpha1.OnDeleteDeleteProject {
-			return e.releaseReadOnlyBinding(ctx, input)
-		}
-		return DeletionResult{}, &Error{Reason: ReasonOwnershipLost}
 	}
 	if e.Audit == nil {
 		return DeletionResult{}, &Error{Reason: ReasonInvalidState, cause: ErrAuditUnavailable}
@@ -562,7 +570,6 @@ func (e *Engine) completeDeletion(ctx context.Context, state binding.BindingReco
 
 func (e *Engine) reconcileManaged(ctx context.Context, input Input, installation string, decision policy.Decision) (Result, error) {
 	project := input.Project
-	create := project.Spec.Project.Create
 	slug := project.Name
 	reference := projectReference(project)
 	marker := binding.Marker{Origin: "managed", Owner: decision.Owner, ManagedBy: e.ManagedBy}
@@ -582,6 +589,9 @@ func (e *Engine) reconcileManaged(ctx context.Context, input Input, installation
 	if errors.Is(err, binding.ErrNotFound) {
 		preflight, preflightErr := e.Adapter.GetBySlug(ctx, input.Connection.Organization, slug)
 		if preflightErr == nil {
+			if input.Connection.ProjectManagement.UnmanagedProjects == sentryv1alpha1.UnmanagedProjectsStandby && preflight.Marker == nil && preflight.RegionalEvidence == nil {
+				return e.reconcileStandby(ctx, input, installation)
+			}
 			if input.Connection.ProjectManagement.UnmanagedProjects == sentryv1alpha1.UnmanagedProjectsAdopt && preflight.Marker == nil && preflight.RegionalEvidence == nil {
 				return e.reconcileAdoption(ctx, input, installation, decision, preflight, marker, regional, regionalEvidence)
 			}
@@ -598,7 +608,7 @@ func (e *Engine) reconcileManaged(ctx context.Context, input Input, installation
 			if claimRecord.Claim.Owner != decision.Owner || e.Bindings.AuthorizeHandoff(claimRecord, reference, slug) != nil {
 				return Result{}, &Error{Reason: ReasonProjectAlreadyExists}
 			}
-			state := newManagedBinding(input, installation, slug, decision.Owner, marker, regional, claimRecord.Name, reference, create)
+			state := newManagedBinding(input, installation, slug, decision.Owner, marker, regional, claimRecord.Name, reference, project.Spec.Team)
 			bindingRecord, err = e.Bindings.CreateBinding(ctx, state)
 			if err != nil {
 				return Result{}, err
@@ -622,7 +632,7 @@ func (e *Engine) reconcileManaged(ctx context.Context, input Input, installation
 		if claimRecord.Claim.Owner != decision.Owner {
 			return Result{}, &Error{Reason: ReasonOwnershipLost}
 		}
-		state := newManagedBinding(input, installation, slug, decision.Owner, marker, regional, claimRecord.Name, reference, create)
+		state := newManagedBinding(input, installation, slug, decision.Owner, marker, regional, claimRecord.Name, reference, project.Spec.Team)
 		bindingRecord, err = e.Bindings.CreateBinding(ctx, state)
 	}
 	if err != nil {
@@ -706,9 +716,9 @@ func (e *Engine) reconcileManaged(ctx context.Context, input Input, installation
 	remote, err = e.Adapter.Create(ctx, CreateRequest{
 		Organization:     input.Connection.Organization,
 		Slug:             slug,
-		DisplayName:      create.DisplayName,
-		Team:             create.Team,
-		Platform:         create.Platform,
+		DisplayName:      project.Spec.DisplayName,
+		Team:             project.Spec.Team,
+		Platform:         project.Spec.Platform,
 		DefaultRules:     false,
 		Marker:           marker,
 		RegionalEvidence: regionalEvidence,
@@ -865,7 +875,7 @@ func (e *Engine) reconcileAdoption(ctx context.Context, input Input, installatio
 		return Result{}, &Error{Reason: ReasonOwnershipLost}
 	}
 
-	state := newManagedBinding(input, installation, input.Project.Name, decision.Owner, marker, regional, claimRecord.Name, reference, input.Project.Spec.Project.Create)
+	state := newManagedBinding(input, installation, input.Project.Name, decision.Owner, marker, regional, claimRecord.Name, reference, input.Project.Spec.Team)
 	state.ExternalIdentity = remote.Identity
 	state.Pending = &binding.OperationState{
 		Kind: "AdoptProject", Phase: string(sentryapi.OperationPlanned),
@@ -971,7 +981,7 @@ func validateManagedName(slug string, marker binding.Marker, regional *ownership
 	return err
 }
 
-func newManagedBinding(input Input, installation, slug, owner string, marker binding.Marker, regional *ownership.Marker, claimName string, reference binding.ProjectReference, create *sentryv1alpha1.ProjectCreate) binding.ProjectBinding {
+func newManagedBinding(input Input, installation, slug, owner string, marker binding.Marker, regional *ownership.Marker, claimName string, reference binding.ProjectReference, team string) binding.ProjectBinding {
 	return binding.ProjectBinding{
 		Version:           binding.CurrentVersion,
 		Project:           reference,
@@ -989,7 +999,7 @@ func newManagedBinding(input Input, installation, slug, owner string, marker bin
 		Pending: &binding.OperationState{
 			Kind:        "CreateProject",
 			Phase:       string(sentryapi.OperationPlanned),
-			DesiredHash: createHash(input.Connection.Organization, slug, create.Team, marker, regional),
+			DesiredHash: createHash(input.Connection.Organization, slug, team, marker, regional),
 		},
 	}
 }
@@ -1065,69 +1075,6 @@ func (e *Engine) bindVerifiedRemote(ctx context.Context, bindingRecord binding.B
 		return Result{}, err
 	}
 	return Result{Origin: binding.OriginManaged, AccessMode: binding.AccessManage, Owner: updated.Binding.Owner, ProjectURL: remote.URL}, nil
-}
-
-func (e *Engine) reconcileReadOnly(ctx context.Context, input Input, installation string, decision policy.Decision) (Result, error) {
-	project := input.Project
-	slug := *project.Spec.Project.Use
-	remote, err := e.Adapter.GetBySlug(ctx, input.Connection.Organization, slug)
-	if err != nil {
-		if sentryapi.IsKind(err, sentryapi.ErrorNotFound) {
-			if _, bindingErr := e.Bindings.GetBinding(ctx, string(project.UID)); bindingErr == nil {
-				return Result{}, &Error{Reason: ReasonExternalDeleted}
-			}
-		}
-		return Result{}, err
-	}
-	if remote.Identity == "" || remote.Slug != slug {
-		return Result{}, &Error{Reason: ReasonInvalidState}
-	}
-	record, err := e.Bindings.GetBinding(ctx, string(project.UID))
-	if err == nil {
-		if record.Binding.Project.UID != string(project.UID) || record.Binding.Installation != installation || record.Binding.Organization != input.Connection.Organization || record.Binding.Slug != slug || record.Binding.ExternalIdentity != remote.Identity || record.Binding.AccessMode != binding.AccessReadOnly {
-			return Result{}, &Error{Reason: ReasonOwnershipLost}
-		}
-		if record.Binding.Origin == binding.OriginManaged {
-			if remote.Marker == nil || record.Binding.Marker == nil || !record.Binding.Marker.Matches(*remote.Marker) {
-				return Result{}, &Error{Reason: ReasonOwnershipLost}
-			}
-			if _, found, findErr := e.Bindings.FindManaged(ctx, installation, input.Connection.Organization, slug, remote.Identity, *remote.Marker); findErr != nil || !found {
-				return Result{}, &Error{Reason: ReasonOwnershipLost, cause: findErr}
-			}
-		}
-		return Result{Origin: record.Binding.Origin, AccessMode: binding.AccessReadOnly, Owner: record.Binding.Owner, ProjectURL: remote.URL}, nil
-	}
-	if !errors.Is(err, binding.ErrNotFound) {
-		return Result{}, err
-	}
-
-	state := binding.ProjectBinding{
-		Version:          binding.CurrentVersion,
-		Project:          projectReference(project),
-		Connection:       input.ConnectionName,
-		Installation:     installation,
-		Organization:     input.Connection.Organization,
-		Slug:             slug,
-		Origin:           binding.OriginExternal,
-		AccessMode:       binding.AccessReadOnly,
-		ExternalIdentity: remote.Identity,
-	}
-	if remote.Marker != nil {
-		managedRecord, found, findErr := e.Bindings.FindManaged(ctx, installation, input.Connection.Organization, slug, remote.Identity, *remote.Marker)
-		if findErr != nil {
-			return Result{}, findErr
-		}
-		if found {
-			state.Origin = binding.OriginManaged
-			state.Owner = managedRecord.Binding.Owner
-			marker := *remote.Marker
-			state.Marker = &marker
-		}
-	}
-	if _, err := e.Bindings.CreateBinding(ctx, state); err != nil {
-		return Result{}, err
-	}
-	return Result{Origin: state.Origin, AccessMode: binding.AccessReadOnly, Owner: state.Owner, ProjectURL: remote.URL}, nil
 }
 
 func projectReference(project *sentryv1alpha1.SentryProject) binding.ProjectReference {

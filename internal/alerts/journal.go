@@ -59,7 +59,25 @@ func runMutation(ctx context.Context, journal sentryapi.OperationJournal, value 
 	}
 	if found && current.Phase == sentryapi.OperationSubmitted {
 		if current.IdempotencyHash != value.Hash {
-			return ErrJournalConflict
+			// A user may revert desired state after an operation was submitted but before
+			// it was authorized or verified. Close the stale intent only when exact
+			// read-after-write verification proves that the newer desired state already
+			// exists. Otherwise retain the fail-closed conflict.
+			verified, verifyErr := value.Verify(ctx)
+			if verifyErr != nil {
+				return verifyErr
+			}
+			if !verified {
+				return ErrJournalConflict
+			}
+			replacement := current
+			replacement.IdempotencyHash = value.Hash
+			replacement.Phase = sentryapi.OperationVerified
+			replacement.Revision++
+			if err := recordAudit(ctx, value, replacement, audit.OutcomeRecovered, audit.ReasonResultRecovered); err != nil {
+				return err
+			}
+			return journal.CompareAndSwap(ctx, current.Revision, replacement)
 		}
 		verified, verifyErr := value.Verify(ctx)
 		if verifyErr != nil {
@@ -170,7 +188,10 @@ func pendingMutation(ctx context.Context, journal sentryapi.OperationJournal, ke
 		return false, nil
 	}
 	if operation.IdempotencyHash != hash {
-		return false, ErrJournalConflict
+		// Let runMutation perform exact verification before deciding whether the stale
+		// submitted intent may be superseded. This helper only answers whether the
+		// current desired hash itself is pending.
+		return false, nil
 	}
 	return true, nil
 }

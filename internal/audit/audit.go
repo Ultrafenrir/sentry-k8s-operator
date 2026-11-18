@@ -36,6 +36,7 @@ type Reason string
 const (
 	ComponentAlerts   Component = "alerts"
 	ComponentProjects Component = "projects"
+	ComponentMonitors Component = "monitors"
 
 	ActionCreate Action = "create"
 	ActionEnsure Action = "ensure"
@@ -118,13 +119,15 @@ func validComponentAction(component Component, action Action) bool {
 		return action == ActionEnsure || action == ActionUpdate || action == ActionToggle || action == ActionDelete
 	case ComponentProjects:
 		return action == ActionCreate || action == ActionUpdate || action == ActionDelete
+	case ComponentMonitors:
+		return action == ActionCreate || action == ActionUpdate || action == ActionToggle || action == ActionDelete
 	default:
 		return false
 	}
 }
 
 func validComponent(value Component) bool {
-	return value == ComponentAlerts || value == ComponentProjects
+	return value == ComponentAlerts || value == ComponentProjects || value == ComponentMonitors
 }
 
 func validAction(value Action) bool {

@@ -185,7 +185,7 @@ func TestDuplicateReadableNamesRemainAmbiguous(t *testing.T) {
 
 func destinationInput() (sentryv1alpha1.SentryProjectSpec, sentryv1alpha1.SentryConnectionSpec) {
 	project := sentryv1alpha1.SentryProjectSpec{
-		Project:             sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
+		Team:                "payments",
 		NotificationTargets: &sentryv1alpha1.NotificationTargets{Slack: map[string][]string{"company": {"incidents"}}, PagerDuty: map[string][]string{"primary": {"checkout"}}},
 	}
 	connection := sentryv1alpha1.SentryConnectionSpec{

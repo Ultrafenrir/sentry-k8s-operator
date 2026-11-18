@@ -1,24 +1,79 @@
 # Sentry Kubernetes Operator
 
-This operator manages Sentry projects and alert rules through Kubernetes custom resources.
-Its public interface consists of three CRDs:
+Sentry configuration as code for Kubernetes.
 
-- `SentryConnection` defines the Sentry API endpoint, credentials, and optional integration catalogs.
-- `SentryProject` creates or observes a Sentry project and manages its configuration.
-- `SentryAlertPolicy` defines reusable alert rules consumed by projects.
+Sentry Kubernetes Operator provides declarative, GitOps-ready automation for Sentry projects,
+alerts, Client Keys, Cron Monitors, and Uptime Monitors. Platform teams configure one shared Sentry
+connection; application teams keep their Sentry configuration beside their workloads as Kubernetes
+custom resources. The controller continuously verifies remote state, repairs supported drift, and
+uses protected ownership evidence before changing or deleting Sentry objects.
 
-The default Helm installation contains the CRDs, one controller deployment, HTTP metrics,
-protected controller state, and one `SentryConnection`. It does not install project or alert
-policy instances. It has no certificate-manager, admission server, or network-policy dependency.
+The project supports Sentry SaaS-compatible APIs and version-pinned self-hosted Sentry profiles.
+It is currently alpha: the API may still change, and a compatibility claim requires repeatable
+tests against the named Sentry and Kubernetes versions.
+
+## What it manages
+
+- `SentryConnection` selects one Sentry organization, credentials, compatibility profile,
+  integration catalogs, adoption policy, and optional multi-operator fencing.
+- `SentryProject` ensures a project exists, then manages selected settings, team access, Client
+  Keys, public DSN publication, ownership rules, code mappings, symbol sources, and project-local
+  alerts.
+- `SentryAlertPolicy` defines reusable typed alerts that projects consume without exposing raw
+  Sentry queries or provider payloads.
+- `SentryCronMonitor` manages Cron Monitor configuration while applications continue to emit
+  check-ins.
+- `SentryUptimeMonitor` manages bounded Sentry 26 Uptime Monitor configuration.
+
+The default Helm release installs the CRDs, one controller, HTTP metrics, protected controller
+state, RBAC, and one `SentryConnection`. Application teams create project, policy, and monitor
+resources in their own deployment repositories.
+
+## What it does not manage
+
+The operator does not install Sentry, ingest application events or check-ins, deliver Slack or
+PagerDuty notifications, create users or teams, install third-party integrations, or accept
+arbitrary Sentry query and integration payloads. It never stores API tokens, secret keys, private
+DSNs, or protected remote identities in custom resources or public status.
+
+## Project example
+
+The Kubernetes resource name is the Sentry project slug. The operator looks up that slug first: it
+creates a missing project and continues managing a project already protected by the same operator.
+An existing unmarked project follows the `SentryConnection.spec.projectManagement` policy.
+
+```yaml
+apiVersion: sentryconfiguration.io/v1alpha1
+kind: SentryProject
+metadata:
+  name: checkout
+  namespace: payments
+spec:
+  sentry: company-sentry
+  team: payments
+  platform: python
+  displayName: Checkout API
+  lifecycle:
+    onDelete: Retain
+```
+
+`team` is required because deterministic Sentry project creation is team-scoped. `platform` is an
+optional create-time SDK hint but is included in the quickstart so newly created projects have
+useful onboarding metadata. `displayName` is optional and defaults to the project slug.
+
+Sentry creates one default Client Key for a new project. When it is the only active key, the
+operator automatically publishes its public DSN to the pre-created `sentry-dsns` Secret under the
+key `checkout`. Advanced users can declare operator-owned Client Keys for independent rotation,
+rate limits, or loader settings and mark exactly one with `publishDSN: true`.
 
 ## Install with Helm
 
-Create a values file for your Sentry installation:
+Create a values file for the target Sentry organization:
 
 ```yaml
 image:
   repository: ultrafenrir/sentry-k8s-operator
-  tag: v0.1.0
+  tag: v0.3.0-alpha.1
   pullPolicy: IfNotPresent
 
 sentryConnection:
@@ -34,12 +89,12 @@ sentryConnection:
       alerts: modern-26.10.1
     projectManagement:
       unmanagedProjects: Reject
+
 controllerMonitoring:
   enabled: false
 ```
 
-The token Secret is deliberately not stored in Helm values. Create it in the namespace selected
-for this Helm release, then install the chart:
+Create the token Secret in the release namespace, then install the chart:
 
 ```sh
 export OPERATOR_NAMESPACE=observability
@@ -54,24 +109,33 @@ helm upgrade --install sentry-operator ./charts/sentry-kubernetes-operator \
   -f values-production.yaml
 ```
 
-Before a namespace uses DSN publication, its application team creates the one fixed output
-Secret. Each `SentryProject` is written to a key with the same name as the project resource:
+Application namespaces pre-create the fixed DSN output Secret:
 
 ```sh
 kubectl -n payments create secret generic sentry-dsns
 ```
 
-The controller can only read and patch Secrets named `sentry-dsns` outside its own namespace; it
-cannot create, delete, list, or watch application Secrets. Optional symbol-source credentials use
-the separately pre-created, read-only `sentry-project-inputs` Secret.
+The controller can read and patch only Secrets named `sentry-dsns` outside its own namespace; it
+cannot create, delete, list, or watch application Secrets. Optional project inputs and Uptime
+request values use the separately pre-created, read-only `sentry-project-inputs` and
+`sentry-uptime-inputs` Secrets.
 
-Kubernetes RBAC on namespaced `SentryProject` resources controls who may select Sentry projects
-and teams through the shared connection. Team selection is declared on each project, not on the
-connection.
+## Ownership and adoption
 
-See [docs/quickstart.md](docs/quickstart.md) for a first project and policy, then use the complete
-[CRD configuration reference](docs/configuration.md) for every supported field, version
-compatibility, ownership semantics, and status reason.
+`SentryConnection.spec.ownership` coordinates multiple operator installations. `Active` may
+mutate, `Standby` observes without taking ownership, and a monotonically increasing `revision`
+fences stale writers. `spec.projectManagement.unmanagedProjects` independently controls what an
+active installation does when the requested slug already exists without recognized ownership:
+`Reject`, `Standby`, or guarded `Adopt`.
+
+## Documentation
+
+- [Quickstart](docs/quickstart.md)
+- [Complete CRD configuration reference](docs/configuration.md)
+- [Physical acceptance runbook](docs/acceptance-runbook.md)
+- [Upgrade and rollback policy](docs/upgrades.md)
+- [Development runbook](docs/development-runbook.md)
+- [Current project status](docs/project-status.md)
 
 ## Development
 
@@ -80,4 +144,6 @@ make help
 make generate manifests
 make test
 make lint
+make verify-english
+git diff --check
 ```

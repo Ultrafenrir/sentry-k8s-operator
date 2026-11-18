@@ -40,3 +40,17 @@ func TestCodeMappingDesiredResolvesOnlyConnectionOwnedAliases(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestGitHubIssueDesiredResolvesOnlyConnectionOwnedAliases(t *testing.T) {
+	integrations := &sentryv1alpha1.ConnectionIntegrations{SourceCode: &sentryv1alpha1.SourceCodeIntegrations{Installations: []sentryv1alpha1.SourceCodeIntegrationCatalogEntry{{Name: "github", Provider: "github", SentryName: "SKO local source fixture", Repositories: []sentryv1alpha1.SourceCodeRepositoryCatalogEntry{{Name: "checkout", SentryName: "sko/local-repository"}}}}}}
+	desired, err := githubIssueDesired(sentryv1alpha1.GitHubIssueAlertAction{Integration: "github", Repository: "checkout", Labels: []string{"bug"}}, integrations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desired.PayloadVersion != 2 || desired.Provider != "github" || desired.IntegrationName != "SKO local source fixture" || desired.RepositoryName != "sko/local-repository" || len(desired.Labels) != 1 {
+		t.Fatalf("desired=%#v", desired)
+	}
+	if _, err := githubIssueDesired(sentryv1alpha1.GitHubIssueAlertAction{Integration: "github", Repository: "missing"}, integrations); err == nil {
+		t.Fatal("unknown repository alias was accepted")
+	}
+}

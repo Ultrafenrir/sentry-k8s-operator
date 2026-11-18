@@ -52,6 +52,17 @@ spec:
           spec:
             description: spec defines the desired state of SentryProject
             properties:
+              alertPolicies:
+                description: |-
+                  AlertPolicies applies reusable policies in declared order. It is mutually exclusive
+                  with the backward-compatible alertPolicy field. Conflicting keys fail closed.
+                items:
+                  maxLength: 253
+                  minLength: 1
+                  type: string
+                maxItems: 20
+                type: array
+                x-kubernetes-list-type: atomic
               alertPolicy:
                 maxLength: 253
                 minLength: 1
@@ -83,6 +94,33 @@ spec:
                                 type: string
                             required:
                             - target
+                            type: object
+                          githubIssue:
+                            description: |-
+                              GitHubIssue creates a ticket through one connection-owned source-code integration.
+                              It is supported only by modern issue workflows.
+                            properties:
+                              assignee:
+                                maxLength: 100
+                                type: string
+                              integration:
+                                maxLength: 63
+                                minLength: 1
+                                type: string
+                              labels:
+                                items:
+                                  maxLength: 100
+                                  minLength: 1
+                                  type: string
+                                maxItems: 20
+                                type: array
+                              repository:
+                                maxLength: 63
+                                minLength: 1
+                                type: string
+                            required:
+                            - integration
+                            - repository
                             type: object
                           pagerDutySeverity:
                             description: PagerDutySeverity is explicit so modern and
@@ -222,6 +260,114 @@ spec:
                       type: object
                     metric:
                       properties:
+                        applicationMetric:
+                          description: ApplicationMetric is required only for the
+                            application-metric preset.
+                          properties:
+                            left:
+                              description: |-
+                                ApplicationMetricTerm selects one exact catalog metric. Names and units deliberately use a
+                                restricted portable alphabet so the adapter never accepts raw query or aggregate syntax.
+                              properties:
+                                aggregation:
+                                  description: |-
+                                    ApplicationMetricAggregation is the bounded set exposed by Sentry's metric detector UI.
+                                    Compatibility validation further restricts it by metric type.
+                                  enum:
+                                  - count
+                                  - sum
+                                  - avg
+                                  - min
+                                  - max
+                                  - p50
+                                  - p75
+                                  - p90
+                                  - p95
+                                  - p99
+                                  - per-second
+                                  - per-minute
+                                  type: string
+                                name:
+                                  maxLength: 128
+                                  minLength: 1
+                                  pattern: ^[A-Za-z][A-Za-z0-9_.:/-]*$
+                                  type: string
+                                type:
+                                  description: ApplicationMetricType is the OpenTelemetry
+                                    metric kind stored by Sentry.
+                                  enum:
+                                  - counter
+                                  - gauge
+                                  - distribution
+                                  type: string
+                                unit:
+                                  description: Unit is omitted for unitless metrics.
+                                  maxLength: 32
+                                  pattern: ^[A-Za-z0-9_.:/-]*$
+                                  type: string
+                              required:
+                              - aggregation
+                              - name
+                              - type
+                              type: object
+                            operator:
+                              description: ApplicationMetricOperator combines exactly
+                                two bounded metric terms.
+                              enum:
+                              - add
+                              - subtract
+                              - multiply
+                              - divide
+                              type: string
+                            right:
+                              description: |-
+                                ApplicationMetricTerm selects one exact catalog metric. Names and units deliberately use a
+                                restricted portable alphabet so the adapter never accepts raw query or aggregate syntax.
+                              properties:
+                                aggregation:
+                                  description: |-
+                                    ApplicationMetricAggregation is the bounded set exposed by Sentry's metric detector UI.
+                                    Compatibility validation further restricts it by metric type.
+                                  enum:
+                                  - count
+                                  - sum
+                                  - avg
+                                  - min
+                                  - max
+                                  - p50
+                                  - p75
+                                  - p90
+                                  - p95
+                                  - p99
+                                  - per-second
+                                  - per-minute
+                                  type: string
+                                name:
+                                  maxLength: 128
+                                  minLength: 1
+                                  pattern: ^[A-Za-z][A-Za-z0-9_.:/-]*$
+                                  type: string
+                                type:
+                                  description: ApplicationMetricType is the OpenTelemetry
+                                    metric kind stored by Sentry.
+                                  enum:
+                                  - counter
+                                  - gauge
+                                  - distribution
+                                  type: string
+                                unit:
+                                  description: Unit is omitted for unitless metrics.
+                                  maxLength: 32
+                                  pattern: ^[A-Za-z0-9_.:/-]*$
+                                  type: string
+                              required:
+                              - aggregation
+                              - name
+                              - type
+                              type: object
+                          required:
+                          - left
+                          type: object
                         detection:
                           properties:
                             change:
@@ -318,6 +464,7 @@ spec:
                           - failure-rate
                           - largest-contentful-paint
                           - logs
+                          - application-metric
                           type: string
                       required:
                       - detection
@@ -393,6 +540,11 @@ spec:
                         userFeedback:
                           type: boolean
                       type: object
+                    publishDSN:
+                      description: |-
+                        PublishDSN selects this key as the single public DSN source for the project.
+                        At most one managed key may enable publication.
+                      type: boolean
                     rateLimit:
                       description: |-
                         ClientKeyRateLimit caps accepted errors for one managed client key. A missing rateLimit
@@ -471,22 +623,30 @@ spec:
                   imported CODEOWNERS children.
                 maxProperties: 50
                 type: object
-              dsn:
-                description: DSNSpec customizes the public DSN output without exposing
-                  external IDs.
+              displayName:
+                description: |-
+                  DisplayName is the optional human-facing Sentry project name. The Kubernetes name
+                  remains the stable project slug and ownership key.
+                maxLength: 64
+                type: string
+              existingClientKey:
+                description: |-
+                  ExistingClientKey selects an externally managed key only for public DSN publication.
+                  It is mutually exclusive with publishDSN on an operator-managed client key.
                 properties:
-                  clientKey:
+                  name:
+                    description: Name is the exact readable Sentry client-key name.
                     maxLength: 100
                     minLength: 1
                     type: string
-                  managedClientKey:
+                  publishDSN:
+                    default: true
                     description: |-
-                      ManagedClientKey selects one operator-managed client key by its local map key. This
-                      avoids exposing the ownership-bearing remote Sentry label.
-                    maxLength: 32
-                    minLength: 1
-                    pattern: ^[a-z](?:[a-z0-9-]*[a-z0-9])?$
-                    type: string
+                      PublishDSN publishes the selected public DSN to the namespace-local sentry-dsns
+                      Secret. It must be true when this block is present.
+                    type: boolean
+                required:
+                - name
                 type: object
               grantAccess:
                 description: |-
@@ -627,44 +787,11 @@ spec:
               paused:
                 default: false
                 type: boolean
-              project:
-                description: ProjectSelector chooses either a new managed project
-                  or an existing read-only project.
-                properties:
-                  create:
-                    description: ProjectCreate identifies a new project entirely through
-                      readable values.
-                    properties:
-                      displayName:
-                        description: |-
-                          DisplayName is the human-facing Sentry project name. The Kubernetes name remains
-                          the stable project slug and ownership key.
-                        maxLength: 64
-                        type: string
-                      platform:
-                        maxLength: 64
-                        minLength: 1
-                        type: string
-                      team:
-                        maxLength: 64
-                        minLength: 1
-                        type: string
-                    required:
-                    - team
-                    type: object
-                  use:
-                    maxLength: 64
-                    minLength: 1
-                    type: string
-                type: object
-              role:
-                default: Active
-                description: |-
-                  ProjectRole is a request to acquire management or remain a non-owning candidate. Active
-                  never authorizes stealing an existing claim.
-                enum:
-                - Active
-                - Standby
+              platform:
+                description: Platform is an optional Sentry SDK platform hint supplied
+                  when the project is created.
+                maxLength: 64
+                minLength: 1
                 type: string
               sentry:
                 maxLength: 253
@@ -1249,9 +1376,15 @@ spec:
                   custom sources unmanaged; an explicit empty map deletes only exact protected children.
                 maxProperties: 20
                 type: object
+              team:
+                description: Team is the Sentry team used for deterministic project
+                  creation and ownership.
+                maxLength: 64
+                minLength: 1
+                type: string
             required:
-            - project
             - sentry
+            - team
             type: object
           status:
             description: status defines the observed state of SentryProject

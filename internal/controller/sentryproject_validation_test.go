@@ -31,17 +31,17 @@ import (
 )
 
 var _ = Describe("SentryProject validation", func() {
-	It("rejects create and use before connection resolution or Sentry access", func() {
+	It("rejects conflicting DSN publication before connection resolution or Sentry access", func() {
 		ctx := context.Background()
-		slug := "existing-project"
 		project := &sentryv1alpha1.SentryProject{
-			ObjectMeta: metav1.ObjectMeta{Name: "invalid-create-and-use", Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: "conflicting-dsn-publication", Namespace: "default"},
 			Spec: sentryv1alpha1.SentryProjectSpec{
 				Sentry: "connection-that-does-not-exist",
-				Project: sentryv1alpha1.ProjectSelector{
-					Create: &sentryv1alpha1.ProjectCreate{Team: "payments"},
-					Use:    &slug,
+				Team:   "payments",
+				ClientKeys: &map[string]sentryv1alpha1.ManagedClientKeySpec{
+					"web": {Active: true, PublishDSN: true},
 				},
+				ExistingClientKey: &sentryv1alpha1.ExistingClientKeySpec{Name: "Default", PublishDSN: true},
 			},
 		}
 		Expect(k8sClient.Create(ctx, project)).To(Succeed())

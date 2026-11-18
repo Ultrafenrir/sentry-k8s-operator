@@ -1,9 +1,8 @@
 apiVersion: sentryconfiguration.io/v1alpha1
 kind: SentryProject
 metadata:
-  name: shared-platform-view
+  name: shared-platform
   namespace: shared-readonly
 spec:
   sentry: company-sentry
-  project:
-    use: shared-platform
+  team: payments

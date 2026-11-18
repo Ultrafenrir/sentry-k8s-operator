@@ -78,6 +78,33 @@ spec:
                             required:
                             - target
                             type: object
+                          githubIssue:
+                            description: |-
+                              GitHubIssue creates a ticket through one connection-owned source-code integration.
+                              It is supported only by modern issue workflows.
+                            properties:
+                              assignee:
+                                maxLength: 100
+                                type: string
+                              integration:
+                                maxLength: 63
+                                minLength: 1
+                                type: string
+                              labels:
+                                items:
+                                  maxLength: 100
+                                  minLength: 1
+                                  type: string
+                                maxItems: 20
+                                type: array
+                              repository:
+                                maxLength: 63
+                                minLength: 1
+                                type: string
+                            required:
+                            - integration
+                            - repository
+                            type: object
                           pagerDutySeverity:
                             description: PagerDutySeverity is explicit so modern and
                               legacy adapters cannot invent different defaults.
@@ -216,6 +243,114 @@ spec:
                       type: object
                     metric:
                       properties:
+                        applicationMetric:
+                          description: ApplicationMetric is required only for the
+                            application-metric preset.
+                          properties:
+                            left:
+                              description: |-
+                                ApplicationMetricTerm selects one exact catalog metric. Names and units deliberately use a
+                                restricted portable alphabet so the adapter never accepts raw query or aggregate syntax.
+                              properties:
+                                aggregation:
+                                  description: |-
+                                    ApplicationMetricAggregation is the bounded set exposed by Sentry's metric detector UI.
+                                    Compatibility validation further restricts it by metric type.
+                                  enum:
+                                  - count
+                                  - sum
+                                  - avg
+                                  - min
+                                  - max
+                                  - p50
+                                  - p75
+                                  - p90
+                                  - p95
+                                  - p99
+                                  - per-second
+                                  - per-minute
+                                  type: string
+                                name:
+                                  maxLength: 128
+                                  minLength: 1
+                                  pattern: ^[A-Za-z][A-Za-z0-9_.:/-]*$
+                                  type: string
+                                type:
+                                  description: ApplicationMetricType is the OpenTelemetry
+                                    metric kind stored by Sentry.
+                                  enum:
+                                  - counter
+                                  - gauge
+                                  - distribution
+                                  type: string
+                                unit:
+                                  description: Unit is omitted for unitless metrics.
+                                  maxLength: 32
+                                  pattern: ^[A-Za-z0-9_.:/-]*$
+                                  type: string
+                              required:
+                              - aggregation
+                              - name
+                              - type
+                              type: object
+                            operator:
+                              description: ApplicationMetricOperator combines exactly
+                                two bounded metric terms.
+                              enum:
+                              - add
+                              - subtract
+                              - multiply
+                              - divide
+                              type: string
+                            right:
+                              description: |-
+                                ApplicationMetricTerm selects one exact catalog metric. Names and units deliberately use a
+                                restricted portable alphabet so the adapter never accepts raw query or aggregate syntax.
+                              properties:
+                                aggregation:
+                                  description: |-
+                                    ApplicationMetricAggregation is the bounded set exposed by Sentry's metric detector UI.
+                                    Compatibility validation further restricts it by metric type.
+                                  enum:
+                                  - count
+                                  - sum
+                                  - avg
+                                  - min
+                                  - max
+                                  - p50
+                                  - p75
+                                  - p90
+                                  - p95
+                                  - p99
+                                  - per-second
+                                  - per-minute
+                                  type: string
+                                name:
+                                  maxLength: 128
+                                  minLength: 1
+                                  pattern: ^[A-Za-z][A-Za-z0-9_.:/-]*$
+                                  type: string
+                                type:
+                                  description: ApplicationMetricType is the OpenTelemetry
+                                    metric kind stored by Sentry.
+                                  enum:
+                                  - counter
+                                  - gauge
+                                  - distribution
+                                  type: string
+                                unit:
+                                  description: Unit is omitted for unitless metrics.
+                                  maxLength: 32
+                                  pattern: ^[A-Za-z0-9_.:/-]*$
+                                  type: string
+                              required:
+                              - aggregation
+                              - name
+                              - type
+                              type: object
+                          required:
+                          - left
+                          type: object
                         detection:
                           properties:
                             change:
@@ -312,6 +447,7 @@ spec:
                           - failure-rate
                           - largest-contentful-paint
                           - logs
+                          - application-metric
                           type: string
                       required:
                       - detection

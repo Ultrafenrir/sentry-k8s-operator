@@ -5,7 +5,7 @@ metadata:
   namespace: checkout-prod
 spec:
   sentry: company-sentry
-  project:
-    use: checkout-api
-  lifecycle:
-    onDelete: DeleteProject
+  team: payments
+  existingClientKey:
+    name: Default
+    publishDSN: false

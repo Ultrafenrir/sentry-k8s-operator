@@ -47,6 +47,7 @@ import (
 	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/binding"
 	connectionruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/connection"
 	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/controller"
+	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/monitorstate"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -237,6 +238,7 @@ func main() {
 
 	connectionRegistry := connectionruntime.NewRegistry()
 	bindingStore := &binding.Store{Client: mgr.GetClient(), Namespace: stateNamespace}
+	monitorBindingStore := &monitorstate.Store{Client: mgr.GetClient(), Namespace: stateNamespace}
 	outputSecretClient, err := client.New(restConfig, client.Options{
 		HTTPClient: mgr.GetHTTPClient(),
 		Scheme:     mgr.GetScheme(),
@@ -287,6 +289,24 @@ func main() {
 		Audit:         projectAudit,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "sentryproject")
+		os.Exit(1)
+	}
+	if err := (&controller.SentryCronMonitorReconciler{
+		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Registry: connectionRegistry,
+		ProjectBindings: bindingStore, MonitorBindings: monitorBindingStore,
+		Audit:    projectAudit,
+		Recorder: mgr.GetEventRecorder("sentrycronmonitor-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "sentrycronmonitor")
+		os.Exit(1)
+	}
+	if err := (&controller.SentryUptimeMonitorReconciler{
+		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Registry: connectionRegistry,
+		ProjectBindings: bindingStore, MonitorBindings: monitorBindingStore, SecretClient: outputSecretClient,
+		Audit:    projectAudit,
+		Recorder: mgr.GetEventRecorder("sentryuptimemonitor-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "sentryuptimemonitor")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

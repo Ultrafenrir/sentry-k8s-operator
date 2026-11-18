@@ -14,6 +14,10 @@ rules:
     resourceNames: ["sentry-project-inputs"]
     verbs: ["get"]
   - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["sentry-uptime-inputs"]
+    verbs: ["get"]
+  - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
   - apiGroups: ["events.k8s.io"]
@@ -29,7 +33,10 @@ rules:
     resources: ["sentryprojects"]
     verbs: ["get", "list", "patch", "watch"]
   - apiGroups: ["sentryconfiguration.io"]
-    resources: ["sentryalertpolicies/status", "sentryconnections/status", "sentryprojects/status"]
+    resources: ["sentrycronmonitors", "sentryuptimemonitors"]
+    verbs: ["delete", "get", "list", "patch", "watch"]
+  - apiGroups: ["sentryconfiguration.io"]
+    resources: ["sentryalertpolicies/status", "sentryconnections/status", "sentryprojects/status", "sentrycronmonitors/status", "sentryuptimemonitors/status"]
     verbs: ["get", "patch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

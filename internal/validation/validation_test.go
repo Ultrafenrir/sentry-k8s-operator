@@ -49,16 +49,15 @@ func TestConnectionCrossFieldValidation(t *testing.T) {
 func TestProjectCrossFieldValidation(t *testing.T) {
 	t.Parallel()
 	base := func() sentryv1alpha1.SentryProjectSpec {
-		return sentryv1alpha1.SentryProjectSpec{Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}}}
+		return sentryv1alpha1.SentryProjectSpec{Team: "payments"}
 	}
 	if err := Project(base()); err != nil {
 		t.Fatal(err)
 	}
 	cases := map[string]func() sentryv1alpha1.SentryProjectSpec{
-		"create and use": func() sentryv1alpha1.SentryProjectSpec {
+		"missing team": func() sentryv1alpha1.SentryProjectSpec {
 			spec := base()
-			slug := "existing"
-			spec.Project.Use = &slug
+			spec.Team = ""
 			return spec
 		},
 		"primary team grant": func() sentryv1alpha1.SentryProjectSpec {
@@ -71,22 +70,18 @@ func TestProjectCrossFieldValidation(t *testing.T) {
 			spec.IssueOwnership = &sentryv1alpha1.IssueOwnershipSpec{Rules: []sentryv1alpha1.IssueOwnershipRule{{Matcher: sentryv1alpha1.IssueOwnershipMatcher{Type: sentryv1alpha1.IssueOwnershipMatcherPath, Pattern: "src/*"}, Teams: []string{"security"}}}}
 			return spec
 		},
-		"unknown managed key": func() sentryv1alpha1.SentryProjectSpec {
+		"multiple published managed keys": func() sentryv1alpha1.SentryProjectSpec {
 			spec := base()
-			spec.DSN = &sentryv1alpha1.DSNSpec{ManagedClientKey: "missing"}
+			spec.ClientKeys = &map[string]sentryv1alpha1.ManagedClientKeySpec{
+				"one": {Active: true, PublishDSN: true},
+				"two": {Active: true, PublishDSN: true},
+			}
 			return spec
 		},
-		"use with managed settings": func() sentryv1alpha1.SentryProjectSpec {
+		"external and managed publication": func() sentryv1alpha1.SentryProjectSpec {
 			spec := base()
-			slug := "existing"
-			spec.Project = sentryv1alpha1.ProjectSelector{Use: &slug}
-			spec.Settings = &sentryv1alpha1.ProjectSettings{}
-			return spec
-		},
-		"standby grant": func() sentryv1alpha1.SentryProjectSpec {
-			spec := base()
-			spec.Role = sentryv1alpha1.ProjectRoleStandby
-			spec.GrantAccess = &sentryv1alpha1.ProjectGrantAccess{Teams: []string{"backend"}}
+			spec.ClientKeys = &map[string]sentryv1alpha1.ManagedClientKeySpec{"one": {Active: true, PublishDSN: true}}
+			spec.ExistingClientKey = &sentryv1alpha1.ExistingClientKeySpec{Name: "Default", PublishDSN: true}
 			return spec
 		},
 		"metric missing threshold": func() sentryv1alpha1.SentryProjectSpec {
@@ -113,7 +108,7 @@ func TestProjectCrossFieldValidation(t *testing.T) {
 func TestProjectAcceptsProjectOwnedAdditionalTeams(t *testing.T) {
 	t.Parallel()
 	spec := sentryv1alpha1.SentryProjectSpec{
-		Project:     sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}},
+		Team:        "payments",
 		GrantAccess: &sentryv1alpha1.ProjectGrantAccess{Teams: []string{"backend"}},
 		IssueOwnership: &sentryv1alpha1.IssueOwnershipSpec{Rules: []sentryv1alpha1.IssueOwnershipRule{{
 			Matcher: sentryv1alpha1.IssueOwnershipMatcher{Type: sentryv1alpha1.IssueOwnershipMatcherPath, Pattern: "src/*"}, Teams: []string{"payments", "backend"},
@@ -121,6 +116,73 @@ func TestProjectAcceptsProjectOwnedAdditionalTeams(t *testing.T) {
 	}
 	if err := Project(spec); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestApplicationMetricAlertValidation(t *testing.T) {
+	t.Parallel()
+	valid := sentryv1alpha1.SentryProjectSpec{
+		Team: "payments",
+		Alerts: &map[string]sentryv1alpha1.AlertSpec{"metric": {
+			Metric: &sentryv1alpha1.MetricAlertSpec{
+				Preset: "application-metric", IntervalMinutes: 5,
+				ApplicationMetric: &sentryv1alpha1.ApplicationMetricExpression{Left: sentryv1alpha1.ApplicationMetricTerm{Name: "checkout.latency", Type: "distribution", Unit: "millisecond", Aggregation: "p95"}},
+				Detection:         sentryv1alpha1.MetricDetection{Static: &sentryv1alpha1.StaticDetection{Direction: "above", High: 500}},
+			},
+			Actions: []sentryv1alpha1.AlertAction{{Email: &sentryv1alpha1.EmailAlertAction{Target: "suggested-assignees"}}},
+		}},
+	}
+	if err := Project(valid); err != nil {
+		t.Fatal(err)
+	}
+	if err := ProjectCompatibility(valid, sentryv1alpha1.AlertCompatibilityLegacy24); err == nil {
+		t.Fatal("legacy compatibility accepted application metrics")
+	}
+	invalid := valid
+	alerts := make(map[string]sentryv1alpha1.AlertSpec, len(*valid.Alerts))
+	for key, value := range *valid.Alerts {
+		alerts[key] = value
+	}
+	metric := alerts["metric"]
+	metric.Metric = metric.Metric.DeepCopy()
+	metric.Metric.ApplicationMetric.Left.Aggregation = "p95"
+	metric.Metric.ApplicationMetric.Left.Type = "counter"
+	alerts["metric"] = metric
+	invalid.Alerts = &alerts
+	if err := Project(invalid); err == nil {
+		t.Fatal("invalid counter aggregation was accepted")
+	}
+}
+
+func TestGitHubIssueActionValidation(t *testing.T) {
+	t.Parallel()
+	valid := sentryv1alpha1.SentryProjectSpec{
+		Team: "payments",
+		Alerts: &map[string]sentryv1alpha1.AlertSpec{"ticket": {
+			Issue:   &sentryv1alpha1.IssueAlertSpec{Triggers: []sentryv1alpha1.IssueTrigger{{Type: "first-seen"}}},
+			Actions: []sentryv1alpha1.AlertAction{{GitHubIssue: &sentryv1alpha1.GitHubIssueAlertAction{Integration: "company-github", Repository: "checkout", Labels: []string{"bug"}}}},
+		}},
+	}
+	if err := Project(valid); err != nil {
+		t.Fatal(err)
+	}
+	if err := ProjectCompatibility(valid, sentryv1alpha1.AlertCompatibilityModern26); err != nil {
+		t.Fatal(err)
+	}
+	if err := ProjectCompatibility(valid, sentryv1alpha1.AlertCompatibilityLegacy24); err == nil {
+		t.Fatal("legacy compatibility accepted a GitHub issue action")
+	}
+	invalid := valid
+	alerts := make(map[string]sentryv1alpha1.AlertSpec, len(*valid.Alerts))
+	for key, value := range *valid.Alerts {
+		alerts[key] = value
+	}
+	alert := alerts["ticket"]
+	alert.Actions = []sentryv1alpha1.AlertAction{{Email: &sentryv1alpha1.EmailAlertAction{Target: "suggested-assignees"}, GitHubIssue: &sentryv1alpha1.GitHubIssueAlertAction{Integration: "company-github", Repository: "checkout"}}}
+	alerts["ticket"] = alert
+	invalid.Alerts = &alerts
+	if err := Project(invalid); err == nil {
+		t.Fatal("ambiguous typed action was accepted")
 	}
 }
 

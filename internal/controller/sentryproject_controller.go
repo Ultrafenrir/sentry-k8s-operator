@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -110,6 +111,7 @@ const projectDriftReconcileInterval = 30 * time.Second
 
 // +kubebuilder:rbac:groups=sentryconfiguration.io,resources=sentryprojects,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=sentryconfiguration.io,resources=sentryprojects/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=sentryconfiguration.io,resources=sentrycronmonitors;sentryuptimemonitors,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
@@ -167,12 +169,6 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 	statusBase := resource.DeepCopy()
 	setProjectOwnershipStatus(resource, connection)
-	standbyCandidate := resource.Spec.Project.Create != nil && resource.Spec.Role == sentryconfigurationv1alpha1.ProjectRoleStandby
-	if resource.Spec.Project.Create != nil && !standbyCandidate {
-		if reason, message := connectionMutationFence(connection); reason != "" {
-			return r.reportFailure(ctx, resource, reason, message)
-		}
-	}
 	apiClient, found := r.Registry.Get(connection.Name)
 	if !found {
 		// On manager startup the project and connection caches can enqueue in either
@@ -200,7 +196,7 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err != nil {
 		return r.reportFailure(ctx, resource, reasonForError(err), "Project reconciliation is safely blocked; no unverified mutation was performed.")
 	}
-	if result.AccessMode == binding.AccessManage && resource.Spec.Project.Create != nil && resource.Spec.Role != sentryconfigurationv1alpha1.ProjectRoleStandby && connection.Spec.Ownership != nil && connection.Spec.Ownership.Role == sentryconfigurationv1alpha1.ConnectionRoleActive {
+	if result.AccessMode == binding.AccessManage && (connection.Spec.Ownership == nil || connection.Spec.Ownership.Role == sentryconfigurationv1alpha1.ConnectionRoleActive) {
 		resource.Status.EffectiveRole = string(sentryconfigurationv1alpha1.ProjectRoleActive)
 	}
 	projectAccessResult := r.reconcileProjectAccess(ctx, resource, connection, apiClient, result)
@@ -243,7 +239,7 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		policyReason, policyMessage = "AlertPolicyApplied", "The referenced alert policy was merged without ownership conflicts."
 	}
 	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{Type: "AlertPolicyReady", Status: policyStatus, ObservedGeneration: resource.Generation, Reason: policyReason, Message: policyMessage})
-	dsnApplicable := result.AccessMode == binding.AccessManage || resource.Spec.DSN != nil
+	dsnApplicable := result.AccessMode == binding.AccessManage || resource.Spec.ExistingClientKey != nil
 	dsnStatus, dsnReason, dsnMessage := dsnCondition(dsnApplicable, dsnResult.ExternalNameChanged, dsnErr)
 	meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
 		Type:               "DSNReady",
@@ -358,6 +354,13 @@ func (r *SentryProjectReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 }
 
 func (r *SentryProjectReconciler) reconcileDelete(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject) (ctrl.Result, error) {
+	pendingMonitors, err := r.deleteDependentMonitors(ctx, resource)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if pendingMonitors {
+		return ctrl.Result{RequeueAfter: jitterDuration(time.Second)}, nil
+	}
 	connection, err := r.resolveConnection(ctx, resource)
 	if err != nil {
 		return r.reportFailure(ctx, resource, reasonForError(err), "Project release is blocked because the selected connection is unavailable.")
@@ -387,6 +390,43 @@ func (r *SentryProjectReconciler) reconcileDelete(ctx context.Context, resource 
 		return ctrl.Result{RequeueAfter: jitterDuration(10 * time.Second)}, nil
 	}
 	return ctrl.Result{}, r.removeFinalizer(ctx, resource)
+}
+
+func (r *SentryProjectReconciler) deleteDependentMonitors(ctx context.Context, project *sentryconfigurationv1alpha1.SentryProject) (bool, error) {
+	pending := false
+	cronMonitors := &sentryconfigurationv1alpha1.SentryCronMonitorList{}
+	if err := r.List(ctx, cronMonitors, client.InNamespace(project.Namespace)); err != nil {
+		return false, err
+	}
+	for i := range cronMonitors.Items {
+		monitor := &cronMonitors.Items[i]
+		if monitor.Spec.ProjectRef != project.Name {
+			continue
+		}
+		pending = true
+		if monitor.DeletionTimestamp.IsZero() {
+			if err := r.Delete(ctx, monitor); err != nil && !apierrors.IsNotFound(err) {
+				return false, err
+			}
+		}
+	}
+	uptimeMonitors := &sentryconfigurationv1alpha1.SentryUptimeMonitorList{}
+	if err := r.List(ctx, uptimeMonitors, client.InNamespace(project.Namespace)); err != nil {
+		return false, err
+	}
+	for i := range uptimeMonitors.Items {
+		monitor := &uptimeMonitors.Items[i]
+		if monitor.Spec.ProjectRef != project.Name {
+			continue
+		}
+		pending = true
+		if monitor.DeletionTimestamp.IsZero() {
+			if err := r.Delete(ctx, monitor); err != nil && !apierrors.IsNotFound(err) {
+				return false, err
+			}
+		}
+	}
+	return pending, nil
 }
 
 func (r *SentryProjectReconciler) revokeDSNForDeletion(ctx context.Context, resource *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection) error {
@@ -440,8 +480,7 @@ func (r *SentryProjectReconciler) reconcileRetainCleanup(ctx context.Context, re
 		return err
 	}
 	managedStandby := record.Binding.AccessMode == binding.AccessReadOnly &&
-		record.Binding.Origin == binding.OriginManaged &&
-		resource.Spec.Role == sentryconfigurationv1alpha1.ProjectRoleStandby
+		record.Binding.Origin == binding.OriginManaged
 	if record.Binding.AccessMode == binding.AccessReadOnly && !managedStandby {
 		return nil
 	}
@@ -449,6 +488,7 @@ func (r *SentryProjectReconciler) reconcileRetainCleanup(ctx context.Context, re
 	emptyAlerts := map[string]sentryconfigurationv1alpha1.AlertSpec{}
 	cleanup.Spec.Alerts = &emptyAlerts
 	cleanup.Spec.AlertPolicy = ""
+	cleanup.Spec.AlertPolicies = nil
 	cleanup.Spec.NotificationTargets = &sentryconfigurationv1alpha1.NotificationTargets{}
 	projectResult := projectruntime.Result{Origin: record.Binding.Origin, AccessMode: record.Binding.AccessMode, Owner: record.Binding.Owner, ProjectURL: resource.Status.ProjectURL}
 	var accessErr, clientKeyErr, symbolSourceErr error
@@ -506,39 +546,6 @@ func (r *SentryProjectReconciler) validateChildMutationOwnership(ctx context.Con
 	return r.validateManagedRemoteOwnership(ctx, connection, protected)
 }
 
-func (r *SentryProjectReconciler) validateStandbyObservation(ctx context.Context, connection *sentryconfigurationv1alpha1.SentryConnection, protected binding.ProjectBinding) error {
-	apiClient, found := r.Registry.Get(connection.Name)
-	if !found {
-		return dsn.ErrAuthorization
-	}
-	remote, err := r.projectAdapter(apiClient).GetBySlug(ctx, protected.Organization, protected.Slug)
-	if err != nil {
-		return err
-	}
-	if remote.Identity != protected.ExternalIdentity {
-		return dsn.ErrAuthorization
-	}
-	if protected.Origin == binding.OriginExternal {
-		if connection.Spec.ProjectManagement.UnmanagedProjects != sentryconfigurationv1alpha1.UnmanagedProjectsStandby || remote.Marker != nil || remote.RegionalEvidence != nil {
-			return dsn.ErrAuthorization
-		}
-		return nil
-	}
-	if protected.Origin != binding.OriginManaged || protected.Marker == nil {
-		return dsn.ErrAuthorization
-	}
-	if protected.RegionalOwnership == nil {
-		if remote.Marker == nil || !protected.Marker.Matches(*remote.Marker) {
-			return dsn.ErrAuthorization
-		}
-		return nil
-	}
-	if remote.RegionalEvidence == nil || ownership.ValidateEvidence(ownership.Local{Marker: *protected.RegionalOwnership, Active: true}, *remote.RegionalEvidence) != nil {
-		return dsn.ErrAuthorization
-	}
-	return nil
-}
-
 func (r *SentryProjectReconciler) validateManagedRemoteOwnership(ctx context.Context, connection *sentryconfigurationv1alpha1.SentryConnection, protected binding.ProjectBinding) error {
 	configured := connection.Spec.Ownership
 	pinned := protected.RegionalOwnership
@@ -590,9 +597,9 @@ func connectionMutationFence(connection *sentryconfigurationv1alpha1.SentryConne
 }
 
 func setProjectOwnershipStatus(project *sentryconfigurationv1alpha1.SentryProject, connection *sentryconfigurationv1alpha1.SentryConnection) {
-	requested := project.Spec.Role
-	if requested == "" {
-		requested = sentryconfigurationv1alpha1.ProjectRoleActive
+	requested := sentryconfigurationv1alpha1.ProjectRoleActive
+	if connection != nil && connection.Spec.Ownership != nil && connection.Spec.Ownership.Role == sentryconfigurationv1alpha1.ConnectionRoleStandby {
+		requested = sentryconfigurationv1alpha1.ProjectRoleStandby
 	}
 	project.Status.RequestedRole = string(requested)
 	project.Status.EffectiveRole = string(sentryconfigurationv1alpha1.ProjectRoleStandby)
@@ -670,10 +677,13 @@ func (r *SentryProjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &sentryconfigurationv1alpha1.SentryProject{}, projectPolicyIndex, func(object client.Object) []string {
 		project := object.(*sentryconfigurationv1alpha1.SentryProject)
-		if project.Spec.AlertPolicy == "" {
-			return nil
+		if len(project.Spec.AlertPolicies) > 0 {
+			return slices.Clone(project.Spec.AlertPolicies)
 		}
-		return []string{project.Spec.AlertPolicy}
+		if project.Spec.AlertPolicy != "" {
+			return []string{project.Spec.AlertPolicy}
+		}
+		return nil
 	}); err != nil {
 		return fmt.Errorf("index projects by alert policy: %w", err)
 	}

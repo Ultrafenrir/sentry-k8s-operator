@@ -39,6 +39,7 @@ const ModernMetricIssueAdapter = "modern-metric-issue-v1"
 var (
 	ErrModernInvalidState           = errors.New("modern metric alert state is invalid")
 	ErrModernDestinationUnsupported = errors.New("modern metric alert destination is unsupported")
+	ErrModernDynamicUnavailable     = errors.New("dynamic metric detection backend is unavailable")
 	managedAlertNamePattern         = regexp.MustCompile(`^sko:([a-z0-9](?:[a-z0-9-]*[a-z0-9])?):([a-z](?:[a-z0-9-]*[a-z0-9])?):([0-9a-f]{64}) \[managed;o=([a-z](?:[a-z0-9.-]*[a-z0-9])?);m=([a-z](?:[a-z0-9.-]*[a-z0-9])?)\]$`)
 	numericIdentityPattern          = regexp.MustCompile(`^[1-9][0-9]*$`)
 )
@@ -54,6 +55,7 @@ type modernIdentity struct {
 	Detector       string `json:"detector"`
 	Workflow       string `json:"workflow"`
 	SharedDetector bool   `json:"sharedDetector,omitempty"`
+	SharedWorkflow bool   `json:"sharedWorkflow,omitempty"`
 }
 
 type modernName struct {
@@ -191,6 +193,11 @@ func (a *ModernHTTPAdapter) Ensure(ctx context.Context, adapter, organization, p
 	if err := a.validate(adapter, projectSlug, key, desired); err != nil {
 		return Observed{}, err
 	}
+	if desired.Metric != nil && desired.Metric.Detection.Kind == "dynamic" {
+		if err := a.probeDynamicCapability(ctx); err != nil {
+			return Observed{}, err
+		}
+	}
 	hash := desiredHash(normalize(desired))
 	name, err := formatModernName(projectSlug, key, hash, marker)
 	if err != nil {
@@ -199,7 +206,7 @@ func (a *ModernHTTPAdapter) Ensure(ctx context.Context, adapter, organization, p
 	if desired.Issue != nil {
 		return a.ensureIssue(ctx, adapter, organization, projectSlug, name, desired)
 	}
-	workflows, err := a.findWorkflowsByName(ctx, organization, name)
+	workflowName, err := formatModernName(projectSlug, key, modernWorkflowHash(desired), marker)
 	if err != nil {
 		return Observed{}, err
 	}
@@ -207,18 +214,30 @@ func (a *ModernHTTPAdapter) Ensure(ctx context.Context, adapter, organization, p
 	if err != nil {
 		return Observed{}, err
 	}
-	if len(workflows) > 1 || len(detectors) > 1 || (len(detectors) == 1 && len(workflows) == 0) {
+	if len(detectors) > 1 {
 		return Observed{}, ErrModernInvalidState
 	}
-
 	var workflow modernWorkflowResponse
-	if len(workflows) == 0 {
-		workflow, err = a.createWorkflow(ctx, organization, name, desired, nil)
+	if len(detectors) == 1 {
+		if len(detectors[0].WorkflowIDs) != 1 {
+			return Observed{}, ErrModernInvalidState
+		}
+		var found bool
+		workflow, found, err = a.getWorkflow(ctx, organization, detectors[0].WorkflowIDs[0])
+		if err != nil || !found {
+			return Observed{}, errors.Join(ErrModernInvalidState, err)
+		}
+	} else {
+		workflow, err = a.findReusableWorkflow(ctx, organization, projectSlug, workflowName, desired, "")
 		if err != nil {
 			return Observed{}, err
 		}
-	} else {
-		workflow = workflows[0]
+		if workflow.ID == "" {
+			workflow, err = a.createWorkflow(ctx, organization, workflowName, desired, nil)
+			if err != nil {
+				return Observed{}, err
+			}
+		}
 	}
 	if len(detectors) == 0 {
 		var detector modernDetectorResponse
@@ -227,6 +246,13 @@ func (a *ModernHTTPAdapter) Ensure(ctx context.Context, adapter, organization, p
 			return Observed{}, err
 		}
 		detectors = []modernDetectorResponse{detector}
+	}
+	if fresh, found, fetchErr := a.getWorkflow(ctx, organization, workflow.ID); fetchErr != nil {
+		return Observed{}, fetchErr
+	} else if found {
+		workflow = fresh
+	} else {
+		return Observed{}, ErrModernInvalidState
 	}
 	identity := modernIdentity{Detector: detectors[0].ID, Workflow: workflow.ID}
 	// Sentry 26 may accept enabled=false on detector creation but still return an
@@ -253,6 +279,17 @@ func (a *ModernHTTPAdapter) Ensure(ctx context.Context, adapter, organization, p
 		return Observed{}, err
 	}
 	return observed, nil
+}
+
+func (a *ModernHTTPAdapter) probeDynamicCapability(ctx context.Context) error {
+	var response struct {
+		Models []string `json:"models"`
+	}
+	_, err := a.Client.DoJSON(ctx, sentryapi.Request{Method: http.MethodGet, Path: "/api/0/seer/models/", RetrySafe: true, Operation: "probe-dynamic-detection"}, &response)
+	if err != nil || response.Models == nil {
+		return errors.Join(ErrModernDynamicUnavailable, err)
+	}
+	return nil
 }
 
 func (a *ModernHTTPAdapter) ensureIssue(ctx context.Context, adapter, organization, projectSlug, name string, desired Desired) (Observed, error) {
@@ -315,7 +352,19 @@ func (a *ModernHTTPAdapter) Observe(ctx context.Context, adapter, organization, 
 	if err != nil {
 		return Observed{}, false, err
 	}
+	if detectorFound && !identity.SharedDetector && (!workflowFound || !containsID(detector.WorkflowIDs, identity.Workflow)) && len(detector.WorkflowIDs) == 1 {
+		workflow, workflowFound, err = a.getWorkflow(ctx, organization, detector.WorkflowIDs[0])
+		if err != nil {
+			return Observed{}, false, err
+		}
+		if workflowFound {
+			identity.Workflow = workflow.ID
+		}
+	}
 	if !detectorFound && !workflowFound {
+		return Observed{}, false, nil
+	}
+	if !identity.SharedDetector && !detectorFound && workflowFound && len(workflow.DetectorIDs) > 0 {
 		return Observed{}, false, nil
 	}
 	observed, err := observedFromModern(identity, optionalDetector(detector, detectorFound), optionalWorkflow(workflow, workflowFound), projectSlug)
@@ -325,6 +374,11 @@ func (a *ModernHTTPAdapter) Observe(ctx context.Context, adapter, organization, 
 func (a *ModernHTTPAdapter) Update(ctx context.Context, adapter, organization, projectSlug, identityValue string, desired Desired) (Observed, error) {
 	if err := a.validate(adapter, projectSlug, "rule", desired); err != nil {
 		return Observed{}, err
+	}
+	if desired.Metric != nil && desired.Metric.Detection.Kind == "dynamic" {
+		if err := a.probeDynamicCapability(ctx); err != nil {
+			return Observed{}, err
+		}
 	}
 	identity, current, err := a.requirePair(ctx, organization, projectSlug, identityValue)
 	if err != nil {
@@ -342,9 +396,30 @@ func (a *ModernHTTPAdapter) Update(ctx context.Context, adapter, organization, p
 	if err != nil {
 		return Observed{}, err
 	}
-	workflow, err := a.putWorkflow(ctx, organization, identity.Workflow, name, desired, []string{identity.Detector})
+	workflowName, err := formatModernName(projectSlug, parsed.Key, modernWorkflowHash(desired), parsed.Marker)
 	if err != nil {
 		return Observed{}, err
+	}
+	if identity.SharedDetector {
+		workflowName = name
+	}
+	workflow := current.workflow
+	reusable, err := a.findReusableWorkflow(ctx, organization, projectSlug, workflowName, desired, identity.Workflow)
+	if err != nil {
+		return Observed{}, err
+	}
+	if reusable.ID != "" {
+		workflow = reusable
+	} else if len(current.workflow.DetectorIDs) > 1 {
+		workflow, err = a.createWorkflow(ctx, organization, workflowName, desired, nil)
+		if err != nil {
+			return Observed{}, err
+		}
+	} else {
+		workflow, err = a.putWorkflow(ctx, organization, identity.Workflow, workflowName, desired, []string{identity.Detector})
+		if err != nil {
+			return Observed{}, err
+		}
 	}
 	if identity.SharedDetector {
 		if err := a.verifyIssue(ctx, organization, projectSlug, identity, name, desired); err != nil {
@@ -352,10 +427,21 @@ func (a *ModernHTTPAdapter) Update(ctx context.Context, adapter, organization, p
 		}
 		return observedFromModern(identity, &current.detector, &workflow, projectSlug)
 	}
-	detector, err := a.putDetector(ctx, organization, identity.Detector, name, identity.Workflow, desired)
+	detector, err := a.putDetector(ctx, organization, identity.Detector, name, workflow.ID, desired)
 	if err != nil {
 		return Observed{}, err
 	}
+	if workflow.ID != identity.Workflow {
+		if err := a.deleteWorkflowIfUnlinked(ctx, organization, identity.Workflow); err != nil {
+			return Observed{}, err
+		}
+		identity.Workflow = workflow.ID
+	}
+	freshWorkflow, found, err := a.getWorkflow(ctx, organization, identity.Workflow)
+	if err != nil || !found {
+		return Observed{}, errors.Join(ErrModernInvalidState, err)
+	}
+	workflow = freshWorkflow
 	if err := a.verifyMetric(ctx, organization, projectSlug, identity, name, desired); err != nil {
 		return Observed{}, err
 	}
@@ -366,11 +452,21 @@ func (a *ModernHTTPAdapter) SetEnabled(ctx context.Context, adapter, organizatio
 	if a.Client == nil || adapter != ModernMetricIssueAdapter {
 		return Observed{}, ErrModernInvalidState
 	}
-	identity, _, err := a.requirePair(ctx, organization, projectSlug, identityValue)
+	pairIdentity, pair, err := a.requirePair(ctx, organization, projectSlug, identityValue)
 	if err != nil {
 		return Observed{}, err
 	}
-	if err := a.putEnabled(ctx, organization, "workflows", identity.Workflow, enabled); err != nil {
+	identity := pairIdentity
+	if !identity.SharedDetector && len(pair.workflow.DetectorIDs) > 1 {
+		newWorkflow, splitErr := a.cloneWorkflowForDetector(ctx, organization, pair.workflow, pair.detector, enabled)
+		if splitErr != nil {
+			return Observed{}, splitErr
+		}
+		identity.Workflow = newWorkflow.ID
+		if err := a.deleteWorkflowIfUnlinked(ctx, organization, pair.workflow.ID); err != nil {
+			return Observed{}, err
+		}
+	} else if err := a.putEnabled(ctx, organization, "workflows", identity.Workflow, enabled); err != nil {
 		return Observed{}, err
 	}
 	if identity.SharedDetector {
@@ -407,6 +503,7 @@ func (a *ModernHTTPAdapter) Delete(ctx context.Context, adapter, organization, p
 		if err := a.deleteOne(ctx, organization, "detectors", identity.Detector); err != nil {
 			return err
 		}
+		return a.deleteWorkflowIfUnlinked(ctx, organization, identity.Workflow)
 	}
 	return a.deleteOne(ctx, organization, "workflows", identity.Workflow)
 }
@@ -500,7 +597,10 @@ func detectorPayload(name, workflowID string, desired Desired) modernDetectorPay
 }
 
 func (a *ModernHTTPAdapter) detectorPayloadContext(ctx context.Context, organization, name, workflowID string, desired Desired) (modernDetectorPayload, error) {
-	dataset, aggregate, query, eventTypes := modernMetricSource(desired)
+	dataset, aggregate, query, eventTypes, err := modernMetricSource(desired)
+	if err != nil {
+		return modernDetectorPayload{}, err
+	}
 	interval := desired.WindowMinutes
 	if desired.Metric != nil {
 		interval = int(desired.Metric.IntervalMinutes)
@@ -593,6 +693,133 @@ func (a *ModernHTTPAdapter) putDetector(ctx context.Context, organization, ident
 func (a *ModernHTTPAdapter) findWorkflowsByName(ctx context.Context, organization, name string) ([]modernWorkflowResponse, error) {
 	items, err := sentryapi.CollectPages[modernWorkflowResponse](ctx, a.Client, organizationPath(organization)+"workflows/", "list-modern-workflows")
 	return matchingWorkflows(items, name), err
+}
+
+func (a *ModernHTTPAdapter) findReusableWorkflow(ctx context.Context, organization, projectSlug, desiredName string, desired Desired, excludeIdentity string) (modernWorkflowResponse, error) {
+	parsedDesired, ok := parseModernName(desiredName)
+	if !ok {
+		return modernWorkflowResponse{}, ErrModernInvalidState
+	}
+	items, err := sentryapi.CollectPages[modernWorkflowResponse](ctx, a.Client, organizationPath(organization)+"workflows/", "list-modern-workflows")
+	if err != nil {
+		return modernWorkflowResponse{}, err
+	}
+	matches := make([]modernWorkflowResponse, 0, 1)
+	for _, item := range items {
+		if item.ID == excludeIdentity {
+			continue
+		}
+		parsed, valid := parseModernName(item.Name)
+		if !valid || parsed.Project != projectSlug || parsed.Hash != parsedDesired.Hash || parsed.Marker != parsedDesired.Marker {
+			continue
+		}
+		expected, payloadErr := a.workflowPayload(ctx, organization, item.Name, desired, item.DetectorIDs)
+		if payloadErr != nil {
+			return modernWorkflowResponse{}, payloadErr
+		}
+		if workflowMatches(expected, item) {
+			matches = append(matches, item)
+		}
+	}
+	if len(matches) > 1 {
+		return modernWorkflowResponse{}, ErrModernInvalidState
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	return modernWorkflowResponse{}, nil
+}
+
+func (a *ModernHTTPAdapter) deleteWorkflowIfUnlinked(ctx context.Context, organization, identity string) error {
+	workflow, found, err := a.getWorkflow(ctx, organization, identity)
+	if err != nil || !found {
+		return err
+	}
+	if len(workflow.DetectorIDs) != 0 {
+		return nil
+	}
+	return a.deleteOne(ctx, organization, "workflows", identity)
+}
+
+func (a *ModernHTTPAdapter) cloneWorkflowForDetector(ctx context.Context, organization string, workflow modernWorkflowResponse, detector modernDetectorResponse, enabled bool) (modernWorkflowResponse, error) {
+	parsed, ok := parseModernName(detector.Name)
+	if !ok {
+		return modernWorkflowResponse{}, ErrModernInvalidState
+	}
+	key := "w" + detector.ID
+	name, err := formatModernName(parsed.Project, key, parsed.Hash, parsed.Marker)
+	if err != nil {
+		return modernWorkflowResponse{}, err
+	}
+	payload, err := workflowResponsePayload(workflow)
+	if err != nil {
+		return modernWorkflowResponse{}, err
+	}
+	payload.Name = name
+	payload.Enabled = enabled
+	payload.DetectorIDs = []string{detector.ID}
+	created, err := a.createWorkflowPayload(ctx, organization, payload)
+	if err != nil {
+		return modernWorkflowResponse{}, err
+	}
+	oldPayload, err := workflowResponsePayload(workflow)
+	if err != nil {
+		return modernWorkflowResponse{}, err
+	}
+	oldPayload.DetectorIDs = removeID(oldPayload.DetectorIDs, detector.ID)
+	if _, err := a.putWorkflowPayload(ctx, organization, workflow.ID, oldPayload); err != nil {
+		return modernWorkflowResponse{}, err
+	}
+	return created, nil
+}
+
+func (a *ModernHTTPAdapter) createWorkflowPayload(ctx context.Context, organization string, payload modernWorkflowPayload) (modernWorkflowResponse, error) {
+	var response modernWorkflowResponse
+	_, err := a.Client.DoJSON(ctx, sentryapi.Request{Method: http.MethodPost, Path: organizationPath(organization) + "workflows/", Body: payload, Operation: "create-modern-workflow"}, &response)
+	if err == nil {
+		return response, nil
+	}
+	matches, findErr := a.findWorkflowsByName(ctx, organization, payload.Name)
+	if findErr == nil && len(matches) == 1 && workflowMatches(payload, matches[0]) {
+		return matches[0], nil
+	}
+	return modernWorkflowResponse{}, errors.Join(err, findErr)
+}
+
+func (a *ModernHTTPAdapter) putWorkflowPayload(ctx context.Context, organization, identity string, payload modernWorkflowPayload) (modernWorkflowResponse, error) {
+	var response modernWorkflowResponse
+	_, err := a.Client.DoJSON(ctx, sentryapi.Request{Method: http.MethodPut, Path: organizationPath(organization) + "workflows/" + url.PathEscape(identity) + "/", Body: payload, Operation: "update-modern-workflow"}, &response)
+	return response, err
+}
+
+func workflowResponsePayload(workflow modernWorkflowResponse) (modernWorkflowPayload, error) {
+	actionFilters := make([]modernActionFilter, 0, len(workflow.ActionFilters))
+	for _, filter := range workflow.ActionFilters {
+		actions := make([]modernAction, 0, len(filter.Actions))
+		for _, action := range filter.Actions {
+			integrationID := int64(0)
+			if action.IntegrationID != nil {
+				value, err := strconv.ParseInt(fmt.Sprint(action.IntegrationID), 10, 64)
+				if err != nil {
+					return modernWorkflowPayload{}, ErrModernInvalidState
+				}
+				integrationID = value
+			}
+			actions = append(actions, modernAction{Type: action.Type, IntegrationID: integrationID, Data: action.Data, Config: action.Config})
+		}
+		actionFilters = append(actionFilters, modernActionFilter{LogicType: filter.LogicType, Conditions: filter.Conditions, Actions: actions})
+	}
+	return modernWorkflowPayload{Name: workflow.Name, Enabled: workflow.Enabled, Config: workflow.Config, Triggers: workflow.Triggers, ActionFilters: actionFilters, Environment: workflow.Environment, DetectorIDs: append([]string(nil), workflow.DetectorIDs...)}, nil
+}
+
+func removeID(values []string, remove string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != remove {
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 func (a *ModernHTTPAdapter) findDetectorsByName(ctx context.Context, organization, projectSlug, name string) ([]modernDetectorResponse, error) {
@@ -698,7 +925,7 @@ func (a *ModernHTTPAdapter) verifyMetric(ctx context.Context, organization, proj
 	if err != nil {
 		return err
 	}
-	workflowPayload, err := a.workflowPayload(ctx, organization, name, desired, []string{identity.Detector})
+	workflowPayload, err := a.workflowPayload(ctx, organization, workflow.Name, desired, workflow.DetectorIDs)
 	if err != nil {
 		return err
 	}
@@ -722,12 +949,33 @@ func workflowMatches(expected modernWorkflowPayload, actual modernWorkflowRespon
 		}
 		for actionIndex := range want.Actions {
 			wantAction, gotAction := want.Actions[actionIndex], got.Actions[actionIndex]
-			if wantAction.Type != gotAction.Type || !integrationIDsEqual(wantAction.IntegrationID, gotAction.IntegrationID) || !jsonValuesEqual(wantAction.Data, gotAction.Data) || !jsonValuesEqual(wantAction.Config, gotAction.Config) {
+			if wantAction.Type != gotAction.Type || !integrationIDsEqual(wantAction.IntegrationID, gotAction.IntegrationID) || !modernActionDataMatches(wantAction.Type, wantAction.Data, gotAction.Data) || !jsonValuesEqual(wantAction.Config, gotAction.Config) {
 				return false
 			}
 		}
 	}
 	return true
+}
+
+func modernActionDataMatches(actionType string, expected, actual map[string]any) bool {
+	if actionType != "github" && actionType != "github_enterprise" {
+		return jsonValuesEqual(expected, actual)
+	}
+	canonical := func(value map[string]any) map[string]any {
+		result := map[string]any{}
+		if additional, ok := value["additional_fields"]; ok {
+			result["additional_fields"] = additional
+		} else if additional, ok := value["additionalFields"]; ok {
+			result["additional_fields"] = additional
+		}
+		if fields, ok := value["dynamic_form_fields"]; ok {
+			result["dynamic_form_fields"] = fields
+		} else if fields, ok := value["dynamicFormFields"]; ok {
+			result["dynamic_form_fields"] = fields
+		}
+		return result
+	}
+	return jsonValuesEqual(canonical(expected), canonical(actual))
 }
 
 func detectorMatches(expected modernDetectorPayload, actual modernDetectorResponse) bool {
@@ -821,7 +1069,7 @@ func observedFromModern(identity modernIdentity, detector *modernDetectorRespons
 		if detector == nil {
 			authoritative, enabled = parsed, workflow.Enabled
 		} else {
-			if parsed.Key != authoritative.Key || parsed.Marker != authoritative.Marker || !containsID(detector.WorkflowIDs, workflow.ID) || !containsID(workflow.DetectorIDs, detector.ID) {
+			if parsed.Marker != authoritative.Marker || !containsID(detector.WorkflowIDs, workflow.ID) || !containsID(workflow.DetectorIDs, detector.ID) {
 				return Observed{}, ErrModernInvalidState
 			}
 			// Detector is authoritative during workflow-first update/toggle recovery.

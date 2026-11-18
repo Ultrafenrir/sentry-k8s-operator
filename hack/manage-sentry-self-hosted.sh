@@ -45,6 +45,14 @@ case "$profile" in
   feature-complete|errors-only) ;;
   *) echo 'SENTRY_PROFILE must be feature-complete or errors-only' >&2; exit 1 ;;
 esac
+
+# The feature-complete Sentry 26 profile is the physical-acceptance profile. Uptime
+# and Cron deletion are not API-only features: the checker, monitor consumers, and
+# task services must be alive for saved configurations and asynchronous deletion to
+# complete. Keep the lightweight errors-only profile for core development.
+if [ "$version" = 26.10.1 ] && [ "$profile" = feature-complete ]; then
+  core_services="$core_services taskbroker taskworker taskscheduler ingest-monitors monitors-clock-tick monitors-clock-tasks uptime-checker uptime-results metrics-consumer snuba-eap-items-consumer snuba-subscription-consumer-eap-items"
+fi
 case "$skip_pull" in
   true|false) ;;
   *) echo 'SENTRY_SKIP_PULL must be true or false' >&2; exit 1 ;;
@@ -394,6 +402,25 @@ configure_public_url() {
   mv -f -- "$temporary_config" "$config_file"
 }
 
+configure_acceptance_features() {
+  [ "$version" = 26.10.1 ] || return 0
+  [ "$profile" = feature-complete ] || return 0
+  config_file="$work_dir/sentry/sentry.conf.py"
+  feature_line='SENTRY_FEATURES["organizations:github-issue-form-prefetch"] = True'
+  if grep -Fqx "$feature_line" "$config_file"; then return 0; fi
+  temporary_config="$config_file.sko.tmp.$$"
+  awk -v feature_line="$feature_line" '
+    { print }
+    /SENTRY_FEATURES\["projects:sample-events"\] = False/ { print feature_line }
+  ' "$config_file" >"$temporary_config"
+  if ! grep -Fqx "$feature_line" "$temporary_config"; then
+    rm -f -- "$temporary_config"
+    echo 'failed to enable the local GitHub issue-form acceptance feature' >&2
+    exit 1
+  fi
+  mv -f -- "$temporary_config" "$config_file"
+}
+
 accept_optional_geoip_exit() {
   runtime_states=$(docker ps -a --filter "label=com.docker.compose.project=$project" \
     --format '{{.Label "com.docker.compose.service"}}|{{.State}}|{{.Status}}')
@@ -516,8 +543,9 @@ case "$action" in
     (cd "$work_dir" && PATH="$bash_dir:$PATH" REPORT_SELF_HOSTED_ISSUES=0 SKIP_USER_CREATION=1 \
       "$bash_bin" ./install.sh $install_args)
     configure_public_url
-    # The operator acceptance surface needs the Sentry API and its direct data
-    # dependencies, not event-ingestion, subscription, task, or cleanup consumers.
+    configure_acceptance_features
+    # errors-only starts the API and its direct dependencies. feature-complete also
+    # starts the bounded monitor/task services selected above.
     if ! compose up --detach --wait --wait-timeout "$wait_timeout" $core_services; then
       accept_optional_geoip_exit
     fi

@@ -45,7 +45,7 @@ func TestProjectDeletionRevokesOnlyItsSharedDSNKey(t *testing.T) {
 	deletedAt := metav1.Now()
 	project := &sentryv1alpha1.SentryProject{
 		ObjectMeta: metav1.ObjectMeta{Name: "checkout", Namespace: "payments", UID: types.UID("checkout-uid"), Generation: 1, DeletionTimestamp: &deletedAt, Finalizers: []string{sentryProjectFinalizer}},
-		Spec:       sentryv1alpha1.SentryProjectSpec{Sentry: "main", Project: sentryv1alpha1.ProjectSelector{Create: &sentryv1alpha1.ProjectCreate{Team: "payments"}}, DSN: &sentryv1alpha1.DSNSpec{}},
+		Spec:       sentryv1alpha1.SentryProjectSpec{Sentry: "main", Team: "payments"},
 	}
 	connection := &sentryv1alpha1.SentryConnection{
 		ObjectMeta: metav1.ObjectMeta{Name: "main"},
@@ -98,7 +98,7 @@ func TestConnectionOwnershipStatusDoesNotEchoUnverifiedActiveRevision(t *testing
 
 func TestOnlyProtectedManagedStandbyCanContributeChildren(t *testing.T) {
 	t.Parallel()
-	project := &sentryv1alpha1.SentryProject{Spec: sentryv1alpha1.SentryProjectSpec{Role: sentryv1alpha1.ProjectRoleStandby}}
+	project := &sentryv1alpha1.SentryProject{Spec: sentryv1alpha1.SentryProjectSpec{Team: "payments"}}
 	managed := projectruntime.Result{Origin: binding.OriginManaged, AccessMode: binding.AccessReadOnly}
 	if !canManageChildren(project, managed) {
 		t.Fatal("protected managed standby was denied child ownership")
@@ -106,10 +106,6 @@ func TestOnlyProtectedManagedStandbyCanContributeChildren(t *testing.T) {
 	external := projectruntime.Result{Origin: binding.OriginExternal, AccessMode: binding.AccessReadOnly}
 	if canManageChildren(project, external) {
 		t.Fatal("unmanaged standby was allowed child ownership")
-	}
-	project.Spec.Role = sentryv1alpha1.ProjectRoleActive
-	if canManageChildren(project, managed) {
-		t.Fatal("active acquisition request without manager claim was allowed child ownership")
 	}
 }
 

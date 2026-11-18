@@ -2,7 +2,7 @@
 
 The chart installs the operator CRDs, one controller, an HTTP metrics Service, RBAC, and one
 cluster-scoped `SentryConnection`. It does not create any `SentryProject` or
-`SentryAlertPolicy` instances. Every namespaced object uses the Helm release namespace, and every
+`SentryAlertPolicy`, `SentryCronMonitor`, or `SentryUptimeMonitor` instances. Every namespaced object uses the Helm release namespace, and every
 workload name is derived from the Helm release name. The chart does not create namespaces.
 When `sentryConnection.name` is empty, the connection name is also the Helm release name.
 

@@ -6,6 +6,4 @@ metadata:
 spec:
   sentry: company-sentry
   owner: payments
-  project:
-    create:
-      team: payments
+  team: payments

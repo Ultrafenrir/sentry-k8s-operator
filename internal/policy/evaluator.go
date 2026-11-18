@@ -57,23 +57,17 @@ type Decision struct {
 // authorization boundary for creating and updating projects; the connection does not maintain
 // a second namespace or team allowlist.
 func Evaluate(namespace string, project sentryv1alpha1.SentryProjectSpec, connection sentryv1alpha1.SentryConnectionSpec) (Decision, error) {
-	if project.Project.Create != nil {
-		if namespace == "" || project.Project.Use != nil || project.Project.Create.Team == "" {
-			return Decision{}, &Error{Kind: ErrorProjectInvalid}
-		}
-		targets, flattenErr := project.NotificationTargets.Flatten()
-		if flattenErr != nil {
-			return Decision{}, &Error{Kind: ErrorDestinationUnavailable}
-		}
-		if err := authorizeDestinations(targets, connection.Integrations); err != nil {
-			return Decision{}, err
-		}
-		return Decision{Owner: project.Project.Create.Team, AccessMode: "Manage", ConsumeDSN: true}, nil
-	}
-	if project.Project.Use == nil || *project.Project.Use == "" {
+	if namespace == "" || project.Team == "" {
 		return Decision{}, &Error{Kind: ErrorProjectInvalid}
 	}
-	return Decision{AccessMode: "ReadOnly", ConsumeDSN: project.DSN != nil}, nil
+	targets, flattenErr := project.NotificationTargets.Flatten()
+	if flattenErr != nil {
+		return Decision{}, &Error{Kind: ErrorDestinationUnavailable}
+	}
+	if err := authorizeDestinations(targets, connection.Integrations); err != nil {
+		return Decision{}, err
+	}
+	return Decision{Owner: project.Team, AccessMode: "Manage", ConsumeDSN: true}, nil
 }
 
 // EvaluateProject derives the base project mode while deliberately excluding notification
@@ -87,14 +81,14 @@ func EvaluateProject(namespace string, project sentryv1alpha1.SentryProjectSpec,
 // ProjectAccessTeams returns the additional teams declared by the project. The
 // primary team must not be repeated because it already owns the project in Sentry.
 func ProjectAccessTeams(project sentryv1alpha1.SentryProjectSpec) ([]string, error) {
-	if project.Project.Create == nil {
+	if project.Team == "" {
 		return nil, &Error{Kind: ErrorProjectInvalid}
 	}
 	if project.GrantAccess == nil {
 		return nil, nil
 	}
 	for _, team := range project.GrantAccess.Teams {
-		if team == project.Project.Create.Team {
+		if team == project.Team {
 			return nil, &Error{Kind: ErrorProjectInvalid}
 		}
 	}
@@ -104,10 +98,10 @@ func ProjectAccessTeams(project sentryv1alpha1.SentryProjectSpec) ([]string, err
 // IssueOwnershipTeams returns team references used by issue ownership rules. Every
 // referenced team must be the primary project team or be declared through grantAccess.
 func IssueOwnershipTeams(project sentryv1alpha1.SentryProjectSpec) ([]string, error) {
-	if project.Project.Create == nil || project.IssueOwnership == nil {
+	if project.Team == "" || project.IssueOwnership == nil {
 		return nil, &Error{Kind: ErrorProjectInvalid}
 	}
-	attached := map[string]bool{project.Project.Create.Team: true}
+	attached := map[string]bool{project.Team: true}
 	if project.GrantAccess != nil {
 		for _, team := range project.GrantAccess.Teams {
 			attached[team] = true
