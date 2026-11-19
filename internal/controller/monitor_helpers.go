@@ -21,6 +21,7 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -56,6 +57,9 @@ func resolveMonitorProject(ctx context.Context, kube client.Client, registry *co
 	}
 	if !project.DeletionTimestamp.IsZero() {
 		return monitorProject{}, fmt.Errorf("project is deleting")
+	}
+	if project.Status.ObservedGeneration != project.Generation || !meta.IsStatusConditionTrue(project.Status.Conditions, "ProjectReady") {
+		return monitorProject{}, fmt.Errorf("project is not ready")
 	}
 	state, err := bindings.GetBinding(ctx, string(project.UID))
 	if err != nil {

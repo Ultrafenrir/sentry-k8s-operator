@@ -25,6 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	sentryv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
+	alertpolicyruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/alertpolicy"
 	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/alerts"
 	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/binding"
 	connectionruntime "github.com/Ultrafenrir/sentry-kubernetes-operator/internal/connection"
@@ -81,6 +82,21 @@ func TestAlertPolicyPendingRolloutIsRequeued(t *testing.T) {
 	}
 	if result := alertPolicyRolloutResult(0); result.Requeue || result.RequeueAfter != 0 {
 		t.Fatalf("complete rollout unexpectedly requeued: %#v", result)
+	}
+}
+
+func TestRemovedPolicyRetainsAuthorityForExactProtectedChildCleanup(t *testing.T) {
+	t.Parallel()
+
+	project := &sentryv1alpha1.SentryProject{ObjectMeta: metav1.ObjectMeta{UID: "project-uid"}}
+	owner := binding.ChildOwner{Kind: binding.ChildOwnerPolicy, Name: "removed", UID: "removed-policy-uid"}
+	current := binding.ProjectBinding{
+		Alerts:       map[string]binding.AlertBinding{"old": {Owner: owner}},
+		Destinations: map[string]binding.DestinationBinding{"old": {Owner: owner}},
+	}
+	allowed := allowedChildOwners(project, current, alertpolicyruntime.Result{})
+	if !allowed[string(project.UID)] || !allowed[owner.UID] {
+		t.Fatalf("allowed owners = %#v", allowed)
 	}
 }
 

@@ -114,11 +114,12 @@ func (r *SentryUptimeMonitorReconciler) Reconcile(ctx context.Context, req ctrl.
 		}
 	} else if stateErr != nil {
 		err = stateErr
-	} else if record.Binding.ProjectUID != string(project.Project.UID) || record.Binding.Connection != project.Connection.Name || record.Binding.RemoteName != request.Name {
+	} else if record.Binding.ProjectUID != string(project.Project.UID) || record.Binding.Connection != project.Connection.Name {
 		err = monitorstate.ErrInvalid
 	} else {
 		remote, _, err = adapter.GetUptime(ctx, record.Binding.Organization, record.Binding.ProjectSlug, record.Binding.ExternalIdentity)
-		if err == nil && record.Binding.DesiredHash != digest {
+		needsUpdate := record.Binding.DesiredHash != digest || record.Binding.RemoteName != request.Name
+		if err == nil && needsUpdate {
 			if err = adapter.PreflightUptime(ctx, record.Binding.Organization, request); err == nil {
 				remote, err = adapter.UpdateUptime(ctx, record.Binding.Organization, record.Binding.ProjectSlug, record.Binding.ExternalIdentity, request)
 				mutated = err == nil
@@ -129,9 +130,10 @@ func (r *SentryUptimeMonitorReconciler) Reconcile(ctx context.Context, req ctrl.
 				err = fmt.Errorf("uptime monitor verification failed: %s", mismatch)
 			}
 		}
-		if err == nil && record.Binding.DesiredHash != digest {
+		if err == nil && needsUpdate {
 			next := record.Binding
 			next.DesiredHash = digest
+			next.RemoteName = request.Name
 			_, err = r.MonitorBindings.Update(ctx, record, next)
 		}
 	}

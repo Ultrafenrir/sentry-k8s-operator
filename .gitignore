@@ -10,6 +10,20 @@ Dockerfile.cross
 /dist/
 /.cache/
 
+# Local runtime output
+*.log
+coverage.txt
+coverage.xml
+
+# Local credentials and environment overrides
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+
 # Test binary, built with `go test -c`
 *.test
 

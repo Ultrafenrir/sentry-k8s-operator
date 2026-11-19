@@ -5,6 +5,11 @@ The repository is an alpha Sentry operator with five public CRDs: `SentryConnect
 settings, Slack and PagerDuty destination resolution, and version-pinned legacy or modern Sentry
 alert adapters.
 
+PagerDuty resolution is deliberately installation-neutral. Administrators install the integration
+and add services in Sentry; the connection catalog only names those existing objects. A protected
+service identity prevents silent replacement, but the service must remain visible through Sentry's
+public integration response. An opaque service catalog fails closed.
+
 The modern alert adapter also supports a bounded Application Metrics selector and one binary
 equation without exposing raw Sentry query syntax. Local acceptance ingests counter, gauge, and
 distribution fixtures through the official SDK and verifies their catalog visibility. Dynamic

@@ -88,6 +88,11 @@ spec:
 Integration catalog entries use a stable lowercase local `name` and the exact display name visible
 in Sentry as `sentryName`. Source-code providers are `github`, `github_enterprise`, `gitlab`,
 `bitbucket`, or `vsts`. Declaring a catalog entry only makes it selectable by projects and policies.
+It never installs Slack, PagerDuty, or source-code integrations and never creates PagerDuty
+services or routing keys. PagerDuty resolution requires Sentry's public integration response to
+expose the selected service table. If that table is absent, including after a restart, the target
+fails closed instead of treating a previously pinned identity as proof that the service still
+exists.
 
 For a normal single-region installation, omit `ownership`. Use `Reject` unless there is a reviewed
 migration requirement for existing Sentry projects.

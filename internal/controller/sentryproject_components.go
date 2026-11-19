@@ -132,10 +132,29 @@ func settingsCondition(applicable bool, result settingsruntime.Result, err error
 		return metav1.ConditionUnknown, "NotApplicable", "No typed project settings are managed."
 	}
 	if err != nil {
-		if (result.Filters.Managed && result.Filters.Err == nil) || (result.PII.Managed && result.PII.Err == nil) || (result.Behavior.Managed && result.Behavior.Err == nil) || (result.Grouping.Managed && result.Grouping.Err == nil) || (result.Symbolication.Managed && result.Symbolication.Err == nil) || (result.Notifications.Managed && result.Notifications.Err == nil) {
-			return metav1.ConditionFalse, "SettingsPartiallyApplied", "At least one independent settings component failed; successful components were preserved."
+		failed := make([]string, 0, 6)
+		for _, component := range []struct {
+			name  string
+			state settingsruntime.Component
+		}{
+			{name: "filters", state: result.Filters},
+			{name: "pii", state: result.PII},
+			{name: "behavior", state: result.Behavior},
+			{name: "grouping", state: result.Grouping},
+			{name: "symbolication", state: result.Symbolication},
+			{name: "notifications", state: result.Notifications},
+		} {
+			if component.state.Managed && component.state.Err != nil {
+				failed = append(failed, component.name)
+			}
 		}
-		return metav1.ConditionFalse, reasonForError(err), "Typed project settings could not be fully reconciled."
+		if len(failed) == 0 {
+			failed = append(failed, "unknown")
+		}
+		if (result.Filters.Managed && result.Filters.Err == nil) || (result.PII.Managed && result.PII.Err == nil) || (result.Behavior.Managed && result.Behavior.Err == nil) || (result.Grouping.Managed && result.Grouping.Err == nil) || (result.Symbolication.Managed && result.Symbolication.Err == nil) || (result.Notifications.Managed && result.Notifications.Err == nil) {
+			return metav1.ConditionFalse, "SettingsPartiallyApplied", "Failed settings components: " + strings.Join(failed, ", ") + "; independently verified components were preserved."
+		}
+		return metav1.ConditionFalse, reasonForError(err), "Failed settings components: " + strings.Join(failed, ", ") + "."
 	}
 	return metav1.ConditionTrue, "SettingsReady", "All requested typed project settings match desired state."
 }
@@ -781,7 +800,7 @@ func (r *SentryProjectReconciler) reconcileAlerts(ctx context.Context, resource 
 	if err != nil {
 		return alertsruntime.Result{Statuses: map[string]alertsruntime.Status{"": {State: alertsruntime.StateError, Reason: "AlertStateUnavailable", Err: err}}}
 	}
-	if resource.Spec.Alerts == nil && len(record.Binding.Alerts) == 0 {
+	if resource.Spec.Alerts == nil && len(record.Binding.Alerts) == 0 && len(destinationCleanup) == 0 {
 		return alertsruntime.Result{}
 	}
 	desiredCount := 0
@@ -816,7 +835,7 @@ func (r *SentryProjectReconciler) reconcileAlerts(ctx context.Context, resource 
 	result := (&alertsruntime.Engine{Adapter: adapter, Journal: r.Bindings, Audit: r.Audit}).Reconcile(ctx, alertsruntime.Input{
 		Organization:       connection.Spec.Organization,
 		ProjectSlug:        record.Binding.Slug,
-		Manage:             resource.Spec.Alerts != nil,
+		Manage:             resource.Spec.Alerts != nil || len(record.Binding.Alerts) > 0 || len(destinationCleanup) > 0,
 		Desired:            desired,
 		Current:            record.Binding.Alerts,
 		Tombstones:         record.Binding.Tombstones,
@@ -833,9 +852,6 @@ func (r *SentryProjectReconciler) reconcileAlerts(ctx context.Context, resource 
 		Authorize:        r.alertAuthorizer(resource, connection, record.Binding),
 		AllowedOwnerUIDs: allowedChildOwners(resource, record.Binding, application),
 	})
-	if resource.Spec.Alerts == nil {
-		return result
-	}
 	next := record.Binding
 	next.Alerts = result.Bindings
 	next.Tombstones = result.Tombstones
@@ -1046,6 +1062,21 @@ func allowedChildOwners(resource *sentryconfigurationv1alpha1.SentryProject, cur
 	}
 	for _, policy := range current.AlertPolicies {
 		result[policy.UID] = true
+	}
+	// A policy reference may be removed in the same generation that its remote
+	// children must be deleted.  The exact child owner UID is protected state and
+	// remains valid authority for cleaning up that already-bound identity; without
+	// it the alert engine would deadlock the policy finalizer as an ownership
+	// conflict after the desired policy disappeared.
+	for _, alert := range current.Alerts {
+		if alert.Owner.Valid() {
+			result[alert.Owner.UID] = true
+		}
+	}
+	for _, target := range current.Destinations {
+		if target.Owner.Valid() {
+			result[target.Owner.UID] = true
+		}
 	}
 	return result
 }

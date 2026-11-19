@@ -1,13 +1,39 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
 	sentryv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
 	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/monitor"
 )
+
+func TestResolveMonitorProjectRequiresCurrentProjectReadyCondition(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	if err := sentryv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	project := &sentryv1alpha1.SentryProject{
+		ObjectMeta: metav1.ObjectMeta{Name: "checkout", Namespace: "payments", UID: types.UID("project-uid"), Generation: 2},
+		Spec:       sentryv1alpha1.SentryProjectSpec{Sentry: "primary", Team: "payments"},
+		Status: sentryv1alpha1.SentryProjectStatus{
+			ObservedGeneration: 1,
+			Conditions:         []metav1.Condition{{Type: "ProjectReady", Status: metav1.ConditionTrue, ObservedGeneration: 1}},
+		},
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(project).Build()
+	if _, err := resolveMonitorProject(context.Background(), kube, nil, nil, "payments", "checkout"); err == nil || err.Error() != "project is not ready" {
+		t.Fatalf("stale project readiness error = %v", err)
+	}
+}
 
 func TestSerializeAssertionsUsesStableUUIDIdentifiers(t *testing.T) {
 	value := serializeAssertions([]sentryv1alpha1.UptimeAssertion{{Type: "statusCode", Comparison: "equals", Value: "200"}, {Type: "jsonPath", Key: "$.ready", Comparison: "equals", Value: "true"}, {Type: "responseHeader", Key: "Content-Type", Comparison: "equals", Value: "application/json"}})

@@ -173,8 +173,12 @@ func (e *Engine) Reconcile(ctx context.Context, input Input) Result {
 			status.State = StateUnresolved
 			result.Statuses[name] = status
 			if found {
+				// Keep the protected identities for a safe retry, but fail closed for
+				// downstream alert reconciliation until the catalog proves that the
+				// integration and resource still exist.
+				current.State = StateUnresolved
+				current.Reason = "DestinationResolutionFailed"
 				result.Bindings[name] = current
-				status.State = current.State
 				result.Statuses[name] = status
 			}
 			continue

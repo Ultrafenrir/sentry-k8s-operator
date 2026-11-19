@@ -141,6 +141,50 @@ func TestPinnedDestinationReportsExternalRename(t *testing.T) {
 	}
 }
 
+func TestOpaquePagerDutyCatalogFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	project, connection := destinationInput()
+	project.NotificationTargets.Slack = nil
+	catalog := &fakeCatalog{
+		integrations: map[string][]Integration{"pagerduty": {{Identity: "pd-account-id", Name: "primary"}}},
+		pagerDuty:    map[string][]Resource{"pd-account-id": {{Identity: "service-id", Name: "checkout"}}},
+	}
+	engine := &Engine{Catalog: catalog}
+	first := engine.Reconcile(context.Background(), Input{Namespace: "payments", Project: project, Connection: connection})
+	if err := first.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The integration still exists, but Sentry no longer exposes its service table.
+	// A protected identity is not sufficient evidence that the service still exists.
+	catalog.pagerDuty["pd-account-id"] = nil
+	second := engine.Reconcile(context.Background(), Input{
+		Namespace: "payments", Project: project, Connection: connection, Current: first.Bindings,
+	})
+	status := second.Statuses["pagerDuty/checkout"]
+	if status.Err == nil || status.State != StateUnresolved {
+		t.Fatalf("opaque pinned service status=%#v", status)
+	}
+	if second.Bindings["pagerDuty/checkout"].ResourceIdentity != "service-id" || second.Bindings["pagerDuty/checkout"].State != StateUnresolved {
+		t.Fatalf("protected binding changed: %#v", second.Bindings["pagerDuty/checkout"])
+	}
+
+	catalog.pagerDuty["pd-account-id"] = []Resource{{Identity: "service-id", Name: "checkout"}}
+	recovered := engine.Reconcile(context.Background(), Input{
+		Namespace: "payments", Project: project, Connection: connection, Current: second.Bindings,
+	})
+	if err := recovered.Err(); err != nil || recovered.Bindings["pagerDuty/checkout"].State != StateActive {
+		t.Fatalf("recovered service=%#v err=%v", recovered.Bindings["pagerDuty/checkout"], err)
+	}
+
+	catalog.pagerDuty["pd-account-id"] = nil
+	third := engine.Reconcile(context.Background(), Input{Namespace: "payments", Project: project, Connection: connection})
+	if third.Statuses["pagerDuty/checkout"].Err == nil || third.Statuses["pagerDuty/checkout"].State != StateUnresolved {
+		t.Fatalf("opaque first-use service status=%#v", third.Statuses["pagerDuty/checkout"])
+	}
+}
+
 func TestProviderDestinationRemovalKeepsPinnedIdentityUntilAlertCleanup(t *testing.T) {
 	t.Parallel()
 

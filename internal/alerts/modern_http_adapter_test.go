@@ -105,6 +105,41 @@ func TestModernHTTPAdapterFullMetricIssueLifecycle(t *testing.T) {
 	}
 }
 
+func TestDetectorMatchIgnoresSentryEventTypeOrder(t *testing.T) {
+	t.Parallel()
+
+	expected := modernDetectorPayload{
+		Name: "errors", Type: "metric_issue", Enabled: true,
+		DataSources: []modernDataSource{{
+			Dataset: "events", Query: "is:unresolved", Aggregate: "count()", TimeWindow: 300,
+			EventTypes: []string{"error", "default"},
+		}},
+		ConditionGroup: modernConditionGroup{LogicType: "any"},
+		Config:         map[string]any{"detectionType": "static"},
+		WorkflowIDs:    []string{"2"},
+	}
+	actual := modernDetectorResponse{
+		Name: "errors", Type: "metric_issue", Enabled: true,
+		ConditionGroup: &modernConditionGroup{LogicType: "any"},
+		Config:         map[string]any{"detectionType": "static"},
+		WorkflowIDs:    []string{"2"},
+		DataSources:    []modernDataSourceResponse{{}},
+	}
+	actual.DataSources[0].QueryObj.SnubaQuery.Dataset = "events"
+	actual.DataSources[0].QueryObj.SnubaQuery.Query = "is:unresolved"
+	actual.DataSources[0].QueryObj.SnubaQuery.Aggregate = "count()"
+	actual.DataSources[0].QueryObj.SnubaQuery.TimeWindow = 300
+	actual.DataSources[0].QueryObj.SnubaQuery.EventTypes = []string{"default", "error"}
+
+	if !detectorMatches(expected, actual) {
+		t.Fatal("eventTypes order must not create false detector drift")
+	}
+	actual.DataSources[0].QueryObj.SnubaQuery.EventTypes = []string{"default", "transaction"}
+	if detectorMatches(expected, actual) {
+		t.Fatal("different eventTypes must still be detected")
+	}
+}
+
 func TestModernHTTPAdapterRendersUserCountAggregate(t *testing.T) {
 	t.Parallel()
 	adapter := &ModernHTTPAdapter{Client: &sentryapi.Client{}, Destinations: map[string]binding.DestinationBinding{

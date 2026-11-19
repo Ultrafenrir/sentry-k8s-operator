@@ -212,6 +212,15 @@ prepare_checkout() {
   for suffix in $persistent_suffixes; do
     replace_token "$temporary_checkout" "sentry-$suffix" "$volume_prefix-$suffix"
   done
+  # Upstream releases reuse the same local image tags.  Without scoping, starting
+  # one pinned version can silently replace the web, ClickHouse, or cleanup image
+  # used by the other checkout.  Rewrite longest names first so every locally
+  # built image is owned by exactly one managed version.
+  replace_token "$temporary_checkout" 'sentry-cleanup-self-hosted-local' "$project-sentry-cleanup-local"
+  replace_token "$temporary_checkout" 'symbolicator-cleanup-self-hosted-local' "$project-symbolicator-cleanup-local"
+  replace_token "$temporary_checkout" 'vroom-cleanup-self-hosted-local' "$project-vroom-cleanup-local"
+  replace_token "$temporary_checkout" 'clickhouse-self-hosted-local' "$project-clickhouse-local"
+  replace_token "$temporary_checkout" 'sentry-self-hosted-local' "$project-sentry-local"
   # Recent self-hosted releases force the buildx builder named "default". Docker
   # Desktop normally uses the builder matching its active context (for example,
   # "desktop-linux"), and buildx refuses to use a builder from another context.
@@ -367,6 +376,10 @@ verify_checkout() {
   done
   if grep -Eq 'name: sentry-(clickhouse|data|kafka|postgres|redis|seaweedfs|symbolicator|zookeeper)$' "$rendered"; then
     echo 'rendered Compose still references an unscoped external Sentry volume' >&2
+    exit 1
+  fi
+  if grep -Eq 'image: (sentry|clickhouse|sentry-cleanup|symbolicator-cleanup|vroom-cleanup)-self-hosted-local$' "$rendered"; then
+    echo 'rendered Compose still references an unscoped local Sentry image' >&2
     exit 1
   fi
   cleanup_rendered

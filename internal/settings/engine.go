@@ -35,6 +35,7 @@ import (
 var (
 	ErrInvalidDesiredState = errors.New("project settings desired state is invalid")
 	ErrUnsupportedFilter   = errors.New("required inbound filter is unavailable")
+	ErrVerification        = errors.New("project settings mutation did not round-trip")
 )
 
 type Authorization func(context.Context) error
@@ -267,6 +268,24 @@ func (e *Engine) reconcileBehavior(ctx context.Context, input Input, desired *se
 	}
 	if err := e.Adapter.UpdateProjectState(ctx, input.Organization, input.ProjectSlug, patch, current.ETag); err != nil {
 		return 0, err
+	}
+	observed, err := e.Adapter.GetProjectState(ctx, input.Organization, input.ProjectSlug)
+	if err != nil {
+		return changed, err
+	}
+	if desired.AutoResolveHours != nil && !equalInt64(observed.ResolveAge, desired.AutoResolveHours) ||
+		desired.DefaultEnvironment != nil && !equalDefaultEnvironment(observed.DefaultEnvironment, desired.DefaultEnvironment) ||
+		desired.CrashReportLimit != nil && !equalInt32(observed.StoreCrashReports, desired.CrashReportLimit) ||
+		desired.ScrapeJavaScript != nil && !equalBool(observed.ScrapeJavaScript, desired.ScrapeJavaScript) ||
+		desired.ReleaseAutoCreation != nil && !equalBool(observed.ReleaseAutoCreation, desired.ReleaseAutoCreation) {
+		return changed, ErrVerification
+	}
+	if desired.AllowedDomains != nil {
+		wanted := append([]string(nil), (*desired.AllowedDomains)...)
+		sort.Strings(wanted)
+		if observed.AllowedDomains == nil || !equalStringSets(*observed.AllowedDomains, wanted) {
+			return changed, ErrVerification
+		}
 	}
 	return changed, nil
 }
@@ -580,6 +599,14 @@ func (e *Engine) reconcileGrouping(ctx context.Context, input Input, desired *se
 	}
 	if err := e.Adapter.UpdateProjectState(ctx, input.Organization, input.ProjectSlug, patch, current.ETag); err != nil {
 		return 0, err
+	}
+	observed, err := e.Adapter.GetProjectState(ctx, input.Organization, input.ProjectSlug)
+	if err != nil {
+		return changed, err
+	}
+	if patch.GroupingEnhancements != nil && !equalString(observed.GroupingEnhancements, patch.GroupingEnhancements) ||
+		patch.FingerprintingRules != nil && !equalString(observed.FingerprintingRules, patch.FingerprintingRules) {
+		return changed, ErrVerification
 	}
 	return changed, nil
 }

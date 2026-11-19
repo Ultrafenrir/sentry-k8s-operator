@@ -155,7 +155,7 @@ func TestEngineReconcilesBehaviorSettingsWithOneFreshNarrowPatch(t *testing.T) {
 		}},
 		Authorize: func(context.Context) error { authorizations++; return nil },
 	})
-	if result.Err() != nil || result.Behavior.Changed != 5 || authorizations != 1 || adapter.reads != 1 || len(adapter.projectUpdates) != 1 {
+	if result.Err() != nil || result.Behavior.Changed != 5 || authorizations != 1 || adapter.reads != 2 || len(adapter.projectUpdates) != 1 {
 		t.Fatalf("result=%#v authorizations=%d adapter=%#v", result, authorizations, adapter)
 	}
 	update := adapter.projectUpdates[0]
@@ -283,6 +283,25 @@ func TestEngineConvergesOnCanonicalTypedRuleReadback(t *testing.T) {
 	})
 	if result.Err() != nil || result.PII.Changed != 0 || result.Grouping.Changed != 0 || len(adapter.projectUpdates) != 0 {
 		t.Fatalf("result=%#v updates=%#v", result, adapter.projectUpdates)
+	}
+}
+
+func TestEngineRejectsDroppedGroupingAndReleaseAutoCreation(t *testing.T) {
+	t.Parallel()
+
+	enhancements := []sentryv1alpha1.GroupingEnhancementRule{{Matcher: "module", Pattern: "payments.*", Action: "Exclude"}}
+	autoRelease := true
+	adapter := &fakeAdapter{dropGrouping: true, dropReleaseAutoCreation: true}
+	result := (&Engine{Adapter: adapter}).Reconcile(context.Background(), Input{
+		Organization: "company", ProjectSlug: "checkout",
+		Desired: &sentryv1alpha1.ProjectSettings{
+			Behavior: &sentryv1alpha1.BehaviorSettings{ReleaseAutoCreation: &autoRelease},
+			Grouping: &sentryv1alpha1.GroupingSettings{Enhancements: &enhancements},
+		},
+		Authorize: func(context.Context) error { return nil },
+	})
+	if !errors.Is(result.Behavior.Err, ErrVerification) || !errors.Is(result.Grouping.Err, ErrVerification) {
+		t.Fatalf("dropped settings result=%#v", result)
 	}
 }
 
@@ -516,11 +535,13 @@ type projectUpdate struct {
 }
 
 type fakeAdapter struct {
-	filters        []Filter
-	state          ProjectState
-	reads          int
-	filterUpdates  []filterUpdate
-	projectUpdates []projectUpdate
+	filters                 []Filter
+	state                   ProjectState
+	reads                   int
+	filterUpdates           []filterUpdate
+	projectUpdates          []projectUpdate
+	dropGrouping            bool
+	dropReleaseAutoCreation bool
 }
 
 func (a *fakeAdapter) ListFilters(context.Context, string, string) ([]Filter, error) {
@@ -540,6 +561,30 @@ func (a *fakeAdapter) GetProjectState(context.Context, string, string) (ProjectS
 
 func (a *fakeAdapter) UpdateProjectState(_ context.Context, _, _ string, patch ProjectPatch, etag string) error {
 	a.projectUpdates = append(a.projectUpdates, projectUpdate{patch: patch, etag: etag})
+	if patch.ResolveAge != nil {
+		a.state.ResolveAge = patch.ResolveAge
+	}
+	if patch.DefaultEnvironment != nil {
+		a.state.DefaultEnvironment = patch.DefaultEnvironment
+	}
+	if patch.StoreCrashReports != nil {
+		a.state.StoreCrashReports = patch.StoreCrashReports
+	}
+	if patch.ScrapeJavaScript != nil {
+		a.state.ScrapeJavaScript = patch.ScrapeJavaScript
+	}
+	if patch.AllowedDomains != nil {
+		a.state.AllowedDomains = patch.AllowedDomains
+	}
+	if patch.ReleaseAutoCreation != nil && !a.dropReleaseAutoCreation {
+		a.state.ReleaseAutoCreation = patch.ReleaseAutoCreation
+	}
+	if patch.GroupingEnhancements != nil && !a.dropGrouping {
+		a.state.GroupingEnhancements = patch.GroupingEnhancements
+	}
+	if patch.FingerprintingRules != nil && !a.dropGrouping {
+		a.state.FingerprintingRules = patch.FingerprintingRules
+	}
 	return nil
 }
 

@@ -232,9 +232,15 @@ func setConnectionOwnershipStatus(connection *sentryconfigurationv1alpha1.Sentry
 			condition.Reason = "StandbyConfigured"
 			condition.Message = "The connection is safely fenced in Standby; no external mutation is authorized."
 		} else {
-			condition.Status = metav1.ConditionFalse
-			condition.Reason = "RevisionUnverified"
-			condition.Message = "The requested Active revision has no verified remote ownership marker; external mutation remains fenced."
+			// Ownership evidence is stored on each managed project because Sentry has
+			// no organization-wide marker that could prove a connection revision.
+			// Report the configured writer role here; every project mutation still
+			// revalidates its own protected and remote revision evidence.
+			connection.Status.ObservedRevision = connection.Spec.Ownership.Revision
+			connection.Status.EffectiveRole = string(sentryconfigurationv1alpha1.ConnectionRoleActive)
+			condition.Status = metav1.ConditionTrue
+			condition.Reason = "ProjectScopedRevisionChecks"
+			condition.Message = "Active is configured; each managed project independently verifies the regional revision before mutation."
 		}
 	}
 	meta.SetStatusCondition(&connection.Status.Conditions, condition)

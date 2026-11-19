@@ -12,6 +12,23 @@ The project supports Sentry SaaS-compatible APIs and version-pinned self-hosted 
 It is currently alpha: the API may still change, and a compatibility claim requires repeatable
 tests against the named Sentry and Kubernetes versions.
 
+## Acceptance-tested targets
+
+The supported product surface has been exercised through Sentry's browser UI and API, Kubernetes
+resource status, and controller logs. Acceptance includes create, update, guarded adoption,
+retention and deletion, drift verification, and two-replica controller restarts.
+
+| Sentry target | Acceptance coverage |
+| --- | --- |
+| Sentry SaaS | Tested against the live service on 2026-11-19 in an isolated disposable organization. Project, issue-workflow, Client Key/DSN, Cron, Uptime, adoption, policy cleanup, and lifecycle paths were verified. SaaS API limitations are recorded in the acceptance report. |
+| Self-hosted 26.10.1 | Tested with the version-pinned feature-complete profile, including the complete managed resource graph, modern issue and metric workflows, Cron, Uptime, Application Metrics, installed-destination resolution, restart recovery, and lifecycle cleanup. |
+| Self-hosted 24.7.1 | Tested with the version-pinned legacy profile, including project configuration, legacy alerts, Client Keys/DSN, access, Cron, adoption, restart recovery, and lifecycle cleanup. Uptime is rejected before mutation because this profile does not support the modern Uptime API. |
+
+These are tested compatibility targets, not a claim that every Sentry release is supported. See
+the [acceptance report](REPORT), [current project status](docs/project-status.md), and
+[acceptance runbook](docs/acceptance-runbook.md) for evidence, known limitations, and the exact
+release checklist.
+
 ## What it manages
 
 - `SentryConnection` selects one Sentry organization, credentials, compatibility profile,

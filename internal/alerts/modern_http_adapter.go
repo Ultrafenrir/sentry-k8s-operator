@@ -364,6 +364,12 @@ func (a *ModernHTTPAdapter) Observe(ctx context.Context, adapter, organization, 
 	if !detectorFound && !workflowFound {
 		return Observed{}, false, nil
 	}
+	// Issue alerts own only their workflow; the issue-stream detector is shared by
+	// the project.  Once the workflow is gone, the protected alert identity is
+	// deleted even though the shared detector must remain.
+	if identity.SharedDetector && !workflowFound {
+		return Observed{}, false, nil
+	}
 	if !identity.SharedDetector && !detectorFound && workflowFound && len(workflow.DetectorIDs) > 0 {
 		return Observed{}, false, nil
 	}
@@ -988,7 +994,7 @@ func detectorMatches(expected modernDetectorPayload, actual modernDetectorRespon
 	for index := range expected.DataSources {
 		want := expected.DataSources[index]
 		got := actual.DataSources[index].QueryObj.SnubaQuery
-		if want.Dataset != got.Dataset || want.Query != got.Query || want.Aggregate != got.Aggregate || want.TimeWindow != got.TimeWindow || !stringPointersEqual(want.Environment, got.Environment) || !reflect.DeepEqual(want.EventTypes, got.EventTypes) {
+		if want.Dataset != got.Dataset || want.Query != got.Query || want.Aggregate != got.Aggregate || want.TimeWindow != got.TimeWindow || !stringPointersEqual(want.Environment, got.Environment) || !sameStringMultiset(want.EventTypes, got.EventTypes) {
 			return false
 		}
 	}
@@ -997,6 +1003,23 @@ func detectorMatches(expected modernDetectorPayload, actual modernDetectorRespon
 	}
 	if actual.Owner == nil || actual.Owner.Type+":"+actual.Owner.ID != *expected.Owner {
 		return false
+	}
+	return true
+}
+
+func sameStringMultiset(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	counts := make(map[string]int, len(left))
+	for _, value := range left {
+		counts[value]++
+	}
+	for _, value := range right {
+		counts[value]--
+		if counts[value] < 0 {
+			return false
+		}
 	}
 	return true
 }

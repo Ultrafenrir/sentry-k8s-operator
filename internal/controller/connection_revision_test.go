@@ -77,7 +77,7 @@ func TestProjectDeletionRevokesOnlyItsSharedDSNKey(t *testing.T) {
 	}
 }
 
-func TestConnectionOwnershipStatusDoesNotEchoUnverifiedActiveRevision(t *testing.T) {
+func TestConnectionOwnershipStatusExplainsProjectScopedActiveRevision(t *testing.T) {
 	t.Parallel()
 	connection := &sentryv1alpha1.SentryConnection{
 		ObjectMeta: metav1.ObjectMeta{Generation: 4},
@@ -88,10 +88,10 @@ func TestConnectionOwnershipStatusDoesNotEchoUnverifiedActiveRevision(t *testing
 
 	setConnectionOwnershipStatus(connection)
 	condition := meta.FindStatusCondition(connection.Status.Conditions, "OwnershipReady")
-	if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "RevisionUnverified" {
+	if condition == nil || condition.Status != metav1.ConditionTrue || condition.Reason != "ProjectScopedRevisionChecks" {
 		t.Fatalf("ownership condition = %#v", condition)
 	}
-	if connection.Status.EffectiveRole != string(sentryv1alpha1.ConnectionRoleStandby) || connection.Status.ObservedRevision != 0 || connection.Status.Region != "eu-west-1" {
+	if connection.Status.EffectiveRole != string(sentryv1alpha1.ConnectionRoleActive) || connection.Status.ObservedRevision != 8 || connection.Status.Region != "eu-west-1" {
 		t.Fatalf("ownership status = %#v", connection.Status)
 	}
 }
