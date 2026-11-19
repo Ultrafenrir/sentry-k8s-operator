@@ -98,6 +98,8 @@ kubectl --context "${CONTEXT}" create namespace "${OPERATOR_NAMESPACE}"
 kubectl --context "${CONTEXT}" create namespace "${APP_NAMESPACE}"
 kubectl --context "${CONTEXT}" -n "${OPERATOR_NAMESPACE}" create secret generic sentry-api-token \
 	--from-file=token="${TOKEN_FILE}"
+# The previous release requires this legacy output Secret. The current release
+# must create sentry-dsn during the migration without relying on this object.
 kubectl --context "${CONTEXT}" -n "${APP_NAMESPACE}" create secret generic sentry-dsns
 
 kubectl --context "${CONTEXT}" apply -f "${TEMP_DIR}/charts/sentry-kubernetes-operator/crds"
@@ -166,6 +168,8 @@ helm --kube-context "${CONTEXT}" upgrade "${RELEASE}" \
 	--set sentryConnection.spec.transport.allowInsecureHTTP=true \
 	--wait --timeout 5m
 assert_fixture upgraded
+kubectl --context "${CONTEXT}" -n "${APP_NAMESPACE}" get secret sentry-dsn \
+	-o "jsonpath={.data.${PROJECT_NAME}}" | grep -q .
 
 kubectl --context "${CONTEXT}" -n "${OPERATOR_NAMESPACE}" rollout restart \
 	"deployment/${RELEASE}-controller"

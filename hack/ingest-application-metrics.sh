@@ -38,7 +38,7 @@ catalog_count() {
 # The DSN is streamed directly from the namespace-owned output Secret into the disposable SDK
 # process. It is never written to disk or printed. Localhost is translated only because the SDK
 # process runs inside the Sentry Compose network.
-kubectl -n "${NAMESPACE}" get secret sentry-dsns -o "jsonpath={.data.${PROJECT}}" |
+kubectl -n "${NAMESPACE}" get secret sentry-dsn -o "jsonpath={.data.${PROJECT}}" |
 	base64 -d |
 	docker exec -i "${SENTRY_CONTAINER}" python -c 'import sys,urllib.parse,sentry_sdk
 raw=sys.stdin.read().strip()

@@ -75,15 +75,15 @@ Apply the resources only after the connection reports `Ready=True`:
 
 ```sh
 kubectl get sentryconnection company-sentry
-kubectl -n payments create secret generic sentry-dsns
 kubectl apply -f policy-and-project.yaml
 kubectl -n payments get sentryproject checkout -o yaml
-kubectl -n payments get secret sentry-dsns -o jsonpath='{.data.checkout}' | base64 --decode
+kubectl -n payments get secret sentry-dsn -o jsonpath='{.data.checkout}' | base64 --decode
 ```
 
 The project becomes ready only after the connection, project, automatically selected public DSN,
 and alert components have all been observed back from Sentry. A newly created Sentry project has
-one active default client key, so the operator publishes that key without additional configuration.
+one active default client key, so the operator creates `sentry-dsn` when missing and publishes that
+key without additional configuration.
 The Cron Monitor becomes ready separately;
 application code is responsible for emitting its check-ins. See
 [configuration.md](configuration.md) for every supported field, compatibility rules, and status

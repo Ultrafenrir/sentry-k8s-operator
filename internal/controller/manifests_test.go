@@ -19,8 +19,10 @@ func TestClusterSecretRBACIsRestrictedToFixedNamespaceSecrets(t *testing.T) {
 	}
 	template := string(content)
 	for _, required := range []string{
-		`resourceNames: ["sentry-dsns"]`,
+		`resourceNames: ["sentry-dsn"]`,
 		`verbs: ["get", "patch", "update"]`,
+		`resources: ["secrets"]
+    verbs: ["create"]`,
 		`resourceNames: ["sentry-project-inputs"]`,
 		`verbs: ["get"]`,
 	} {
@@ -29,8 +31,11 @@ func TestClusterSecretRBACIsRestrictedToFixedNamespaceSecrets(t *testing.T) {
 		}
 	}
 	clusterRole := strings.Split(template, "kind: ClusterRoleBinding")[0]
-	if strings.Contains(clusterRole, `verbs: ["create", "delete", "get", "patch", "update"]`) ||
-		strings.Contains(clusterRole, `resources: ["secrets"]\n    verbs:`) {
+	if strings.Contains(clusterRole, `verbs: ["create", "delete"`) ||
+		strings.Contains(clusterRole, `resources: ["secrets"]
+    verbs: ["get"`) ||
+		strings.Contains(clusterRole, `resources: ["secrets"]
+    verbs: ["list"`) {
 		t.Fatal("ClusterRole grants unrestricted Secret mutation")
 	}
 }

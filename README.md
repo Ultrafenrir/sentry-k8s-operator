@@ -79,9 +79,9 @@ optional create-time SDK hint but is included in the quickstart so newly created
 useful onboarding metadata. `displayName` is optional and defaults to the project slug.
 
 Sentry creates one default Client Key for a new project. When it is the only active key, the
-operator automatically publishes its public DSN to the pre-created `sentry-dsns` Secret under the
-key `checkout`. Advanced users can declare operator-owned Client Keys for independent rotation,
-rate limits, or loader settings and mark exactly one with `publishDSN: true`.
+operator creates the namespace-local `sentry-dsn` Secret when needed and publishes the public DSN
+under the key `checkout`. Advanced users can declare operator-owned Client Keys for independent
+rotation, rate limits, or loader settings and mark exactly one with `publishDSN: true`.
 
 ## Install with Helm
 
@@ -127,15 +127,13 @@ helm upgrade --install sentry-operator ./charts/sentry-kubernetes-operator \
   -f values-production.yaml
 ```
 
-Application namespaces pre-create the fixed DSN output Secret:
-
-```sh
-kubectl -n payments create secret generic sentry-dsns
-```
-
-The controller can read and patch only Secrets named `sentry-dsns` outside its own namespace; it
-cannot create, delete, list, or watch application Secrets. Optional project inputs and Uptime
-request values use the separately pre-created, read-only `sentry-project-inputs` and
+The controller automatically creates one fixed `sentry-dsn` Secret in each application namespace
+that needs DSN publication. It patches only the key named after each `SentryProject` and never
+deletes the shared Secret. Existing Secret reads and writes are restricted to that exact name.
+Kubernetes cannot constrain Secret `create` authorization by `resourceNames`, so the ClusterRole
+contains a create-only Secret rule; controller code fixes the created name to `sentry-dsn` and has
+no cluster-wide Secret list, watch, or delete permission. Optional project inputs and Uptime
+request values still use the separately pre-created, read-only `sentry-project-inputs` and
 `sentry-uptime-inputs` Secrets.
 
 ## Ownership and adoption

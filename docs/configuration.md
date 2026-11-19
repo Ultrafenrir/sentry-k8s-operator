@@ -14,8 +14,8 @@ choose values and what the operator owns.
   removes only children previously created and protected by this operator.
 - Cross-field and Sentry-version checks run in the controller before external mutation. The CRDs
   intentionally avoid CEL validation so they can be installed on older Kubernetes API servers.
-- Public DSNs are written only to the pre-created `sentry-dsns` Secret in the project namespace.
-  The key is the `SentryProject` name. Optional symbol-source credentials are read only from the
+- Public DSNs are written only to the operator-created `sentry-dsn` Secret in the project
+  namespace. The key is the `SentryProject` name. Optional symbol-source credentials are read only from the
   pre-created `sentry-project-inputs` Secret. Uptime request values can only be read from the
   pre-created `sentry-uptime-inputs` Secret in the monitor namespace.
 - API tokens, secret keys, private DSNs, and protected Sentry identities never belong in a CR or
@@ -390,8 +390,9 @@ omitted are unmanaged. `logsAndMetrics` and `userFeedback` require the modern pr
 
 For the normal single-key project, omit `clientKeys`: Sentry creates its default Client Key and the
 operator automatically publishes that key's public DSN. With multiple keys, exactly one managed
-entry may set `publishDSN: true`. The operator writes only the public DSN to the pre-created
-`sentry-dsns` Secret under the `SentryProject` name and preserves all other keys and metadata.
+entry may set `publishDSN: true`. The operator creates `sentry-dsn` when missing, writes only the
+public DSN under the `SentryProject` name, and preserves all other keys and metadata. It never
+deletes the shared Secret.
 
 To publish a Client Key that is managed outside the operator:
 

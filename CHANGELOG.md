@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Renamed the shared DSN output Secret to `sentry-dsn` and made the operator create it on first
+  publication instead of requiring application namespaces to pre-create it.
 - Reduced the distribution to one operator image and the three CRD interfaces.
 - Made `SentryConnection` part of the default Helm installation.
 - Simplified the release workflow to publish one Docker Hub image.

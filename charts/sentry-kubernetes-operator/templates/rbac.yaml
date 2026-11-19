@@ -7,8 +7,13 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["secrets"]
-    resourceNames: ["sentry-dsns"]
+    resourceNames: ["sentry-dsn"]
     verbs: ["get", "patch", "update"]
+  # Kubernetes cannot restrict create by resourceNames because the authorization
+  # request targets the Secret collection. Controller code creates only sentry-dsn.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
   - apiGroups: [""]
     resources: ["secrets"]
     resourceNames: ["sentry-project-inputs"]

@@ -10,8 +10,10 @@ Required values are under `image` and `sentryConnection`. The connection token S
 in the Helm release namespace; do not put the token in values. See the repository
 [README](../../README.md) for a complete installation command and values example.
 
-Application namespaces pre-create `sentry-dsns`. The controller patches the key named after each
-`SentryProject`; chart RBAC does not permit creating or deleting application Secrets.
+The controller creates `sentry-dsn` in an application namespace when DSN publication first needs
+it, then patches only the key named after each `SentryProject`. It never deletes the shared Secret.
+Kubernetes cannot restrict Secret creation by `resourceNames`, so chart RBAC grants create-only
+access for Secrets while restricting reads and updates to the exact `sentry-dsn` name.
 
 `controllerMonitoring.enabled=true` additionally renders a Prometheus Operator `ServiceMonitor`.
 The scrape endpoint is plain HTTP.

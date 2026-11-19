@@ -744,9 +744,6 @@ func reasonForError(err error) string {
 	if errors.Is(err, dsn.ErrSecretConflict) {
 		return "DSNSecretConflict"
 	}
-	if errors.Is(err, dsn.ErrSecretMissing) {
-		return "DSNSecretMissing"
-	}
 	if errors.Is(err, dsn.ErrAuthorization) {
 		return "AuthorizationChanged"
 	}

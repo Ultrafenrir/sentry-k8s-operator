@@ -47,6 +47,13 @@ uses the normal single active Sentry Client Key needs neither block. Apply the g
 the migrated resources while the old controller is stopped, and only then start the new
 controller. Verify ownership evidence and remote identity before permitting adoption or deletion.
 
+The current release renames the namespace DSN output Secret from `sentry-dsns` to `sentry-dsn`
+and creates the new Secret automatically. During an upgrade, leave the legacy Secret in place
+until every project is Ready and the corresponding key exists in `sentry-dsn`. The controller does
+not migrate or delete the legacy Secret because it cannot prove that no older controller or
+consumer still uses it. Remove `sentry-dsns` through the application's normal Secret-management
+process only after consumers have switched to `sentry-dsn`.
+
 `make verify-upgrade` automates the current compatibility lane from commit
 `9567f58b6c7361f6701bbdbce60772c7d6437c32` (chart `0.2.0-alpha.1`) to the current chart. It uses an
 isolated kind cluster, verifies remote and protected-state counts after every transition, rejects

@@ -22,6 +22,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -30,7 +31,6 @@ import (
 )
 
 var (
-	ErrSecretMissing  = errors.New("the namespace DSN output Secret does not exist")
 	ErrSecretConflict = errors.New("the namespace DSN output Secret has an incompatible type")
 	ErrAuthorization  = errors.New("DSN output authorization changed before write")
 )
@@ -48,8 +48,8 @@ type Publisher struct {
 
 type Authorization func(context.Context) error
 
-// Reconcile writes only the key named after the SentryProject in the pre-created,
-// fixed-name namespace Secret. Other projects' keys and all metadata are preserved.
+// Reconcile creates the fixed-name namespace Secret when missing and writes only
+// the key named after the SentryProject. Other projects' keys and all metadata are preserved.
 func (p *Publisher) Reconcile(ctx context.Context, project *sentryv1alpha1.SentryProject, publicDSN string, current binding.DSNBinding, authorize Authorization) (binding.DSNBinding, Phase, error) {
 	if !validPublicDSN(publicDSN, p.AllowInsecureHTTP) {
 		return current, "", ErrInvalidDSN
@@ -74,7 +74,24 @@ func (p *Publisher) ensureKey(ctx context.Context, project *sentryv1alpha1.Sentr
 	secret := &corev1.Secret{}
 	err := p.Client.Get(ctx, types.NamespacedName{Namespace: project.Namespace, Name: sentryv1alpha1.DSNSecretName}, secret)
 	if apierrors.IsNotFound(err) {
-		return ErrSecretMissing
+		if err := authorize(ctx); err != nil {
+			return ErrAuthorization
+		}
+		secret = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Namespace: project.Namespace, Name: sentryv1alpha1.DSNSecretName},
+			Type:       corev1.SecretTypeOpaque,
+			Data:       map[string][]byte{project.Name: []byte(value)},
+		}
+		if err := p.Client.Create(ctx, secret); err == nil {
+			return nil
+		} else if !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		secret = &corev1.Secret{}
+		err = p.Client.Get(ctx, types.NamespacedName{Namespace: project.Namespace, Name: sentryv1alpha1.DSNSecretName}, secret)
+		if err != nil {
+			return err
+		}
 	}
 	if err != nil {
 		return err

@@ -64,20 +64,36 @@ func TestPublisherPatchesOnlyProjectKeyInPrecreatedSecret(t *testing.T) {
 	}
 }
 
-func TestPublisherRequiresPrecreatedFixedNameSecret(t *testing.T) {
+func TestPublisherCreatesFixedNameSecretWhenMissing(t *testing.T) {
 	t.Parallel()
 	publisher, kubeClient := testPublisher(t)
-	called := false
-	_, _, err := publisher.Reconcile(context.Background(), testProject(), testPublicDSN, binding.DSNBinding{}, func(context.Context) error {
-		called = true
+	authorizations := 0
+	state, phase, err := publisher.Reconcile(context.Background(), testProject(), testPublicDSN, binding.DSNBinding{}, func(context.Context) error {
+		authorizations++
 		return nil
 	})
-	if !errors.Is(err, ErrSecretMissing) || called {
-		t.Fatalf("missing Secret err=%v authorizeCalled=%v", err, called)
+	if err != nil || phase != PhaseReady || state.CurrentSecret != sentryv1alpha1.DSNSecretName || authorizations != 1 {
+		t.Fatalf("state=%#v phase=%s auth=%d err=%v", state, phase, authorizations, err)
 	}
-	secrets := &corev1.SecretList{}
-	if err := kubeClient.List(context.Background(), secrets); err != nil || len(secrets.Items) != 0 {
-		t.Fatalf("publisher created a Secret: items=%d err=%v", len(secrets.Items), err)
+	secret := loadDSNSecret(t, kubeClient)
+	if secret.Name != "sentry-dsn" || secret.Type != corev1.SecretTypeOpaque || string(secret.Data[testProject().Name]) != testPublicDSN {
+		t.Fatalf("created Secret = %#v", secret)
+	}
+}
+
+func TestPublisherDoesNotCreateSecretWhenAuthorizationChanges(t *testing.T) {
+	t.Parallel()
+	publisher, kubeClient := testPublisher(t)
+	_, _, err := publisher.Reconcile(context.Background(), testProject(), testPublicDSN, binding.DSNBinding{}, func(context.Context) error {
+		return errors.New("policy changed")
+	})
+	if !errors.Is(err, ErrAuthorization) {
+		t.Fatalf("authorization change error = %v", err)
+	}
+	secret := &corev1.Secret{}
+	err = kubeClient.Get(context.Background(), types.NamespacedName{Namespace: "payments", Name: sentryv1alpha1.DSNSecretName}, secret)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("Secret created after authorization failure: %v", err)
 	}
 }
 

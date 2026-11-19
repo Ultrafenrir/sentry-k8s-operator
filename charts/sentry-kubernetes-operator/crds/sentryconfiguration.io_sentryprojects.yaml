@@ -642,7 +642,7 @@ spec:
                   publishDSN:
                     default: true
                     description: |-
-                      PublishDSN publishes the selected public DSN to the namespace-local sentry-dsns
+                      PublishDSN publishes the selected public DSN to the namespace-local sentry-dsn
                       Secret. It must be true when this block is present.
                     type: boolean
                 required:

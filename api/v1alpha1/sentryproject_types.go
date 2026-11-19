@@ -28,9 +28,9 @@ var ErrAmbiguousNotificationTarget = errors.New("notification target name is amb
 
 const (
 	// DSNSecretName is the only namespace-local Secret that may receive public DSNs.
-	// Application teams create it; the operator only patches the key named after the
-	// SentryProject and never creates or deletes the Secret.
-	DSNSecretName = "sentry-dsns"
+	// The operator creates it when missing, patches only the key named after the
+	// SentryProject, and never deletes the shared Secret.
+	DSNSecretName = "sentry-dsn"
 	// ProjectInputSecretName is the only namespace-local Secret from which project
 	// feature credentials may be read.
 	ProjectInputSecretName = "sentry-project-inputs"
@@ -44,7 +44,7 @@ type ExistingClientKeySpec struct {
 	// +kubebuilder:validation:MaxLength=100
 	Name string `json:"name"`
 
-	// PublishDSN publishes the selected public DSN to the namespace-local sentry-dsns
+	// PublishDSN publishes the selected public DSN to the namespace-local sentry-dsn
 	// Secret. It must be true when this block is present.
 	// +kubebuilder:default=true
 	// +optional
