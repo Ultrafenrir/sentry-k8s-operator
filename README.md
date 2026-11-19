@@ -85,12 +85,13 @@ rate limits, or loader settings and mark exactly one with `publishDSN: true`.
 
 ## Install with Helm
 
-Create a values file for the target Sentry organization:
+Create a values file for the target Sentry organization. This example deploys
+`ultrafenrir/sentry-k8s-operator:v0.1.0`:
 
 ```yaml
 image:
   repository: ultrafenrir/sentry-k8s-operator
-  tag: v0.3.0-alpha.1
+  tag: v0.1.0
   pullPolicy: IfNotPresent
 
 sentryConnection:

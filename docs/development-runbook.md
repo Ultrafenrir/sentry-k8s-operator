@@ -26,7 +26,8 @@ helm template my-sentry-operator charts/sentry-kubernetes-operator \
   --include-crds
 ```
 
-Build the single controller image with `make docker-build IMG=repository/name:tag`.
+Build the release image with
+`make docker-build IMG=ultrafenrir/sentry-k8s-operator:v0.1.0`.
 
 ## Local Sentry
 
