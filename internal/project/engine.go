@@ -89,6 +89,7 @@ func IsReason(err error, reason ErrorReason) bool {
 type RemoteProject struct {
 	Identity         string
 	Slug             string
+	Name             string
 	URL              string
 	Marker           *binding.Marker
 	RegionalEvidence *ownership.Evidence
@@ -119,6 +120,11 @@ type Adapter interface {
 // project display name. Engines require it before taking over an existing lower revision.
 type RegionalOwnershipAdapter interface {
 	UpdateRegionalEvidence(ctx context.Context, organization, slug string, evidence ownership.Evidence) error
+}
+
+// ManagedNameAdapter updates the human-facing name while preserving the exact ownership marker.
+type ManagedNameAdapter interface {
+	UpdateManagedName(ctx context.Context, organization, slug, name string) error
 }
 
 // OwnershipReleaseAdapter removes only the operator marker while preserving the project.
@@ -681,6 +687,10 @@ func (e *Engine) reconcileManaged(ctx context.Context, input Input, installation
 
 	remote, getErr := e.Adapter.GetBySlug(ctx, input.Connection.Organization, slug)
 	if getErr == nil {
+		remote, err = e.reconcileManagedName(ctx, input, bindingRecord, claimRecord, remote, marker, regionalEvidence)
+		if err != nil {
+			return Result{}, err
+		}
 		return e.handleExistingManaged(ctx, bindingRecord, claimRecord, remote, reference, marker, regional)
 	}
 	if !sentryapi.IsKind(getErr, sentryapi.ErrorNotFound) {
@@ -739,6 +749,58 @@ func (e *Engine) reconcileManaged(ctx context.Context, input Input, installation
 		return Result{}, err
 	}
 	return e.bindVerifiedRemote(ctx, bindingRecord, claimRecord, remote, marker, regional)
+}
+
+func (e *Engine) reconcileManagedName(ctx context.Context, input Input, record binding.BindingRecord, claim binding.ClaimRecord, remote RemoteProject, marker binding.Marker, regionalEvidence *ownership.Evidence) (RemoteProject, error) {
+	desired, err := managedProjectName(CreateRequest{Slug: input.Project.Name, DisplayName: input.Project.Spec.DisplayName, Marker: marker, RegionalEvidence: regionalEvidence})
+	if err != nil {
+		return RemoteProject{}, &Error{Reason: ReasonInvalidState, cause: err}
+	}
+	if remote.Name == desired {
+		return remote, nil
+	}
+	if remote.Identity == "" || remote.Slug != input.Project.Name || !matchesRemoteOwnership(remote, marker, record.Binding.RegionalOwnership) {
+		return RemoteProject{}, &Error{Reason: ReasonOwnershipLost}
+	}
+	updater, ok := e.Adapter.(ManagedNameAdapter)
+	if !ok {
+		return RemoteProject{}, &Error{Reason: ReasonInvalidState}
+	}
+	latestRecord, err := e.Bindings.GetBinding(ctx, string(input.Project.UID))
+	if err != nil || latestRecord.Binding.ExternalIdentity != remote.Identity || !matchesStaticManagedContext(latestRecord.Binding, input, latestRecord.Binding.Installation, input.Project.Name, marker.Owner, marker) {
+		return RemoteProject{}, &Error{Reason: ReasonOwnershipLost, cause: err}
+	}
+	latestClaim, err := e.Bindings.GetClaim(ctx, record.Binding.Installation, record.Binding.Organization, record.Binding.Slug)
+	if err != nil || latestClaim.Claim.Manager.UID != string(input.Project.UID) || latestClaim.Claim.Owner != marker.Owner || latestClaim.Claim.Handoff != nil || latestClaim.Claim.ExternalIdentity != remote.Identity || claim.Name != latestClaim.Name {
+		return RemoteProject{}, &Error{Reason: ReasonOwnershipLost, cause: err}
+	}
+	if err := e.recordAudit(ctx, input, audit.ActionUpdate, audit.OutcomeStarted, audit.ReasonJournalSubmitted); err != nil {
+		return RemoteProject{}, err
+	}
+	updateErr := updater.UpdateManagedName(ctx, record.Binding.Organization, record.Binding.Slug, desired)
+	fresh, getErr := e.Adapter.GetBySlug(ctx, record.Binding.Organization, record.Binding.Slug)
+	if getErr == nil && fresh.Identity == remote.Identity && fresh.Slug == remote.Slug && fresh.Name == desired && matchesRemoteOwnership(fresh, marker, record.Binding.RegionalOwnership) {
+		outcome := audit.OutcomeSucceeded
+		reason := audit.ReasonMutationVerified
+		if updateErr != nil {
+			outcome = audit.OutcomeRecovered
+			reason = audit.ReasonResultRecovered
+		}
+		if err := e.recordAudit(ctx, input, audit.ActionUpdate, outcome, reason); err != nil {
+			return RemoteProject{}, err
+		}
+		return fresh, nil
+	}
+	if auditErr := e.recordAudit(ctx, input, audit.ActionUpdate, audit.OutcomeFailed, audit.ReasonVerification); auditErr != nil {
+		return RemoteProject{}, auditErr
+	}
+	if updateErr != nil {
+		return RemoteProject{}, updateErr
+	}
+	if getErr != nil {
+		return RemoteProject{}, getErr
+	}
+	return RemoteProject{}, &Error{Reason: ReasonOwnershipLost}
 }
 
 func (e *Engine) promoteExternalStandbyByAdoption(ctx context.Context, input Input, record binding.BindingRecord, claim binding.ClaimRecord, decision policy.Decision, marker binding.Marker, regional *ownership.Marker, evidence *ownership.Evidence) (Result, error) {

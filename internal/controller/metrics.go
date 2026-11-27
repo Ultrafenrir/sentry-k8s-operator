@@ -30,6 +30,8 @@ const (
 	controllerProject     = "project"
 	controllerConnection  = "connection"
 	controllerAlertPolicy = "alertpolicy"
+	controllerCronMonitor = "cronmonitor"
+	controllerUptime      = "uptimemonitor"
 	metricsUnknown        = "unknown"
 	syncProject           = "project"
 	syncDSN               = "dsn"
@@ -168,7 +170,7 @@ func (m *Metrics) replaceProjectSynchronization(key string, next map[string]stri
 
 func safeController(value string) string {
 	switch value {
-	case controllerProject, controllerConnection, controllerAlertPolicy:
+	case controllerProject, controllerConnection, controllerAlertPolicy, controllerCronMonitor, controllerUptime:
 		return value
 	default:
 		return metricsUnknown

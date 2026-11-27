@@ -69,6 +69,48 @@ func TestHTTPAdapterMatchesSourceDerivedCreateContract(t *testing.T) {
 	}
 }
 
+func TestManagedProjectNameChangesWithDisplayNamePrefix(t *testing.T) {
+	marker := binding.Marker{Origin: "managed", Owner: "sko-live", ManagedBy: "sentry-operator"}
+	initial, err := managedProjectName(CreateRequest{Slug: "proof-20261127-1530", DisplayName: "Proof clean install 2026-11-27 15:30", Marker: marker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := managedProjectName(CreateRequest{Slug: "proof-20261127-1530", DisplayName: "Proof updated 2026-11-27 15:53", Marker: marker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial == updated {
+		t.Fatalf("display name update collapsed to the existing managed name %q", initial)
+	}
+	if initial != "Proof clean [managed;o=sko-live;m=sentry-operator]" || updated != "Proof updat [managed;o=sko-live;m=sentry-operator]" {
+		t.Fatalf("managed names = %q -> %q", initial, updated)
+	}
+}
+
+func TestHTTPAdapterUpdatesOnlyManagedProjectName(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/api/0/projects/company/checkout/" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if len(body) != 1 || body["name"] != "Checkout API [managed;o=payments;m=operator]" {
+			t.Errorf("update body = %#v", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	adapter := &HTTPAdapter{Client: testHTTPClient(t, server)}
+	if err := adapter.UpdateManagedName(context.Background(), "company", "checkout", "Checkout API [managed;o=payments;m=operator]"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestHTTPAdapterCreatesProjectWithRegionalRevisionEvidence(t *testing.T) {
 	t.Parallel()
 	regionalMarker := ownership.Marker{Region: "eu-west-1", Revision: 35, Owner: "payments", Installation: "company-sentry-op"}

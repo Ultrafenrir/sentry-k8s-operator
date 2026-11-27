@@ -22,6 +22,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	sentryv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
@@ -51,13 +52,16 @@ type SentryAlertPolicyReconciler struct {
 
 func (r *SentryAlertPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (reconcileResult ctrl.Result, reconcileErr error) {
 	started := time.Now()
+	policy := &sentryv1alpha1.SentryAlertPolicy{}
+	resourceFound := false
 	defer func() {
 		r.Metrics.ObserveReconcile(controllerAlertPolicy, reconcileResult, reconcileErr, time.Since(started))
+		logAlertPolicyReconcile(logf.FromContext(ctx), req, policy, resourceFound, reconcileResult, reconcileErr)
 	}()
-	policy := &sentryv1alpha1.SentryAlertPolicy{}
 	if err := r.Get(ctx, req.NamespacedName, policy); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	resourceFound = true
 	if policy.DeletionTimestamp.IsZero() {
 		if !containsString(policy.Finalizers, sentryAlertPolicyFinalizer) {
 			base := policy.DeepCopy()

@@ -16,7 +16,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -40,6 +39,15 @@ type monitorProject struct {
 	Binding    binding.BindingRecord
 }
 
+var (
+	errMonitorProjectDeleting               = errors.New("referenced project is deleting")
+	errMonitorProjectNotReady               = errors.New("referenced project is not ready")
+	errMonitorProjectNotManaged             = errors.New("referenced project is not managed")
+	errMonitorConnectionNotReady            = errors.New("referenced connection is not ready")
+	errMonitorConnectionRuntimeInitializing = errors.New("referenced connection runtime is initializing")
+	errMonitorProtectedStateMismatch        = errors.New("protected project binding does not match connection")
+)
+
 func recordMonitorAudit(ctx context.Context, sink audit.Sink, action audit.Action, local string, generation int64) error {
 	if sink == nil {
 		return nil
@@ -56,17 +64,17 @@ func resolveMonitorProject(ctx context.Context, kube client.Client, registry *co
 		return monitorProject{}, err
 	}
 	if !project.DeletionTimestamp.IsZero() {
-		return monitorProject{}, fmt.Errorf("project is deleting")
+		return monitorProject{}, errMonitorProjectDeleting
 	}
 	if project.Status.ObservedGeneration != project.Generation || !meta.IsStatusConditionTrue(project.Status.Conditions, "ProjectReady") {
-		return monitorProject{}, fmt.Errorf("project is not ready")
+		return monitorProject{}, errMonitorProjectNotReady
 	}
 	state, err := bindings.GetBinding(ctx, string(project.UID))
 	if err != nil {
 		return monitorProject{}, err
 	}
 	if state.Binding.AccessMode != binding.AccessManage || state.Binding.ExternalIdentity == "" {
-		return monitorProject{}, fmt.Errorf("project is not managed")
+		return monitorProject{}, errMonitorProjectNotManaged
 	}
 	connection := &sentryv1alpha1.SentryConnection{}
 	if err := kube.Get(ctx, types.NamespacedName{Name: project.Spec.Sentry}, connection); err != nil {
@@ -74,10 +82,13 @@ func resolveMonitorProject(ctx context.Context, kube client.Client, registry *co
 	}
 	apiClient, found := registry.Get(connection.Name)
 	if !found {
-		return monitorProject{}, fmt.Errorf("connection is not ready")
+		if meta.IsStatusConditionTrue(connection.Status.Conditions, "Ready") {
+			return monitorProject{}, errMonitorConnectionRuntimeInitializing
+		}
+		return monitorProject{}, errMonitorConnectionNotReady
 	}
 	if state.Binding.Connection != connection.Name || state.Binding.Organization != connection.Spec.Organization {
-		return monitorProject{}, fmt.Errorf("protected project binding does not match connection")
+		return monitorProject{}, errMonitorProtectedStateMismatch
 	}
 	return monitorProject{Project: project, Connection: connection, Client: apiClient, Binding: state}, nil
 }
@@ -119,6 +130,18 @@ func monitorReason(err error) string {
 	if errors.Is(err, binding.ErrNotFound) {
 		return "ProjectNotReady"
 	}
+	switch {
+	case errors.Is(err, errMonitorProjectDeleting):
+		return "ProjectDeleting"
+	case errors.Is(err, errMonitorProjectNotReady):
+		return "ProjectNotReady"
+	case errors.Is(err, errMonitorProjectNotManaged):
+		return "ProjectNotManaged"
+	case errors.Is(err, errMonitorConnectionNotReady):
+		return "ConnectionNotReady"
+	case errors.Is(err, errMonitorProtectedStateMismatch):
+		return "ProtectedStateMismatch"
+	}
 	var apiErr *sentryapi.APIError
 	if sentryapi.AsAPIError(err, &apiErr) {
 		switch apiErr.Kind {
@@ -135,6 +158,23 @@ func monitorReason(err error) string {
 		}
 	}
 	return "ReconciliationFailed"
+}
+
+func monitorProjectFailureMessage(err error) string {
+	switch {
+	case errors.Is(err, errMonitorProjectDeleting):
+		return "The referenced SentryProject is deleting; monitor reconciliation is paused."
+	case errors.Is(err, errMonitorProjectNotReady), errors.Is(err, binding.ErrNotFound):
+		return "The referenced SentryProject is not ready yet. Inspect its Ready condition before retrying the monitor."
+	case errors.Is(err, errMonitorProjectNotManaged):
+		return "The referenced SentryProject is not in managed mode; independently owned monitors require accessMode Manage."
+	case errors.Is(err, errMonitorConnectionNotReady):
+		return "The referenced SentryConnection is not ready. Inspect its Ready condition for the credential, organization, or network diagnosis."
+	case errors.Is(err, errMonitorProtectedStateMismatch):
+		return "Protected project state does not match the referenced connection; no Sentry mutation was attempted."
+	default:
+		return "The referenced managed project could not be resolved. Inspect the project and connection conditions."
+	}
 }
 
 func readyCondition(generation int64, ready bool, reason, message string) metav1.Condition {

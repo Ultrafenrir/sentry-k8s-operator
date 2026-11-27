@@ -65,6 +65,32 @@ func TestManagedCreateIsIdempotentAndAtomic(t *testing.T) {
 	}
 }
 
+func TestManagedProjectUpdatesAndVerifiesDisplayName(t *testing.T) {
+	t.Parallel()
+
+	engine, adapter, _ := testEngine(t)
+	input := managedInput("checkout", "uid-display-name", "payments")
+	input.Project.Spec.DisplayName = "Checkout"
+	if _, err := engine.Reconcile(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	input.Project.Generation++
+	input.Project.Spec.DisplayName = "Payments API"
+	if _, err := engine.Reconcile(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	if adapter.updateNameCalls != 1 {
+		t.Fatalf("updateNameCalls = %d, want 1", adapter.updateNameCalls)
+	}
+	want, err := managedProjectName(CreateRequest{Slug: input.Project.Name, DisplayName: input.Project.Spec.DisplayName, Marker: binding.Marker{Origin: "managed", Owner: "payments", ManagedBy: "company-sentry-op"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := adapter.projects["checkout"].Name; got != want {
+		t.Fatalf("remote name = %q, want %q", got, want)
+	}
+}
+
 func TestManagedProjectPreservesLegacyBoundOwner(t *testing.T) {
 	t.Parallel()
 
@@ -78,7 +104,7 @@ func TestManagedProjectPreservesLegacyBoundOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := record.Binding
-	next.Owner = "legacy-platform-owner"
+	next.Owner = "legacy"
 	next.Marker.Owner = next.Owner
 	if _, err := store.UpdateBinding(context.Background(), record, next); err != nil {
 		t.Fatal(err)
@@ -94,6 +120,10 @@ func TestManagedProjectPreservesLegacyBoundOwner(t *testing.T) {
 	}
 	remote := adapter.projects["checkout"]
 	remote.Marker.Owner = next.Owner
+	remote.Name, err = managedProjectName(CreateRequest{Slug: input.Project.Name, DisplayName: input.Project.Spec.DisplayName, Marker: *remote.Marker})
+	if err != nil {
+		t.Fatal(err)
+	}
 	adapter.projects["checkout"] = remote
 
 	result, err := engine.Reconcile(context.Background(), input)
@@ -1078,6 +1108,7 @@ type fakeAdapter struct {
 	deleteCalls         int
 	deleteLeavesObject  bool
 	updateEvidenceCalls int
+	updateNameCalls     int
 	loseUpdateResponse  bool
 	releaseCalls        int
 	loseReleaseResponse bool
@@ -1114,6 +1145,19 @@ func (a *fakeAdapter) UpdateRegionalEvidence(_ context.Context, _, slug string, 
 	return nil
 }
 
+func (a *fakeAdapter) UpdateManagedName(_ context.Context, _, slug, name string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	project, found := a.projects[slug]
+	if !found {
+		return &sentryapi.APIError{Kind: sentryapi.ErrorNotFound, StatusCode: 404, Operation: "update-project-managed-name"}
+	}
+	a.updateNameCalls++
+	project.Name = name
+	a.projects[slug] = project
+	return nil
+}
+
 func (a *fakeAdapter) GetBySlug(_ context.Context, _, slug string) (RemoteProject, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1139,6 +1183,7 @@ func (a *fakeAdapter) Create(_ context.Context, request CreateRequest) (RemotePr
 		Slug:     request.Slug,
 		URL:      "https://sentry.example/projects/" + request.Slug,
 	}
+	project.Name, _ = managedProjectName(request)
 	if request.RegionalEvidence != nil {
 		evidence := *request.RegionalEvidence
 		project.RegionalEvidence = &evidence

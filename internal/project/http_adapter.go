@@ -131,6 +131,18 @@ func (a *HTTPAdapter) UpdateRegionalEvidence(ctx context.Context, organization, 
 	return err
 }
 
+func (a *HTTPAdapter) UpdateManagedName(ctx context.Context, organization, slug, name string) error {
+	_, err := a.Client.DoJSON(ctx, sentryapi.Request{
+		Method: http.MethodPut,
+		Path:   "/api/0/projects/" + url.PathEscape(organization) + "/" + url.PathEscape(slug) + "/",
+		Body: struct {
+			Name string `json:"name"`
+		}{Name: name},
+		Operation: "update-project-managed-name",
+	}, nil)
+	return err
+}
+
 // ReleaseOwnership removes the internal marker by restoring the display name to the stable slug.
 func (a *HTTPAdapter) ReleaseOwnership(ctx context.Context, organization, slug string) error {
 	_, err := a.Client.DoJSON(ctx, sentryapi.Request{
@@ -145,7 +157,7 @@ func (a *HTTPAdapter) ReleaseOwnership(ctx context.Context, organization, slug s
 }
 
 func remoteFromResponse(response projectResponse) RemoteProject {
-	remote := RemoteProject{Identity: response.ID, Slug: response.Slug, URL: response.AbsoluteURL}
+	remote := RemoteProject{Identity: response.ID, Slug: response.Slug, Name: response.Name, URL: response.AbsoluteURL}
 	if marker, found := ParseManagedName(response.Name); found {
 		remote.Marker = &marker
 	}

@@ -45,7 +45,9 @@ func emitConditionChangesObserved(recorder events.EventRecorder, observer *Metri
 		if previous != nil && previous.Status == condition.Status && previous.Reason == condition.Reason && previous.Message == condition.Message {
 			continue
 		}
-		observer.ObserveCondition(controller, condition.Type, condition.Status)
+		if observer != nil {
+			observer.ObserveCondition(controller, condition.Type, condition.Status)
+		}
 		if recorder == nil || suppressConditionEvent(condition) {
 			continue
 		}

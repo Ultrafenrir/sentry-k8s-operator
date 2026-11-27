@@ -34,7 +34,8 @@ func logConnectionReconcile(log logr.Logger, req ctrl.Request, connection *sentr
 	if registry != nil && connection.Name != "" {
 		_, clientLoaded = registry.Get(connection.Name)
 	}
-	log.V(1).Info("SentryConnection reconciliation completed",
+	ready := meta.FindStatusCondition(connection.Status.Conditions, "Ready")
+	log.Info("SentryConnection reconciliation completed",
 		"connection", req.Name,
 		"resourceFound", resourceFound,
 		"generation", connection.Generation,
@@ -47,6 +48,8 @@ func logConnectionReconcile(log logr.Logger, req ctrl.Request, connection *sentr
 		"ownershipConfigured", connection.Spec.Ownership != nil,
 		"effectiveRole", connection.Status.EffectiveRole,
 		"conditions", conditionLogSummary(connection.Status.Conditions),
+		"readyReason", conditionReason(ready),
+		"readyMessage", conditionMessage(ready),
 		"requeue", result.Requeue,
 		"requeueAfter", durationLogValue(result.RequeueAfter),
 		"error", reconcileErr != nil,
@@ -54,7 +57,8 @@ func logConnectionReconcile(log logr.Logger, req ctrl.Request, connection *sentr
 }
 
 func logProjectReconcile(log logr.Logger, req ctrl.Request, project *sentryv1alpha1.SentryProject, resourceFound bool, result ctrl.Result, reconcileErr error) {
-	log.V(1).Info("SentryProject reconciliation completed",
+	ready := meta.FindStatusCondition(project.Status.Conditions, "Ready")
+	log.Info("SentryProject reconciliation completed",
 		"project", req.NamespacedName.String(),
 		"resourceFound", resourceFound,
 		"generation", project.Generation,
@@ -68,6 +72,8 @@ func logProjectReconcile(log logr.Logger, req ctrl.Request, project *sentryv1alp
 		"requestedRole", project.Status.RequestedRole,
 		"effectiveRole", project.Status.EffectiveRole,
 		"conditions", conditionLogSummary(project.Status.Conditions),
+		"readyReason", conditionReason(ready),
+		"readyMessage", conditionMessage(ready),
 		"clientKeys", projectClientKeyStateCounts(project.Status.ClientKeys),
 		"symbolSources", projectSymbolSourceStateCounts(project.Status.SymbolSources),
 		"codeMappings", projectCodeMappingStateCounts(project.Status.CodeMappings),
@@ -77,6 +83,79 @@ func logProjectReconcile(log logr.Logger, req ctrl.Request, project *sentryv1alp
 		"requeueAfter", durationLogValue(result.RequeueAfter),
 		"error", reconcileErr != nil,
 	)
+}
+
+func logAlertPolicyReconcile(log logr.Logger, req ctrl.Request, policy *sentryv1alpha1.SentryAlertPolicy, resourceFound bool, result ctrl.Result, reconcileErr error) {
+	ready := meta.FindStatusCondition(policy.Status.Conditions, "Ready")
+	rollout := meta.FindStatusCondition(policy.Status.Conditions, "RolloutComplete")
+	log.Info("SentryAlertPolicy reconciliation completed",
+		"policy", req.Name,
+		"resourceFound", resourceFound,
+		"generation", policy.Generation,
+		"observedGeneration", policy.Status.ObservedGeneration,
+		"sentryConnection", policy.Spec.Sentry,
+		"deleting", !policy.DeletionTimestamp.IsZero(),
+		"desiredProjects", policy.Status.Rollout.DesiredProjects,
+		"readyProjects", policy.Status.Rollout.ReadyProjects,
+		"failedProjects", policy.Status.Rollout.FailedProjects,
+		"pendingProjects", policy.Status.Rollout.PendingProjects,
+		"conditions", conditionLogSummary(policy.Status.Conditions),
+		"readyReason", conditionReason(ready),
+		"rolloutReason", conditionReason(rollout),
+		"requeue", result.Requeue,
+		"requeueAfter", durationLogValue(result.RequeueAfter),
+		"error", reconcileErr != nil,
+	)
+}
+
+func logCronMonitorReconcile(log logr.Logger, req ctrl.Request, monitor *sentryv1alpha1.SentryCronMonitor, resourceFound bool, result ctrl.Result, reconcileErr error) {
+	ready := meta.FindStatusCondition(monitor.Status.Conditions, "Ready")
+	log.Info("SentryCronMonitor reconciliation completed",
+		"monitor", req.NamespacedName.String(),
+		"resourceFound", resourceFound,
+		"generation", monitor.Generation,
+		"observedGeneration", monitor.Status.ObservedGeneration,
+		"projectRef", monitor.Spec.ProjectRef,
+		"deleting", !monitor.DeletionTimestamp.IsZero(),
+		"conditions", conditionLogSummary(monitor.Status.Conditions),
+		"readyReason", conditionReason(ready),
+		"readyMessage", conditionMessage(ready),
+		"requeue", result.Requeue,
+		"requeueAfter", durationLogValue(result.RequeueAfter),
+		"error", reconcileErr != nil,
+	)
+}
+
+func logUptimeMonitorReconcile(log logr.Logger, req ctrl.Request, monitor *sentryv1alpha1.SentryUptimeMonitor, resourceFound bool, result ctrl.Result, reconcileErr error) {
+	ready := meta.FindStatusCondition(monitor.Status.Conditions, "Ready")
+	log.Info("SentryUptimeMonitor reconciliation completed",
+		"monitor", req.NamespacedName.String(),
+		"resourceFound", resourceFound,
+		"generation", monitor.Generation,
+		"observedGeneration", monitor.Status.ObservedGeneration,
+		"projectRef", monitor.Spec.ProjectRef,
+		"deleting", !monitor.DeletionTimestamp.IsZero(),
+		"conditions", conditionLogSummary(monitor.Status.Conditions),
+		"readyReason", conditionReason(ready),
+		"readyMessage", conditionMessage(ready),
+		"requeue", result.Requeue,
+		"requeueAfter", durationLogValue(result.RequeueAfter),
+		"error", reconcileErr != nil,
+	)
+}
+
+func conditionReason(condition *metav1.Condition) string {
+	if condition == nil {
+		return ""
+	}
+	return condition.Reason
+}
+
+func conditionMessage(condition *metav1.Condition) string {
+	if condition == nil {
+		return ""
+	}
+	return condition.Message
 }
 
 func conditionLogSummary(conditions []metav1.Condition) []string {

@@ -21,8 +21,10 @@ import (
 	"crypto/tls"
 	"errors"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -30,7 +32,9 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -55,6 +59,14 @@ var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
 )
+
+var requiredCRDKinds = []string{
+	"SentryAlertPolicy",
+	"SentryConnection",
+	"SentryCronMonitor",
+	"SentryProject",
+	"SentryUptimeMonitor",
+}
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -230,6 +242,10 @@ func main() {
 		setupLog.Error(err, "Failed to start manager")
 		os.Exit(1)
 	}
+	if err := verifyRequiredCRDs(mgr.GetRESTMapper()); err != nil {
+		setupLog.Error(err, "Cannot start controllers until every required CRD is installed")
+		os.Exit(1)
+	}
 	controllerMetrics, err := controller.NewMetrics(controllermetrics.Registry)
 	if err != nil {
 		setupLog.Error(err, "Failed to initialize controller metrics")
@@ -295,7 +311,7 @@ func main() {
 		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Registry: connectionRegistry,
 		ProjectBindings: bindingStore, MonitorBindings: monitorBindingStore,
 		Audit:    projectAudit,
-		Recorder: mgr.GetEventRecorder("sentrycronmonitor-controller"),
+		Recorder: mgr.GetEventRecorder("sentrycronmonitor-controller"), Metrics: controllerMetrics,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "sentrycronmonitor")
 		os.Exit(1)
@@ -304,7 +320,7 @@ func main() {
 		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Registry: connectionRegistry,
 		ProjectBindings: bindingStore, MonitorBindings: monitorBindingStore, SecretClient: outputSecretClient,
 		Audit:    projectAudit,
-		Recorder: mgr.GetEventRecorder("sentryuptimemonitor-controller"),
+		Recorder: mgr.GetEventRecorder("sentryuptimemonitor-controller"), Metrics: controllerMetrics,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "sentryuptimemonitor")
 		os.Exit(1)
@@ -325,4 +341,18 @@ func main() {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}
+}
+
+func verifyRequiredCRDs(mapper meta.RESTMapper) error {
+	missing := make([]string, 0)
+	for _, kind := range requiredCRDKinds {
+		_, err := mapper.RESTMapping(schema.GroupKind{Group: sentryconfigurationv1alpha1.GroupVersion.Group, Kind: kind}, sentryconfigurationv1alpha1.GroupVersion.Version)
+		if err != nil {
+			missing = append(missing, kind)
+		}
+	}
+	if len(missing) != 0 {
+		return fmt.Errorf("missing sentryconfiguration.io/v1alpha1 CRDs for kinds: %s", strings.Join(missing, ", "))
+	}
+	return nil
 }

@@ -27,6 +27,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	sentryv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
 	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/audit"
@@ -60,17 +61,25 @@ type SentryUptimeMonitorReconciler struct {
 	NewAdapter      func(*sentryapi.Client) UptimeMonitorAdapter
 	Recorder        events.EventRecorder
 	Audit           audit.Sink
+	Metrics         *Metrics
 }
 
 // +kubebuilder:rbac:groups=sentryconfiguration.io,resources=sentryuptimemonitors,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=sentryconfiguration.io,resources=sentryuptimemonitors/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=sentryconfiguration.io,resources=sentryprojects,verbs=get;list;watch
 
-func (r *SentryUptimeMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *SentryUptimeMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (reconcileResult ctrl.Result, reconcileErr error) {
+	started := time.Now()
 	resource := &sentryv1alpha1.SentryUptimeMonitor{}
+	resourceFound := false
+	defer func() {
+		r.Metrics.ObserveReconcile(controllerUptime, reconcileResult, reconcileErr, time.Since(started))
+		logUptimeMonitorReconcile(logf.FromContext(ctx), req, resource, resourceFound, reconcileResult, reconcileErr)
+	}()
 	if err := r.Get(ctx, req.NamespacedName, resource); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	resourceFound = true
 	if !resource.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, resource)
 	}
@@ -87,7 +96,10 @@ func (r *SentryUptimeMonitorReconciler) Reconcile(ctx context.Context, req ctrl.
 	}
 	project, err := resolveMonitorProject(ctx, r.Client, r.Registry, r.ProjectBindings, resource.Namespace, resource.Spec.ProjectRef)
 	if err != nil {
-		return r.report(ctx, resource, false, monitorReason(err), "The referenced managed project is not ready.", "")
+		if errors.Is(err, errMonitorConnectionRuntimeInitializing) {
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
+		return r.report(ctx, resource, false, monitorReason(err), monitorProjectFailureMessage(err), "")
 	}
 	if project.Connection.Spec.Compatibility == nil || project.Connection.Spec.Compatibility.Alerts != sentryv1alpha1.AlertCompatibilityModern26 {
 		return r.report(ctx, resource, false, "SpecIncompatible", "Uptime Monitors require the modern-26.10.1 compatibility profile.", "")

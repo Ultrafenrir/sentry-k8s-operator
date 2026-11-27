@@ -26,6 +26,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	sentryv1alpha1 "github.com/Ultrafenrir/sentry-kubernetes-operator/api/v1alpha1"
 	"github.com/Ultrafenrir/sentry-kubernetes-operator/internal/audit"
@@ -57,17 +58,25 @@ type SentryCronMonitorReconciler struct {
 	NewAdapter      func(*sentryapi.Client) CronMonitorAdapter
 	Recorder        events.EventRecorder
 	Audit           audit.Sink
+	Metrics         *Metrics
 }
 
 // +kubebuilder:rbac:groups=sentryconfiguration.io,resources=sentrycronmonitors,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=sentryconfiguration.io,resources=sentrycronmonitors/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=sentryconfiguration.io,resources=sentryprojects,verbs=get;list;watch
 
-func (r *SentryCronMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *SentryCronMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (reconcileResult ctrl.Result, reconcileErr error) {
+	started := time.Now()
 	resource := &sentryv1alpha1.SentryCronMonitor{}
+	resourceFound := false
+	defer func() {
+		r.Metrics.ObserveReconcile(controllerCronMonitor, reconcileResult, reconcileErr, time.Since(started))
+		logCronMonitorReconcile(logf.FromContext(ctx), req, resource, resourceFound, reconcileResult, reconcileErr)
+	}()
 	if err := r.Get(ctx, req.NamespacedName, resource); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	resourceFound = true
 	if !resource.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, resource)
 	}
@@ -84,7 +93,10 @@ func (r *SentryCronMonitorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 	project, err := resolveMonitorProject(ctx, r.Client, r.Registry, r.ProjectBindings, resource.Namespace, resource.Spec.ProjectRef)
 	if err != nil {
-		return r.report(ctx, resource, false, monitorReason(err), "The referenced managed project is not ready.", "")
+		if errors.Is(err, errMonitorConnectionRuntimeInitializing) {
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
+		return r.report(ctx, resource, false, monitorReason(err), monitorProjectFailureMessage(err), "")
 	}
 	if err := r.ensureOwner(ctx, resource, project.Project); err != nil {
 		return ctrl.Result{}, err

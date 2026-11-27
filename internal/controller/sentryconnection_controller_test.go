@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -39,6 +40,22 @@ import (
 )
 
 var _ = Describe("SentryConnection Controller", func() {
+	DescribeTable("classifies organization probe failures into actionable status",
+		func(apiErr *sentryapi.APIError, credentialsStatus metav1.ConditionStatus, credentialsReason, readyReason, messageFragment string) {
+			failure := classifyConnectionProbeFailure(apiErr, "acme")
+			Expect(failure.credentialsStatus).To(Equal(credentialsStatus))
+			Expect(failure.credentialsReason).To(Equal(credentialsReason))
+			Expect(failure.readyReason).To(Equal(readyReason))
+			Expect(failure.readyMessage).To(ContainSubstring(messageFragment))
+		},
+		Entry("rejected token", &sentryapi.APIError{Kind: sentryapi.ErrorUnauthorized, StatusCode: http.StatusUnauthorized}, metav1.ConditionFalse, "CredentialsRejected", "CredentialsRejected", "HTTP 401"),
+		Entry("missing organization access", &sentryapi.APIError{Kind: sentryapi.ErrorPermissionDenied, StatusCode: http.StatusForbidden}, metav1.ConditionTrue, "CredentialsAccepted", "OrganizationAccessDenied", "HTTP 403"),
+		Entry("wrong or hidden organization", &sentryapi.APIError{Kind: sentryapi.ErrorNotFound, StatusCode: http.StatusNotFound}, metav1.ConditionUnknown, "CredentialsNotVerified", "OrganizationNotFoundOrInaccessible", "spec.organization"),
+		Entry("network failure", &sentryapi.APIError{Kind: sentryapi.ErrorTransport}, metav1.ConditionUnknown, "CredentialsNotVerified", "SentryUnreachable", "DNS"),
+		Entry("timeout", &sentryapi.APIError{Kind: sentryapi.ErrorTimeout}, metav1.ConditionUnknown, "CredentialsNotVerified", "SentryTimeout", "timed out"),
+		Entry("rate limit", &sentryapi.APIError{Kind: sentryapi.ErrorRateLimited, StatusCode: http.StatusTooManyRequests}, metav1.ConditionUnknown, "CredentialsNotVerified", "SentryRateLimited", "HTTP 429"),
+	)
+
 	It("converges a bounded connection thundering herd without dynamic metric labels", func() {
 		const connectionCount = 40
 		loadContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)

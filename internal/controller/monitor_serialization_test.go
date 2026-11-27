@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -30,7 +31,7 @@ func TestResolveMonitorProjectRequiresCurrentProjectReadyCondition(t *testing.T)
 		},
 	}
 	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(project).Build()
-	if _, err := resolveMonitorProject(context.Background(), kube, nil, nil, "payments", "checkout"); err == nil || err.Error() != "project is not ready" {
+	if _, err := resolveMonitorProject(context.Background(), kube, nil, nil, "payments", "checkout"); !errors.Is(err, errMonitorProjectNotReady) {
 		t.Fatalf("stale project readiness error = %v", err)
 	}
 }
