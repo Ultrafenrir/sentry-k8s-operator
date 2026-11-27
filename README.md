@@ -85,6 +85,48 @@ rotation, rate limits, or loader settings and mark exactly one with `publishDSN:
 
 ## Install with Helm
 
+### Create a Sentry API token
+
+Create a dedicated organization-scoped **Internal Integration** token. Do not use a personal user
+token or an owner token with every permission enabled.
+
+In the Sentry organization UI:
+
+1. Open **Settings**, then **Developer Settings** and **Custom Integrations**.
+2. Select **Create New Integration**, choose **Internal Integration**, and continue.
+3. Name it `sentry-kubernetes-operator`. Leave webhook URLs and webhook events empty because the
+   operator polls and reconciles the Sentry API; it does not receive Sentry webhooks.
+4. Select one of the permission profiles below, save the integration, and copy the generated token
+   from the **Tokens** section.
+
+The tested self-hosted 26.10.1 Internal Integration UI does not expose a separate **Alerts**
+permission row. Modern alert workflow updates therefore use the organization write permission.
+Do not look for or attempt to add an `alerts:write` checkbox that is not present in this UI.
+
+| UI permission | Connection probe only | Recommended management | Full lifecycle |
+| --- | --- | --- | --- |
+| Organization | Read | Read & Write | Read & Write |
+| Project | No Access | Read & Write | Admin |
+| Team | No Access | Read | Read |
+| Member | No Access | No Access | No Access |
+| Event & Issue | No Access | No Access | No Access |
+| Release | No Access | No Access | No Access |
+
+Use **Recommended management** for `SentryProject`, `SentryAlertPolicy`, `SentryCronMonitor`, and
+`SentryUptimeMonitor` with `spec.lifecycle.onDelete: Retain`. It can create and update managed
+objects but cannot delete a Sentry project. Use **Full lifecycle** only when at least one project
+uses `spec.lifecycle.onDelete: DeleteProject`; Sentry requires project admin permission to delete a
+project. The operator does not require member, event, or release access for its documented
+resource model.
+
+**Connection probe only** can verify `SentryConnection`, but all mutating resources will fail with
+permission-denied status. It is a diagnostic profile, not a usable installation profile.
+
+Sentry may label a write choice as either **Write** or **Read & Write** depending on the version.
+The official Sentry references are [API authentication](https://docs.sentry.io/api/auth/),
+[permissions and scopes](https://docs.sentry.io/api/permissions/), and
+[creating an internal integration token](https://docs.sentry.io/api/guides/create-auth-token/).
+
 Create a values file for the target Sentry organization. This example deploys
 `ultrafenrir/sentry-k8s-operator:v0.1.0`:
 
@@ -112,14 +154,22 @@ controllerMonitoring:
   enabled: false
 ```
 
-Create the token Secret in the release namespace, then install the chart:
+Create the token Secret in the release namespace without placing the token in shell history, then
+install the chart:
 
 ```sh
 export OPERATOR_NAMESPACE=observability
 
-kubectl create namespace "$OPERATOR_NAMESPACE"
-kubectl -n "$OPERATOR_NAMESPACE" create secret generic sentry-api-token \
-  --from-literal=token='YOUR_SENTRY_API_TOKEN'
+kubectl create namespace "$OPERATOR_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+
+read -r -s SENTRY_OPERATOR_TOKEN
+echo
+printf '%s' "$SENTRY_OPERATOR_TOKEN" | \
+  kubectl -n "$OPERATOR_NAMESPACE" create secret generic sentry-api-token \
+    --from-file=token=/dev/stdin \
+    --dry-run=client \
+    -o yaml | kubectl apply -f -
+unset SENTRY_OPERATOR_TOKEN
 
 helm upgrade --install sentry-operator ./charts/sentry-kubernetes-operator \
   --namespace "$OPERATOR_NAMESPACE" \
